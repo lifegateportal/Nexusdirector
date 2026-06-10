@@ -6,52 +6,11 @@ import {
   DeleteObjectCommand,
   ListObjectsV2Command,
 } from "@aws-sdk/client-s3";
-import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import path from "node:path";
 import { env } from "@/lib/env";
 import { z } from "zod";
 
 export const runtime    = "nodejs";
 export const maxDuration = 30;
-export const maxRequestBodySize = "50mb";
-export const dynamic = "force-dynamic";
-export const revalidate = 0;
-
-const WORKSPACE_PROJECTS_DIR = path.join(process.cwd(), ".nexusdirector", "projects");
-
-const ProjectRecordSchema = z.object({
-  id: z.string().min(1),
-  updatedAt: z.string().optional(),
-  createdAt: z.string().optional(),
-}).passthrough();
-
-type ProjectRecord = z.infer<typeof ProjectRecordSchema>;
-
-function countChapters(value: unknown): number {
-  if (!Array.isArray(value)) return 0;
-  return value.filter((item) => Boolean(item && typeof item === "object")).length;
-}
-
-function pickValueByRecency<T>(
-  incoming: T | undefined,
-  existing: T | undefined,
-  chapterAccessor: (value: T) => unknown,
-  preferIncoming: boolean,
-): T | undefined {
-  if (incoming === undefined) return existing;
-  if (existing === undefined) return incoming;
-
-  const incomingChapters = countChapters(chapterAccessor(incoming));
-  const existingChapters = countChapters(chapterAccessor(existing));
-
-  if (preferIncoming) {
-    if (incomingChapters === 0 && existingChapters > 0) return existing;
-    return incoming;
-  }
-
-  if (existingChapters === 0 && incomingChapters > 0) return incoming;
-  return existing;
-}
 
 function makeS3(accountId: string, accessKey: string, secretKey: string) {
   return new S3Client({
@@ -70,278 +29,38 @@ function r2Ready() {
   };
 }
 
-function normalizeProject(project: unknown): ProjectRecord | null {
-  const parsed = ProjectRecordSchema.safeParse(project);
-  if (!parsed.success) return null;
-
-  const nowIso = new Date().toISOString();
-  const updatedAt = parsed.data.updatedAt && Number.isFinite(Date.parse(parsed.data.updatedAt))
-    ? new Date(parsed.data.updatedAt).toISOString()
-    : nowIso;
-  const createdAt = parsed.data.createdAt && Number.isFinite(Date.parse(parsed.data.createdAt))
-    ? new Date(parsed.data.createdAt).toISOString()
-    : updatedAt;
-
-  return {
-    ...parsed.data,
-    createdAt,
-    updatedAt,
-  };
-}
-
-function workspaceProjectPath(id: string) {
-  const safeId = id.replace(/[^a-zA-Z0-9._-]/g, "_");
-  return path.join(WORKSPACE_PROJECTS_DIR, `${safeId}.json`);
-}
-
-async function ensureWorkspaceProjectsDir() {
-  await mkdir(WORKSPACE_PROJECTS_DIR, { recursive: true });
-}
-
-async function listWorkspaceProjects(options?: { sermonOnly?: boolean }): Promise<ProjectRecord[]> {
-  try {
-    const sermonOnly = options?.sermonOnly === true;
-    await ensureWorkspaceProjectsDir();
-    const entries = await readdir(WORKSPACE_PROJECTS_DIR, { withFileTypes: true });
-    const settled = await Promise.allSettled(
-      entries
-        .filter((entry) => {
-          if (!entry.isFile() || !entry.name.endsWith(".json")) return false;
-          if (!sermonOnly) return true;
-          return entry.name.startsWith("sermon-");
-        })
-        .map(async (entry) => {
-          const raw = await readFile(path.join(WORKSPACE_PROJECTS_DIR, entry.name), "utf8");
-          return normalizeProject(JSON.parse(raw) as unknown);
-        }),
-    );
-
-    return settled
-      .filter((result): result is PromiseFulfilledResult<ProjectRecord | null> => result.status === "fulfilled")
-      .map((result) => result.value)
-      .filter((project): project is ProjectRecord => Boolean(project));
-  } catch (err) {
-    console.error("[api/projects] Failed to read workspace projects:", err);
-    return [];
-  }
-}
-
-async function saveWorkspaceProject(project: ProjectRecord) {
-  await ensureWorkspaceProjectsDir();
-  await writeFile(workspaceProjectPath(project.id), `${JSON.stringify(project, null, 2)}\n`, "utf8");
-}
-
-async function deleteWorkspaceProject(id: string) {
-  try {
-    await rm(workspaceProjectPath(id), { force: true });
-  } catch (err) {
-    console.error("[api/projects] Failed to delete workspace project:", err);
-    throw err;
-  }
-}
-
-async function listR2Projects(options?: { sermonOnly?: boolean }): Promise<ProjectRecord[]> {
-  const r2 = r2Ready();
-  if (!r2) return [];
-
-  const sermonOnly = options?.sermonOnly === true;
-
-  const list = await r2.s3.send(
-    new ListObjectsV2Command({ Bucket: r2.bucket, Prefix: "projects/" }),
-  );
-  const keys = (list.Contents ?? [])
-    .map((o) => o.Key)
-    .filter((k): k is string => {
-      if (!k || !k.endsWith(".json")) return false;
-      if (!sermonOnly) return true;
-      return k.startsWith("projects/sermon-");
-    });
-
-  if (keys.length === 0) return [];
-
-  const settled = await Promise.allSettled(
-    keys.map(async (key) => {
-      const res = await r2.s3.send(new GetObjectCommand({ Bucket: r2.bucket, Key: key }));
-      const raw = await res.Body?.transformToString();
-      if (!raw) return null;
-      return normalizeProject(JSON.parse(raw) as unknown);
-    }),
-  );
-
-  return settled
-    .filter((result): result is PromiseFulfilledResult<ProjectRecord | null> => result.status === "fulfilled")
-    .map((result) => result.value)
-    .filter((project): project is ProjectRecord => Boolean(project));
-}
-
-function mergeProjects(projects: ProjectRecord[]): ProjectRecord[] {
-  const byId = new Map<string, ProjectRecord>();
-
-  for (const project of projects) {
-    const existing = byId.get(project.id);
-    if (!existing) {
-      byId.set(project.id, project);
-      continue;
-    }
-
-    const existingTs = Date.parse(existing.updatedAt ?? existing.createdAt ?? "");
-    const incomingTs = Date.parse(project.updatedAt ?? project.createdAt ?? "");
-    if (!Number.isFinite(existingTs) || incomingTs >= existingTs) {
-      byId.set(project.id, project);
-    }
-  }
-
-  return Array.from(byId.values()).sort(
-    (a, b) => Date.parse(b.updatedAt ?? b.createdAt ?? "") - Date.parse(a.updatedAt ?? a.createdAt ?? ""),
-  );
-}
-
-async function saveR2Project(project: ProjectRecord) {
-  const r2 = r2Ready();
-  if (!r2) return false;
-
-  await r2.s3.send(
-    new PutObjectCommand({
-      Bucket:       r2.bucket,
-      Key:          `projects/${project.id}.json`,
-      Body:         JSON.stringify(project),
-      ContentType:  "application/json",
-      CacheControl: "private, no-cache",
-    }),
-  );
-  return true;
-}
-
-async function readWorkspaceProject(id: string): Promise<ProjectRecord | null> {
-  try {
-    const raw = await readFile(workspaceProjectPath(id), "utf8");
-    return normalizeProject(JSON.parse(raw) as unknown);
-  } catch {
-    return null;
-  }
-}
-
-async function readR2Project(id: string): Promise<ProjectRecord | null> {
-  const r2 = r2Ready();
-  if (!r2) return null;
-
-  try {
-    const res = await r2.s3.send(new GetObjectCommand({ Bucket: r2.bucket, Key: `projects/${id}.json` }));
-    const raw = await res.Body?.transformToString();
-    if (!raw) return null;
-    return normalizeProject(JSON.parse(raw) as unknown);
-  } catch {
-    return null;
-  }
-}
-
-function mergeProjectRecord(existing: ProjectRecord | null, incoming: ProjectRecord): ProjectRecord {
-  if (!existing) return incoming;
-
-  const existingTs = Date.parse(existing.updatedAt ?? existing.createdAt ?? "");
-  const incomingTs = Date.parse(incoming.updatedAt ?? incoming.createdAt ?? "");
-  const preferIncoming = !Number.isFinite(existingTs) || (Number.isFinite(incomingTs) && incomingTs >= existingTs);
-
-  const merged: ProjectRecord = {
-    ...(preferIncoming ? existing : incoming),
-    ...(preferIncoming ? incoming : existing),
-    ebookJobState: pickValueByRecency(
-      incoming.ebookJobState as ProjectRecord["ebookJobState"] | undefined,
-      existing.ebookJobState as ProjectRecord["ebookJobState"] | undefined,
-      (value) => (value && typeof value === "object" ? (value as Record<string, unknown>).chapters : undefined),
-      preferIncoming,
-    ),
-    ebookManifest: pickValueByRecency(
-      incoming.ebookManifest as ProjectRecord["ebookManifest"] | undefined,
-      existing.ebookManifest as ProjectRecord["ebookManifest"] | undefined,
-      (value) => (value && typeof value === "object" ? (value as Record<string, unknown>).chapters : undefined),
-      preferIncoming,
-    ),
-    publishedSlug: incoming.publishedSlug ?? existing.publishedSlug,
-    coverImageUrl: incoming.coverImageUrl ?? existing.coverImageUrl,
-    authorImageUrl: incoming.authorImageUrl ?? existing.authorImageUrl,
-  };
-
-  const existingCreatedAt = existing.createdAt && Number.isFinite(Date.parse(existing.createdAt))
-    ? new Date(existing.createdAt).toISOString()
-    : incoming.createdAt;
-  const incomingCreatedAt = incoming.createdAt && Number.isFinite(Date.parse(incoming.createdAt))
-    ? new Date(incoming.createdAt).toISOString()
-    : existingCreatedAt;
-  merged.createdAt = existingCreatedAt <= incomingCreatedAt ? existingCreatedAt : incomingCreatedAt;
-
-  return merged;
-}
-
-async function deleteR2Project(id: string) {
-  const r2 = r2Ready();
-  if (!r2) return false;
-
-  await r2.s3.send(
-    new DeleteObjectCommand({ Bucket: r2.bucket, Key: `projects/${id}.json` }),
-  );
-  return true;
-}
-
 // ── GET /api/projects — return all saved ProjectSnapshots from R2 ─────────────
 
-export async function GET(req: NextRequest) {
+export async function GET() {
+  const r2 = r2Ready();
+  if (!r2) return NextResponse.json({ projects: [] });
+
   try {
-    const requestKind = req.nextUrl.searchParams.get("kind");
-    const sermonOnly = requestKind === "sermon";
-    const ebookOnly = requestKind === "ebook";
-
-    const [workspaceProjects, r2Projects] = await Promise.all([
-      listWorkspaceProjects({ sermonOnly }),
-      listR2Projects({ sermonOnly }).catch((err) => {
-        console.error("[api/projects] Failed to read R2 projects:", err);
-        return [];
-      }),
-    ]);
-
-    const merged = mergeProjects([...workspaceProjects, ...r2Projects]);
-
-    // Optional lightweight sermon view to avoid sending large ebook payloads
-    // when the Sermon assistant only needs sermon history records.
-    const sermonProjects = merged
-      .filter((project) => {
-        const sermon = (project as Record<string, unknown>).sermonAssistant;
-        return Boolean(sermon) && (typeof sermon === "object" || typeof sermon === "string");
-      })
-      .map((project) => ({
-        id: project.id,
-        name: (project as Record<string, unknown>).name,
-        createdAt: project.createdAt,
-        updatedAt: project.updatedAt,
-        sermonAssistant: (project as Record<string, unknown>).sermonAssistant,
-      }));
-
-    // Lightweight ebook payload: avoid returning large academy/blueprint/manifest
-    // blobs to the ebook workspace polling loop.
-    const ebookProjects = merged
-      .filter((project) => {
-        const record = project as Record<string, unknown>;
-        return Boolean(record.ebookJobState ?? record.jobState ?? record.ebookManifest);
-      })
-      .map((project) => {
-        const record = project as Record<string, unknown>;
-        return {
-          id: project.id,
-          name: record.name,
-          createdAt: project.createdAt,
-          updatedAt: project.updatedAt,
-          ebookJobState: record.ebookJobState,
-          jobState: record.jobState,
-          publishedSlug: record.publishedSlug,
-          coverImageUrl: record.coverImageUrl,
-          authorImageUrl: record.authorImageUrl,
-        };
-      });
-
-    return NextResponse.json(
-      { projects: sermonOnly ? sermonProjects : ebookOnly ? ebookProjects : merged },
-      { headers: { "Cache-Control": "no-store, max-age=0" } },
+    // List all objects under projects/
+    const list = await r2.s3.send(
+      new ListObjectsV2Command({ Bucket: r2.bucket, Prefix: "projects/" }),
     );
+    const keys = (list.Contents ?? [])
+      .map((o) => o.Key)
+      .filter((k): k is string => !!k && k.endsWith(".json"));
+
+    if (keys.length === 0) return NextResponse.json({ projects: [] });
+
+    // Fetch all in parallel
+    const settled = await Promise.allSettled(
+      keys.map(async (key) => {
+        const res = await r2.s3.send(new GetObjectCommand({ Bucket: r2.bucket, Key: key }));
+        const raw = await res.Body?.transformToString();
+        if (!raw) return null;
+        return JSON.parse(raw) as unknown;
+      }),
+    );
+
+    const projects = settled
+      .filter((r): r is PromiseFulfilledResult<unknown> => r.status === "fulfilled" && r.value !== null)
+      .map((r) => r.value);
+
+    return NextResponse.json({ projects });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to load projects";
     return NextResponse.json({ error: message }, { status: 500 });
@@ -355,6 +74,9 @@ const UpsertSchema = z.object({
 });
 
 export async function POST(req: NextRequest) {
+  const r2 = r2Ready();
+  if (!r2) return NextResponse.json({ ok: true }); // no-op when R2 not configured
+
   let input;
   try {
     input = UpsertSchema.parse(await req.json() as unknown);
@@ -365,28 +87,18 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const incomingProject = normalizeProject(input.project);
-  if (!incomingProject) {
-    return NextResponse.json({ error: "Invalid project payload" }, { status: 400 });
-  }
-
+  const { project } = input;
   try {
-    const existingProject = mergeProjects((await Promise.all([
-      readWorkspaceProject(incomingProject.id),
-      readR2Project(incomingProject.id),
-    ])).filter((project): project is ProjectRecord => Boolean(project)))[0] ?? null;
-    const project = mergeProjectRecord(existingProject, incomingProject);
-
-    await saveWorkspaceProject(project);
-
-    let cloudSaved = false;
-    try {
-      cloudSaved = await saveR2Project(project);
-    } catch (err) {
-      console.error("[api/projects] Failed to save R2 project:", err);
-    }
-
-    return NextResponse.json({ ok: true, workspaceSaved: true, cloudSaved });
+    await r2.s3.send(
+      new PutObjectCommand({
+        Bucket:       r2.bucket,
+        Key:          `projects/${project.id}.json`,
+        Body:         JSON.stringify(project),
+        ContentType:  "application/json",
+        CacheControl: "private, no-cache",
+      }),
+    );
+    return NextResponse.json({ ok: true });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Save failed" },
@@ -400,6 +112,9 @@ export async function POST(req: NextRequest) {
 const DeleteSchema = z.object({ id: z.string().min(1) });
 
 export async function DELETE(req: NextRequest) {
+  const r2 = r2Ready();
+  if (!r2) return NextResponse.json({ ok: true });
+
   let input;
   try {
     input = DeleteSchema.parse(await req.json() as unknown);
@@ -411,16 +126,10 @@ export async function DELETE(req: NextRequest) {
   }
 
   try {
-    await deleteWorkspaceProject(input.id);
-
-    let cloudDeleted = false;
-    try {
-      cloudDeleted = await deleteR2Project(input.id);
-    } catch (err) {
-      console.error("[api/projects] Failed to delete R2 project:", err);
-    }
-
-    return NextResponse.json({ ok: true, workspaceDeleted: true, cloudDeleted });
+    await r2.s3.send(
+      new DeleteObjectCommand({ Bucket: r2.bucket, Key: `projects/${input.id}.json` }),
+    );
+    return NextResponse.json({ ok: true });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Delete failed" },

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { generateObject } from "ai";
 import { z } from "zod";
 import { createHash } from "crypto";
-import { deepSeekReasonerModel } from "@/lib/ai-providers";
+import { deepSeekModel, deepSeekReasonerModel } from "@/lib/ai-providers";
 import {
   EbookManifestSchema,
   SectionDraftSchema,
@@ -26,8 +26,6 @@ const RequestSchema = z.object({
   instruction: z.string().min(1).max(4000),
   history: z.array(ChatMessageSchema).max(20).optional(),
   dryRun: z.boolean().optional(),
-  mode: z.enum(["edit", "critique", "applyPatch"]).optional(),
-  approvedPatch: z.lazy(() => EbookChangeSchema).optional(),
   manifestVersion: z.string().optional(),
   pipeline: z.object({
     stage: z.string(),
@@ -106,36 +104,8 @@ const EbookChangeSchema = z.object({
   summary: z.string(), // one-sentence description of what changed
 });
 
-const CritiqueResponseSchema = z.object({
-  summary: z.string(),
-  overview: z.string(),
-  confidence: z.enum(["high", "medium", "low"]).default("high"),
-  findings: z.array(z.object({
-    priority: z.enum(["high", "medium", "low"]),
-    location: z.string(),
-    diagnosis: z.string(),
-    rationale: z.string(),
-    recommendation: z.string(),
-    needsMoreSourceMaterial: z.boolean().default(false),
-  })).default([]),
-  proposedPatch: EbookChangeSchema.optional(),
-  approvalPrompt: z.string().default("Approve these amendments to apply them."),
-});
-
 export async function POST(req: NextRequest) {
-  let body: unknown;
-  try {
-    body = await req.json();
-  } catch (err) {
-    return NextResponse.json(
-      {
-        route: "ebook/assistant",
-        error: err instanceof Error ? err.message : "Invalid JSON payload",
-      },
-      { status: 400 }
-    );
-  }
-
+  const body = await req.json() as unknown;
   let input;
   try {
     input = RequestSchema.parse(body);
@@ -197,179 +167,73 @@ export async function POST(req: NextRequest) {
   const historyText = (history ?? []).map((m) => m.content).join(" ");
   const explicitRefs = parseExplicitSectionRefs(instruction + " " + historyText);
 
-  const selectedModel = deepSeekReasonerModel;
-
-  const cleanInstruction = instruction.replace(/\s+/g, " ").trim();
-
-  function parseDeterministicCommand(): z.infer<typeof EbookChangeSchema> | null {
-    const text = cleanInstruction;
-
-    const renameChapter = text.match(/^(?:rename|retitle|change\s+title\s+of)\s+chapter\s+(\d+)\s+(?:to|as)\s+(.+)$/i);
-    if (renameChapter) {
-      const chapterNumber = Number(renameChapter[1]);
-      const title = renameChapter[2].trim();
-      if (!title) return null;
-      return {
-        chapterPatches: [{ chapterNumber, title }],
-        summary: `Renamed Chapter ${chapterNumber} to "${title}".`,
-        confidence: "high",
-      };
-    }
-
-    const renameSection = text.match(/^(?:rename|retitle|change\s+title\s+of)\s+section\s+(\d+)[.\-](\d+)\s+(?:to|as)\s+(.+)$/i);
-    if (renameSection) {
-      const chapterNumber = Number(renameSection[1]);
-      const sectionNumber = Number(renameSection[2]);
-      const heading = renameSection[3].trim();
-      if (!heading) return null;
-      const chapter = manifest.chapters.find((ch) => ch.number === chapterNumber);
-      const section = chapter?.sections.find((s) => s.sectionNumber === sectionNumber);
-      if (!chapter || !section) {
-        return {
-          summary: `Could not find section ${chapterNumber}.${sectionNumber}.`,
-          confidence: "low",
-          clarificationNeeded: `I could not find section ${chapterNumber}.${sectionNumber}. Please confirm the chapter and section number.`,
-        };
-      }
-      return {
-        updatedSections: [{ ...section, chapterNumber, sectionNumber, heading }],
-        summary: `Renamed Section ${chapterNumber}.${sectionNumber} to "${heading}".`,
-        confidence: "high",
-      };
-    }
-
-    const bookTitle = text.match(/^(?:change|set|update)\s+(?:the\s+)?book\s+title\s+(?:to|as)\s+(.+)$/i)
-      || text.match(/^(?:change|set|update)\s+title\s+(?:to|as)\s+(.+)$/i);
-    if (bookTitle) {
-      const title = bookTitle[1].trim();
-      if (!title) return null;
-      return {
-        bookTitle: title,
-        summary: `Updated book title to "${title}".`,
-        confidence: "high",
-      };
-    }
-
-    const subtitle = text.match(/^(?:change|set|update)\s+(?:the\s+)?subtitle\s+(?:to|as)\s+(.+)$/i);
-    if (subtitle) {
-      const value = subtitle[1].trim();
-      if (!value) return null;
-      return {
-        subtitle: value,
-        summary: `Updated subtitle to "${value}".`,
-        confidence: "high",
-      };
-    }
-
-    const authorName = text.match(/^(?:change|set|update)\s+(?:the\s+)?author\s+name\s+(?:to|as)\s+(.+)$/i);
-    if (authorName) {
-      const value = authorName[1].trim();
-      if (!value) return null;
-      return {
-        authorName: value,
-        summary: `Updated author name to "${value}".`,
-        confidence: "high",
-      };
-    }
-
-    return null;
-  }
+  // Detect structural / high-reasoning operations that benefit from R1:
+  // Structural: reorder/move/merge/split/add/remove chapters or sections
+  // Book-wide: operations touching every chapter simultaneously
+  // Quality-fix: resolving a failed quality report across the manuscript
+  // Back matter generation: building glossary/scripture index from scratch
+  const isStructuralOp = /\b(reorder\s+chapter|move\s+(?:chapter|section)|merge\s+chapter|split\s+chapter|add\s+a?\s*chapter|remove\s+chapter|delete\s+chapter|restructure|reorganize|rearrange\s+chapter|add\s+a?\s*section|swap\s+chapter|fix\s+all|remove\s+all|add\s+(?:takeaways|questions|conclusions?)\s+to\s+all|book[- ]wide|across\s+all\s+chapters|every\s+chapter|fix\s+(?:the\s+)?(?:quality|issues?|errors?|problems?)|resolve\s+(?:quality|issues?)|build\s+(?:the\s+)?(?:glossary|scripture\s+index|back\s+matter|reading\s+guide)|generate\s+(?:the\s+)?(?:glossary|scripture\s+index|back\s+matter)|create\s+(?:the\s+)?(?:glossary|scripture\s+index|back\s+matter))\b/i.test(instruction);
+  const selectedModel = isStructuralOp ? deepSeekReasonerModel : deepSeekModel;
 
   // Track which sections are truncated so we can restore original content if the AI loses words
   const truncatedSections = new Set<string>();
 
-  function buildBookSummary(compact = false) {
-    return {
-      bookTitle: manifest.bookTitle,
-      subtitle: manifest.subtitle,
-      authorName: manifest.authorName,
-      totalWordCount: manifest.totalWordCount,
-      frontMatter: {
-        preface: compact ? safeExcerpt(manifest.frontMatter.preface, 800) : manifest.frontMatter.preface,
-        introduction: compact ? safeExcerpt(manifest.frontMatter.introduction, 800) : manifest.frontMatter.introduction,
-        conclusion: compact ? safeExcerpt(manifest.frontMatter.conclusion, 800) : manifest.frontMatter.conclusion,
-        aboutAuthor: compact ? safeExcerpt(manifest.frontMatter.aboutAuthor, 500) : manifest.frontMatter.aboutAuthor,
-        resourcesList: manifest.frontMatter.resourcesList,
-      },
-      backMatter: manifest.backMatter
-        ? {
-            glossaryTermCount: (manifest.backMatter.glossary ?? []).length,
-            glossary: compact ? (manifest.backMatter.glossary ?? []).slice(0, 40) : (manifest.backMatter.glossary ?? []),
-            readingGroupGuide: (manifest.backMatter.readingGroupGuide ?? []).map((c) => ({
-              chapterNumber: c.chapterNumber,
-              chapterTitle: c.chapterTitle,
-              questions: compact ? c.questions.slice(0, 3) : c.questions,
-            })),
-            scriptureIndex: compact ? (manifest.backMatter.scriptureIndex ?? []).slice(0, 60) : (manifest.backMatter.scriptureIndex ?? []),
-            recommendedResources: manifest.backMatter.recommendedResources ?? [],
-          }
-        : null,
-      chapters: manifest.chapters.map((ch) => ({
-        number: ch.number,
-        title: ch.title,
-        intro: compact ? safeExcerpt(ch.intro, 500) : ch.intro,
-        keyTakeaways: ch.keyTakeaways,
-        reflectionQuestions: ch.reflectionQuestions,
-        totalWordCount: ch.totalWordCount,
-        sections: ch.sections.map((s) => {
-          const fullBody = s.body ?? "";
-          const isExplicit = explicitRefs.has(`${ch.number}:${s.sectionNumber}`);
-          const limit = compact ? 2800 : 4000;
-          const excerptSize = compact ? 650 : 1200;
-          const isTruncated = !isExplicit && fullBody.length > limit;
-          if (isTruncated) {
-            truncatedSections.add(`${ch.number}:${s.sectionNumber}`);
-          }
-          return {
-            sectionNumber: s.sectionNumber,
-            chapterNumber: ch.number,
-            heading: s.heading,
-            body: isTruncated
-              ? safeExcerpt(fullBody, excerptSize) + "\n…[TRUNCATED — DO NOT MODIFY THIS SECTION. Return its body field as an empty string so the original is preserved]"
-              : fullBody,
-            wordCount: s.wordCount,
-          };
-        }),
-      })),
-    };
-  }
-
-  async function generateWithReasoner<T extends z.ZodTypeAny>(options: {
-    schema: T;
-    system: string;
-    historyLimit?: number;
-    compact?: boolean;
-    temperature?: number;
-  }): Promise<z.infer<T>> {
-    const selectedHistory = (history ?? []).slice(-(options.historyLimit ?? 14));
-    const prompt = [
-      "CURRENT BOOK STRUCTURE:",
-      JSON.stringify(buildBookSummary(options.compact ?? false), null, 2),
-      pipelineSummary ? ["CURRENT PIPELINE STATE:", JSON.stringify(pipelineSummary, null, 2)].join("\n") : "",
-      "",
-      ...(selectedHistory.length > 0
-        ? [
-            "CONVERSATION HISTORY (oldest first — use this to understand follow-up instructions):",
-            selectedHistory.map((m) => `${m.role === "user" ? "USER" : "DIRECTOR"}: ${m.content}`).join("\n"),
-            "",
-          ]
-        : []),
-      "CURRENT USER INSTRUCTION:",
-      instruction,
-    ].join("\n");
-
-    const { object } = await generateObject({
-      model: selectedModel,
-      schema: options.schema,
-      mode: "json",
-      maxTokens: 8000,
-      temperature: options.temperature ?? 0.15,
-      system: options.system,
-      prompt,
-    });
-
-    return object;
-  }
+  // Build a rich book context — front matter in full, section bodies as excerpts
+  // (full body sent for short sections; excerpted for long ones to stay within token budget)
+  const bookSummary = {
+    bookTitle: manifest.bookTitle,
+    subtitle: manifest.subtitle,
+    authorName: manifest.authorName,
+    totalWordCount: manifest.totalWordCount,
+    frontMatter: {
+      preface: manifest.frontMatter.preface,
+      introduction: manifest.frontMatter.introduction,
+      conclusion: manifest.frontMatter.conclusion,
+      aboutAuthor: manifest.frontMatter.aboutAuthor,
+      resourcesList: manifest.frontMatter.resourcesList,
+    },
+    backMatter: manifest.backMatter
+      ? {
+          glossaryTermCount: (manifest.backMatter.glossary ?? []).length,
+          glossary: manifest.backMatter.glossary ?? [],
+          readingGroupGuide: (manifest.backMatter.readingGroupGuide ?? []).map((c) => ({
+            chapterNumber: c.chapterNumber,
+            chapterTitle: c.chapterTitle,
+            questions: c.questions,
+          })),
+          scriptureIndex: manifest.backMatter.scriptureIndex ?? [],
+          recommendedResources: manifest.backMatter.recommendedResources ?? [],
+        }
+      : null,
+    chapters: manifest.chapters.map((ch) => ({
+      number: ch.number,
+      title: ch.title,
+      intro: ch.intro,
+      conclusion: ch.conclusion,
+      keyTakeaways: ch.keyTakeaways,
+      reflectionQuestions: ch.reflectionQuestions,
+      totalWordCount: ch.totalWordCount,
+      sections: ch.sections.map((s) => {
+        const fullBody = s.body ?? "";
+        const isExplicit = explicitRefs.has(`${ch.number}:${s.sectionNumber}`);
+        // Explicit sections are always sent in full; others truncated only if they exceed 4000 chars
+        const isTruncated = !isExplicit && fullBody.length > 4000;
+        if (isTruncated) {
+          truncatedSections.add(`${ch.number}:${s.sectionNumber}`);
+        }
+        return {
+          sectionNumber: s.sectionNumber,
+          chapterNumber: ch.number,
+          heading: s.heading,
+          // Send full body for explicit/short sections; excerpt for long background sections
+          body: isTruncated
+            ? safeExcerpt(fullBody, 1200) + "\n…[TRUNCATED — DO NOT MODIFY THIS SECTION. Return its body field as an empty string so the original is preserved]"
+            : fullBody,
+          wordCount: s.wordCount,
+        };
+      }),
+    })),
+  };
 
   const pipelineSummary = pipeline
     ? {
@@ -385,234 +249,14 @@ export async function POST(req: NextRequest) {
       }
     : null;
 
-  function applyChangeObject(
-    object: z.infer<typeof EbookChangeSchema>,
-    auditInstruction: string,
-    auditModel: "r1" | "v3"
-  ) {
-    // Merge updatedSections into the full manifest chapters
-    let mergedChapters = manifest.chapters;
-
-    if (object.chapterPatches && object.chapterPatches.length > 0) {
-      mergedChapters = mergedChapters.map((ch) => {
-        const patch = object.chapterPatches!.find((p) => p.chapterNumber === ch.number);
-        if (!patch) return ch;
-        const { chapterNumber: _ignored, ...fields } = patch;
-        return { ...ch, ...fields };
-      });
-    }
-
-    if (object.updatedSections && object.updatedSections.length > 0) {
-      mergedChapters = manifest.chapters.map((ch) => ({
-        ...ch,
-        sections: ch.sections.map((s) => {
-          const updated = object.updatedSections!.find(
-            (u) => u.chapterNumber === ch.number && u.sectionNumber === s.sectionNumber
-          );
-          if (!updated) return s;
-          const originalWords = (s.body ?? "").split(/\s+/).filter(Boolean).length;
-          const returnedWords = (updated.body ?? "").split(/\s+/).filter(Boolean).length;
-          const sectionKey = `${ch.number}:${s.sectionNumber}`;
-          const bodyToUse =
-            !updated.body ||
-            (!explicitRefs.has(sectionKey) && truncatedSections.has(sectionKey) && returnedWords < originalWords * 0.75)
-              ? s.body
-              : updated.body;
-          return { ...updated, body: bodyToUse };
-        }),
-      }));
-    }
-
-    if (object.chapters) {
-      mergedChapters = object.chapters.map((returnedCh) => {
-        const originalCh = manifest.chapters.find((c) => c.number === returnedCh.number);
-        if (!originalCh) return returnedCh;
-        return {
-          ...returnedCh,
-          sections: (returnedCh.sections ?? []).map((returnedSection) => {
-            const originalSection = originalCh.sections.find(
-              (s) => s.sectionNumber === returnedSection.sectionNumber
-            );
-            if (!originalSection) return returnedSection;
-            const key = `${returnedCh.number}:${returnedSection.sectionNumber}`;
-            const wasTruncated = truncatedSections.has(key);
-            const originalWords = (originalSection.body ?? "").split(/\s+/).filter(Boolean).length;
-            const returnedWords = (returnedSection.body ?? "").split(/\s+/).filter(Boolean).length;
-            const bodyToUse =
-              !explicitRefs.has(key) && wasTruncated && (!returnedSection.body || returnedWords < originalWords * 0.75)
-                ? originalSection.body
-                : returnedSection.body;
-            return { ...returnedSection, body: bodyToUse };
-          }),
-        };
-      });
-    }
-
-    const lowerInstruction = auditInstruction.toLowerCase();
-    const clearIntent = /\b(clear|remove|delete|wipe|reset)\b/i;
-    const glossaryIntent = /\bglossary\b/i;
-    const scriptureIntent = /\bscripture\s*index|index\s+of\s+scripture\b/i;
-    const guideIntent = /\breading\s+group\s+guide|discussion\s+questions?|study\s+guide\b/i;
-    const resourcesIntent = /\brecommended\s+resources?|resources\b/i;
-
-    let mergedBackMatter = manifest.backMatter ?? null;
-    if (object.backMatter !== undefined) {
-      const next = {
-        scriptureIndex: mergedBackMatter?.scriptureIndex ?? [],
-        glossary: mergedBackMatter?.glossary ?? [],
-        readingGroupGuide: mergedBackMatter?.readingGroupGuide ?? [],
-        recommendedResources: mergedBackMatter?.recommendedResources ?? [],
-      };
-
-      const hasOwn = (k: keyof z.infer<typeof BackMatterPatchSchema>) =>
-        Object.prototype.hasOwnProperty.call(object.backMatter, k);
-
-      if (hasOwn("scriptureIndex")) {
-        const v = object.backMatter.scriptureIndex;
-        if (v !== undefined && (v.length > 0 || (v.length === 0 && clearIntent.test(lowerInstruction) && scriptureIntent.test(lowerInstruction)))) {
-          next.scriptureIndex = v;
-        }
-      }
-      if (hasOwn("glossary")) {
-        const v = object.backMatter.glossary;
-        if (v !== undefined && (v.length > 0 || (v.length === 0 && clearIntent.test(lowerInstruction) && glossaryIntent.test(lowerInstruction)))) {
-          next.glossary = v;
-        }
-      }
-      if (hasOwn("readingGroupGuide")) {
-        const v = object.backMatter.readingGroupGuide;
-        if (v !== undefined && (v.length > 0 || (v.length === 0 && clearIntent.test(lowerInstruction) && guideIntent.test(lowerInstruction)))) {
-          next.readingGroupGuide = v;
-        }
-      }
-      if (hasOwn("recommendedResources")) {
-        const v = object.backMatter.recommendedResources;
-        if (v !== undefined && (v.length > 0 || (v.length === 0 && clearIntent.test(lowerInstruction) && resourcesIntent.test(lowerInstruction)))) {
-          next.recommendedResources = v;
-        }
-      }
-
-      mergedBackMatter = next;
-    }
-
-    const updatedManifest = {
-      ...manifest,
-      ...(object.bookTitle !== undefined && { bookTitle: object.bookTitle }),
-      ...(object.subtitle !== undefined && { subtitle: object.subtitle }),
-      ...(object.authorName !== undefined && { authorName: object.authorName }),
-      ...(object.frontMatter !== undefined && { frontMatter: object.frontMatter }),
-      ...(mergedBackMatter !== null && { backMatter: mergedBackMatter }),
-      chapters: mergedChapters,
-    };
-
-    const hasChanges =
-      object.chapterPatches?.length ||
-      object.updatedSections?.length ||
-      object.chapters?.length ||
-      object.frontMatter !== undefined ||
-      object.backMatter !== undefined ||
-      object.libraryPatch !== undefined ||
-      object.bookTitle !== undefined ||
-      object.subtitle !== undefined ||
-      object.authorName !== undefined;
-
-    if (!hasChanges) {
-      return { noChanges: true as const, summary: object.summary };
-    }
-
-    const harmonized = harmonizeBookManifest(updatedManifest as typeof manifest);
-    const changeLogEntry = {
-      timestamp: new Date().toISOString(),
-      instruction: auditInstruction.slice(0, 200),
-      summary: object.summary,
-      model: auditModel,
-    };
-    const existingLog = (manifest.changeLog ?? []) as typeof changeLogEntry[];
-    harmonized.changeLog = [...existingLog, changeLogEntry].slice(-50);
-
-    const validated = EbookManifestSchema.safeParse(harmonized);
-    if (!validated.success) {
-      throw new Error(`Manifest validation failed: ${validated.error.issues[0]?.message}`);
-    }
-
-    return {
-      manifest: validated.data,
-      summary: object.summary,
-      confidence: object.confidence,
-      manifestVersion: computeManifestVersion(validated.data),
-      ...(object.clarificationNeeded && { clarificationNeeded: object.clarificationNeeded }),
-      ...(object.libraryPatch !== undefined && { libraryPatch: object.libraryPatch }),
-    };
-  }
-
   try {
-    const deterministic = parseDeterministicCommand();
-    if (deterministic && input.mode !== "critique") {
-      return NextResponse.json(applyChangeObject(deterministic, instruction, "r1"), { status: 200 });
-    }
-
-    if (input.mode === "applyPatch") {
-      if (!input.approvedPatch) {
-        return NextResponse.json({ error: "No approved patch provided." }, { status: 400 });
-      }
-      return NextResponse.json(applyChangeObject(input.approvedPatch, `Approved amendment: ${instruction}`, "r1"), { status: 200 });
-    }
-
-    if (input.mode === "critique") {
-      const critiqueSystem = `You are the Nexus Book Director in critical-reasoning mode.
-
-Your job is to evaluate this book like a rigorous editorial strategist.
-
-NON-NEGOTIABLE RULES:
-- Work only from the manuscript and pipeline context provided.
-- Do not invent new theology, stories, or examples.
-- If the book lacks enough source material for a stronger treatment, say so explicitly.
-- Distinguish between:
-  1. issues that can be improved by reorganizing or tightening existing material
-  2. issues that need more source material from the speaker before they should be revised
-
-OUTPUT REQUIREMENTS:
-- overview: a concise top-level assessment of manuscript quality and biggest leverage points.
-- findings: specific, high-signal diagnoses with location, rationale, and recommendation.
-- proposedPatch: include only if you can safely propose concrete amendments using existing material.
-- Do not apply anything. This is a proposal for approval.
-- approvalPrompt should tell the user to approve if they want the amendments applied.
-- Keep proposedPatch limited to high-confidence changes that preserve speaker fidelity.
-- If a chapter/section is thin because the book lacks evidence, set needsMoreSourceMaterial=true for that finding instead of faking an amendment.
-`;
-
-      let object: z.infer<typeof CritiqueResponseSchema>;
-      try {
-        object = await generateWithReasoner({
-          schema: CritiqueResponseSchema,
-          system: critiqueSystem,
-          historyLimit: 14,
-          compact: false,
-          temperature: 0.2,
-        });
-      } catch {
-        object = await generateWithReasoner({
-          schema: CritiqueResponseSchema,
-          system: critiqueSystem,
-          historyLimit: 8,
-          compact: true,
-          temperature: 0.15,
-        });
-      }
-
-      return NextResponse.json({
-        mode: "critique",
-        summary: object.summary,
-        overview: object.overview,
-        findings: object.findings,
-        confidence: object.confidence,
-        proposedPatch: object.proposedPatch,
-        approvalPrompt: object.approvalPrompt,
-        manifestVersion: currentVersion,
-      }, { status: 200 });
-    }
-
-    const editSystem = `You are the Nexus Book Director — a precision ebook editor with MAXIMUM AUTHORITY over every part of this published teaching book. You receive the full book structure and can make any change the user requests.
+    const { object } = await generateObject({
+      model: selectedModel,
+      schema: EbookChangeSchema,
+      mode: "json",
+      maxTokens: 8000,
+      temperature: 0.15,
+      system: `You are the Nexus Book Director — a precision ebook editor with MAXIMUM AUTHORITY over every part of this published teaching book. You receive the full book structure and can make any change the user requests.
 
 ════════════════════════════════════════════
 SPEAKER-FIDELITY LAW — NON-NEGOTIABLE
@@ -748,26 +392,23 @@ OUTPUT RULES
 - If the instruction is ambiguous, make the most useful interpretation and describe what you did in summary
 - ALWAYS attempt the instruction — never refuse or treat instructions as comments
 - If you make ANY change, you MUST include the corresponding change fields (chapterPatches, updatedSections, chapters, frontMatter, etc.). Returning ONLY summary with no change fields = zero manuscript changes. The user will see your summary but the book will be IDENTICAL.
-- Only return empty change fields when the user is asking a question ("show me...", "explain...") — not for edit instructions`;
-
-    let object: z.infer<typeof EbookChangeSchema>;
-    try {
-      object = await generateWithReasoner({
-        schema: EbookChangeSchema,
-        system: editSystem,
-        historyLimit: 14,
-        compact: false,
-        temperature: 0.15,
-      });
-    } catch {
-      object = await generateWithReasoner({
-        schema: EbookChangeSchema,
-        system: editSystem,
-        historyLimit: 8,
-        compact: true,
-        temperature: 0.1,
-      });
-    }
+- Only return empty change fields when the user is asking a question ("show me...", "explain...") — not for edit instructions`,
+      prompt: [
+        "CURRENT BOOK STRUCTURE:",
+        JSON.stringify(bookSummary, null, 2),
+        pipelineSummary ? ["CURRENT PIPELINE STATE:", JSON.stringify(pipelineSummary, null, 2)].join("\n") : "",
+        "",
+        ...(history && history.length > 0
+          ? [
+              "CONVERSATION HISTORY (oldest first — use this to understand follow-up instructions):",
+              history.map((m) => `${m.role === "user" ? "USER" : "DIRECTOR"}: ${m.content}`).join("\n"),
+              "",
+            ]
+          : []),
+        "CURRENT USER INSTRUCTION:",
+        instruction,
+      ].join("\n"),
+    });
 
     // ── Dry-run: return the AI patch without applying it ────────────────────────
     // The client can diff this against the current manifest and show a preview
@@ -796,7 +437,178 @@ OUTPUT RULES
         manifestVersion: currentVersion,
       }, { status: 200 });
     }
-    return NextResponse.json(applyChangeObject(object, instruction, "r1"), { status: 200 });
+
+    // Merge updatedSections into the full manifest chapters
+    let mergedChapters = manifest.chapters;
+
+    // Apply lightweight chapter-level patches first (title, intro, conclusion, takeaways, etc.)
+    if (object.chapterPatches && object.chapterPatches.length > 0) {
+      mergedChapters = mergedChapters.map((ch) => {
+        const patch = object.chapterPatches!.find((p) => p.chapterNumber === ch.number);
+        if (!patch) return ch;
+        const { chapterNumber: _ignored, ...fields } = patch;
+        return { ...ch, ...fields };
+      });
+    }
+
+    if (object.updatedSections && object.updatedSections.length > 0) {
+      mergedChapters = manifest.chapters.map((ch) => ({
+        ...ch,
+        sections: ch.sections.map((s) => {
+          const updated = object.updatedSections!.find(
+            (u) => u.chapterNumber === ch.number && u.sectionNumber === s.sectionNumber
+          );
+          if (!updated) return s;
+          // Safety guard: if the returned body is empty or drastically shorter than original,
+          // restore the original body to prevent content loss on truncated sections
+          const originalWords = (s.body ?? "").split(/\s+/).filter(Boolean).length;
+          const returnedWords = (updated.body ?? "").split(/\s+/).filter(Boolean).length;
+          // For explicitly requested sections, trust the AI's non-empty response.
+          // For truncated background sections, restore original if content loss > 25%.
+          const sectionKey = `${ch.number}:${s.sectionNumber}`;
+          const bodyToUse =
+            !updated.body ||
+            (!explicitRefs.has(sectionKey) && truncatedSections.has(sectionKey) && returnedWords < originalWords * 0.75)
+              ? s.body
+              : updated.body;
+          return { ...updated, body: bodyToUse };
+        }),
+      }));
+    }
+
+    // If chapters array was explicitly returned, use that instead,
+    // but restore original bodies for any truncated sections where content was lost
+    if (object.chapters) {
+      mergedChapters = object.chapters.map((returnedCh) => {
+        const originalCh = manifest.chapters.find((c) => c.number === returnedCh.number);
+        if (!originalCh) return returnedCh;
+        return {
+          ...returnedCh,
+          sections: (returnedCh.sections ?? []).map((returnedSection) => {
+            const originalSection = originalCh.sections.find(
+              (s) => s.sectionNumber === returnedSection.sectionNumber
+            );
+            if (!originalSection) return returnedSection;
+            const key = `${returnedCh.number}:${returnedSection.sectionNumber}`;
+            const wasTruncated = truncatedSections.has(key);
+            const originalWords = (originalSection.body ?? "").split(/\s+/).filter(Boolean).length;
+            const returnedWords = (returnedSection.body ?? "").split(/\s+/).filter(Boolean).length;
+            // Restore original body if: section was truncated (not explicitly requested) AND body is empty or lossy
+            const bodyToUse =
+              !explicitRefs.has(key) && wasTruncated && (!returnedSection.body || returnedWords < originalWords * 0.75)
+                ? originalSection.body
+                : returnedSection.body;
+            return { ...returnedSection, body: bodyToUse };
+          }),
+        };
+      });
+    }
+
+    const lowerInstruction = instruction.toLowerCase();
+    const clearIntent = /\b(clear|remove|delete|wipe|reset)\b/i;
+    const glossaryIntent = /\bglossary\b/i;
+    const scriptureIntent = /\bscripture\s*index|index\s+of\s+scripture\b/i;
+    const guideIntent = /\breading\s+group\s+guide|discussion\s+questions?|study\s+guide\b/i;
+    const resourcesIntent = /\brecommended\s+resources?|resources\b/i;
+
+    // Merge back matter patch — only overwrite keys explicitly returned,
+    // and do not treat empty arrays as destructive unless user asked to clear that box.
+    let mergedBackMatter = manifest.backMatter ?? null;
+    if (object.backMatter !== undefined) {
+      const next = {
+        scriptureIndex: mergedBackMatter?.scriptureIndex ?? [],
+        glossary: mergedBackMatter?.glossary ?? [],
+        readingGroupGuide: mergedBackMatter?.readingGroupGuide ?? [],
+        recommendedResources: mergedBackMatter?.recommendedResources ?? [],
+      };
+
+      const hasOwn = (k: keyof z.infer<typeof BackMatterPatchSchema>) =>
+        Object.prototype.hasOwnProperty.call(object.backMatter, k);
+
+      if (hasOwn("scriptureIndex")) {
+        const v = object.backMatter.scriptureIndex;
+        if (v !== undefined && (v.length > 0 || (v.length === 0 && clearIntent.test(lowerInstruction) && scriptureIntent.test(lowerInstruction)))) {
+          next.scriptureIndex = v;
+        }
+      }
+      if (hasOwn("glossary")) {
+        const v = object.backMatter.glossary;
+        if (v !== undefined && (v.length > 0 || (v.length === 0 && clearIntent.test(lowerInstruction) && glossaryIntent.test(lowerInstruction)))) {
+          next.glossary = v;
+        }
+      }
+      if (hasOwn("readingGroupGuide")) {
+        const v = object.backMatter.readingGroupGuide;
+        if (v !== undefined && (v.length > 0 || (v.length === 0 && clearIntent.test(lowerInstruction) && guideIntent.test(lowerInstruction)))) {
+          next.readingGroupGuide = v;
+        }
+      }
+      if (hasOwn("recommendedResources")) {
+        const v = object.backMatter.recommendedResources;
+        if (v !== undefined && (v.length > 0 || (v.length === 0 && clearIntent.test(lowerInstruction) && resourcesIntent.test(lowerInstruction)))) {
+          next.recommendedResources = v;
+        }
+      }
+
+      mergedBackMatter = next;
+    }
+
+    const updatedManifest = {
+      ...manifest,
+      ...(object.bookTitle  !== undefined && { bookTitle:  object.bookTitle }),
+      ...(object.subtitle   !== undefined && { subtitle:   object.subtitle }),
+      ...(object.authorName !== undefined && { authorName: object.authorName }),
+      ...(object.frontMatter !== undefined && { frontMatter: object.frontMatter }),
+      ...(mergedBackMatter !== null && { backMatter: mergedBackMatter }),
+      chapters: mergedChapters,
+    };
+
+    // Detect whether the AI actually produced any change fields.
+    // If all change fields are absent, the manuscript would be identical to the input —
+    // return noChanges so the client can warn the user instead of silently confirming.
+    const hasChanges =
+      object.chapterPatches?.length ||
+      object.updatedSections?.length ||
+      object.chapters?.length ||
+      object.frontMatter !== undefined ||
+      object.backMatter  !== undefined ||
+      object.libraryPatch !== undefined ||
+      object.bookTitle   !== undefined ||
+      object.subtitle    !== undefined ||
+      object.authorName  !== undefined;
+
+    if (!hasChanges) {
+      return NextResponse.json({ noChanges: true, summary: object.summary }, { status: 200 });
+    }
+
+    const harmonized = harmonizeBookManifest(updatedManifest);
+
+    // ── Append audit trail entry ─────────────────────────────────────────────
+    const changeLogEntry = {
+      timestamp:   new Date().toISOString(),
+      instruction: instruction.slice(0, 200),
+      summary:     object.summary,
+      model:       (isStructuralOp ? "r1" : "v3") as "r1" | "v3",
+    };
+    const existingLog = (manifest.changeLog ?? []) as typeof changeLogEntry[];
+    harmonized.changeLog = [...existingLog, changeLogEntry].slice(-50);
+
+    const validated = EbookManifestSchema.safeParse(harmonized);
+    if (!validated.success) {
+      return NextResponse.json(
+        { error: `Manifest validation failed: ${validated.error.issues[0]?.message}` },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({
+      manifest:        validated.data,
+      summary:         object.summary,
+      confidence:      object.confidence,
+      manifestVersion: computeManifestVersion(validated.data!),
+      ...(object.clarificationNeeded && { clarificationNeeded: object.clarificationNeeded }),
+      ...(object.libraryPatch !== undefined && { libraryPatch: object.libraryPatch }),
+    }, { status: 200 });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Ebook assistant failed";
     return NextResponse.json({ error: message }, { status: 500 });

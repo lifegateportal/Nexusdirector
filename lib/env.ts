@@ -23,26 +23,10 @@ const EnvironmentSchema = z.object({
   RUNPOD_API_KEY:             z.string().optional(),
   RUNPOD_VOICE_ENDPOINT_ID:   z.string().optional(), // RunPod Serverless endpoint ID
   RUNPOD_ENDPOINT_ID:         z.string().optional(), // Backward-compatible alias
-  EBOOK_STRICT_ARCHITECT_OVERLAP_GATE: z
-    .enum(["true", "false"])
-    .optional()
-    .transform((value) => value === "true"),
+  EBOOK_STRICT_ARCHITECT_OVERLAP_GATE: z.enum(["true", "false"]).optional().transform((value) => value !== "false"),
 });
 
-const isBuildPhase =
-  process.env.NEXT_PHASE === "phase-production-build" ||
-  process.env.NEXT_PHASE === "phase-export";
-
-const parsed = EnvironmentSchema.safeParse(
-  isBuildPhase
-    ? {
-        ...process.env,
-        GOOGLE_GENERATIVE_AI_API_KEY: process.env.GOOGLE_GENERATIVE_AI_API_KEY ?? "build-placeholder",
-        DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY ?? "build-placeholder",
-        ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ?? "build-placeholder",
-      }
-    : process.env
-);
+const parsed = EnvironmentSchema.safeParse(process.env);
 
 if (!parsed.success) {
   const issues = parsed.error.issues

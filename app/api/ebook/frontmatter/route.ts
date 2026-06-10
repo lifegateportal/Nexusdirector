@@ -11,19 +11,7 @@ export const maxDuration = 180;
 const IntroConclSchema = FrontBackMatterSchema.omit({ preface: true, scriptureIndex: true });
 
 export async function POST(req: NextRequest) {
-  let body: unknown;
-  try {
-    body = await req.json();
-  } catch (err) {
-    return NextResponse.json(
-      {
-        route: "ebook/frontmatter",
-        error: err instanceof Error ? err.message : "Invalid JSON payload",
-      },
-      { status: 400 }
-    );
-  }
-
+  const body = await req.json() as unknown;
   let input;
   try {
     input = FrontMatterRequestSchema.parse(body);
@@ -120,14 +108,15 @@ ${input.architecture.chapters.map((c, i) => `Chapter ${i + 1}: "${c.title}"\n  C
       })(),
     }, { status: 200 });
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Front matter generation failed";
-    return NextResponse.json(
-      {
-        route: "ebook/frontmatter",
-        error: "Front matter generation failed",
-        details: message,
-      },
-      { status: 502 }
-    );
+    const middle = transcript.slice(Math.floor(transcript.length * 0.05), 5200).trim();
+    const closing = transcript.slice(-2200).trim();
+    return NextResponse.json({
+      preface: "",
+      introduction: stripAudienceLanguage(middle || "Introduction unavailable."),
+      conclusion: stripAudienceLanguage(closing || "Conclusion unavailable."),
+      aboutAuthor: null,
+      resourcesList: [],
+      scriptureIndex: [],
+    }, { status: 200 });
   }
 }

@@ -60,14 +60,6 @@ function isViewIntent(text: string): boolean {
   return /\b(show\s+(?:me\s+)?(?:the\s+)?(?:book|chapters?|contents?|toc|table\s+of\s+contents?|overview|summary|outline|structure|sections?|layout)|view\s+(?:book|chapters?|contents?|structure|outline)|list\s+(?:chapters?|sections?|contents?)|how\s+many\s+(chapters?|sections?)|what.{0,10}(chapters?|sections?|in\s+the\s+book)|book\s+(outline|structure|layout|contents?)|what.{0,10}book\s+look|table\s+of\s+contents?)\b/i.test(text);
 }
 
-function isCritiqueIntent(text: string): boolean {
-  return /\b(critique|critical\s+thinking|editorial\s+review|reason\s+through|what\s+needs\s+more\s+material|needs\s+more\s+material|what\s+needs\s+amendment|suggest\s+amendments?|recommend\s+amendments?|where\s+is\s+the\s+book\s+weak|weak\s+areas?|gaps?\s+in\s+the\s+book|improvement\s+plan|review\s+the\s+manuscript|analyze\s+the\s+manuscript|assess\s+the\s+book)\b/i.test(text);
-}
-
-function isApprovalIntent(text: string): boolean {
-  return /^\s*(approve|apply|yes|go\s+ahead|do\s+it|implement)(?:\s+the)?(?:\s+amendments?|\s+changes?|\s+proposal)?\s*$/i.test(text);
-}
-
 // ── Client-side book table of contents ───────────────────────────────────────
 function buildBookToc(manifest: EbookManifest): string {
   const lines: string[] = [
@@ -177,48 +169,6 @@ function formatAuditReport(r: BookAuditReport): string {
   return lines.join("\n");
 }
 
-type CritiqueFinding = {
-  priority: "high" | "medium" | "low";
-  location: string;
-  diagnosis: string;
-  rationale: string;
-  recommendation: string;
-  needsMoreSourceMaterial: boolean;
-};
-
-function formatCritiqueReport(payload: {
-  summary: string;
-  overview: string;
-  findings: CritiqueFinding[];
-  approvalPrompt?: string;
-  hasProposedPatch: boolean;
-}): string {
-  const lines: string[] = [
-    `Reasoner review: ${payload.summary}`,
-    "",
-    payload.overview,
-  ];
-
-  if (payload.findings.length > 0) {
-    lines.push("", "Priority findings:");
-    for (const finding of payload.findings.slice(0, 8)) {
-      lines.push(`- [${finding.priority.toUpperCase()}] ${finding.location}: ${finding.diagnosis}`);
-      lines.push(`  Why: ${finding.rationale}`);
-      lines.push(`  Amendment: ${finding.recommendation}`);
-      if (finding.needsMoreSourceMaterial) {
-        lines.push("  Source gap: this likely needs more transcript material before revision.");
-      }
-    }
-  }
-
-  lines.push("");
-  lines.push(payload.hasProposedPatch
-    ? (payload.approvalPrompt ?? "Approve these amendments to apply them.")
-    : "No safe manuscript patch was proposed yet. You can ask for a narrower amendment or provide more source material.");
-
-  return lines.join("\n");
-}
-
 export function AssistantPanel({ isOpen, onClose, academy, onUpdate, siteConfig, onSiteUpdate, ebookManifest, onEbookUpdate, ebookPipelineSnapshot, loadedHistory, loadKey, onChatChange }: AssistantPanelProps) {
   const [messages, setMessages] = useState<Message[]>([
     { role: "system", content: IDLE_HINT },
@@ -226,7 +176,6 @@ export function AssistantPanel({ isOpen, onClose, academy, onUpdate, siteConfig,
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [showChips, setShowChips] = useState(false);
-  const [pendingEbookPatch, setPendingEbookPatch] = useState<unknown | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -241,14 +190,13 @@ export function AssistantPanel({ isOpen, onClose, academy, onUpdate, siteConfig,
   // Update greeting when academy or ebook first loads (only if no project history was restored)
   useEffect(() => {
     if (loadKey) return; // project load handles its own history
-    setPendingEbookPatch(null);
     if (ebookManifest) {
       const pipelineStatus = ebookPipelineSnapshot
         ? `Pipeline: ${ebookPipelineSnapshot.stage} | Review ready: ${ebookPipelineSnapshot.reviewReady ? "yes" : "no"} | Quality: ${ebookPipelineSnapshot.qualityReport ? `${ebookPipelineSnapshot.qualityReport.score}/100` : "pending"}`
         : "Pipeline: connected";
       setMessages([{
         role: "system",
-        content: `Book loaded: "${ebookManifest.bookTitle}" by ${ebookManifest.authorName} — ${ebookManifest.chapters.length} chapters, ${ebookManifest.totalWordCount.toLocaleString()} words.\n${pipelineStatus}\n\nReasoner mode is active. You can ask for direct edits, or ask for a critical review with suggested amendments and approve them after review.`,
+        content: `Book loaded: "${ebookManifest.bookTitle}" by ${ebookManifest.authorName} — ${ebookManifest.chapters.length} chapters, ${ebookManifest.totalWordCount.toLocaleString()} words.\n${pipelineStatus}\n\nYou can ask me to change the title, rename chapters, edit section headings, update takeaways, revise the preface, rewrite chapter sections, and make targeted book-wide edits.`,
       }]);
     } else if (academy) {
       const lessonCount = academy.curriculum.flatMap((m) => m.lessons).length;
@@ -325,66 +273,18 @@ export function AssistantPanel({ isOpen, onClose, academy, onUpdate, siteConfig,
 
       // ── Route to ebook assistant when a book manifest is loaded ────────────
       if (ebookManifest && onEbookUpdate) {
-        if (pendingEbookPatch && isApprovalIntent(text)) {
-          const res = await fetch("/api/ebook/assistant", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              manifest: ebookManifest,
-              instruction: text,
-              mode: "applyPatch",
-              approvedPatch: pendingEbookPatch,
-              pipeline: ebookPipelineSnapshot ?? undefined,
-              manifestVersion: (ebookManifest as Record<string, unknown>).__version as string | undefined,
-            }),
-          });
-          const json = await res.json() as {
-            manifest?: unknown;
-            summary?: string;
-            noChanges?: boolean;
-            error?: string;
-            manifestVersion?: string;
-            confidence?: "high" | "medium" | "low";
-            libraryPatch?: { slug: string; title?: string; subtitle?: string; authorName?: string; synopsis?: string; coverAccent?: string };
-          };
-          if (!res.ok || json.error) throw new Error(json.error ?? `HTTP ${res.status}`);
-          if (json.noChanges) {
-            setPendingEbookPatch(null);
-            setMessages((prev) => [...prev, { role: "assistant", content: json.summary ?? "No changes were applied." }]);
-            return;
-          }
-          if (json.libraryPatch) {
-            await fetch("/api/ebook/publish", {
-              method: "PATCH",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(json.libraryPatch),
-            }).catch(() => {});
-          }
-          const parsed = EbookManifestSchema.safeParse(json.manifest);
-          if (!parsed.success) throw new Error("Invalid ebook manifest returned from assistant");
-          const manifestWithVersion = json.manifestVersion
-            ? { ...parsed.data, __version: json.manifestVersion }
-            : parsed.data;
-          onEbookUpdate(manifestWithVersion as typeof parsed.data, json.summary ?? "Amendments applied.");
-          setPendingEbookPatch(null);
-          setMessages((prev) => [...prev, { role: "assistant", content: json.summary ?? "Approved amendments applied." }]);
-          return;
-        }
-
         // Send the last 14 turns (7 exchanges) of user/assistant chat so the AI
         // understands follow-up instructions like "make it longer" or "fix that".
         const historyForApi = messages
           .filter((m) => m.role === "user" || m.role === "assistant")
           .slice(-14)
           .map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
-        const critiqueMode = isCritiqueIntent(text);
         const res = await fetch("/api/ebook/assistant", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             manifest: ebookManifest,
             instruction: text,
-            mode: critiqueMode ? "critique" : "edit",
             history: historyForApi,
             pipeline: ebookPipelineSnapshot ?? undefined,
             manifestVersion: (ebookManifest as Record<string, unknown>).__version as string | undefined,
@@ -393,10 +293,6 @@ export function AssistantPanel({ isOpen, onClose, academy, onUpdate, siteConfig,
         const json = await res.json() as {
           manifest?: unknown;
           summary?: string;
-          overview?: string;
-          findings?: CritiqueFinding[];
-          approvalPrompt?: string;
-          proposedPatch?: unknown;
           noChanges?: boolean;
           error?: string;
           code?: string;
@@ -411,21 +307,6 @@ export function AssistantPanel({ isOpen, onClose, academy, onUpdate, siteConfig,
           return;
         }
         if (!res.ok || json.error) throw new Error(json.error ?? `HTTP ${res.status}`);
-        if (critiqueMode) {
-          const nextPatch = json.proposedPatch ?? null;
-          setPendingEbookPatch(nextPatch);
-          setMessages((prev) => [...prev, {
-            role: "assistant",
-            content: formatCritiqueReport({
-              summary: json.summary ?? "Reasoner review complete.",
-              overview: json.overview ?? "",
-              findings: json.findings ?? [],
-              approvalPrompt: json.approvalPrompt,
-              hasProposedPatch: Boolean(nextPatch),
-            }),
-          }]);
-          return;
-        }
         if (json.needsClarification && json.clarificationNeeded) {
           setMessages((prev) => [...prev, { role: "assistant", content: `❓ I need a bit more detail before I can make this change:\n\n**${json.clarificationNeeded}**` }]);
           return;
@@ -558,7 +439,7 @@ export function AssistantPanel({ isOpen, onClose, academy, onUpdate, siteConfig,
             <p className="text-sm font-bold text-slate-100">Nexus Director AI</p>
             <p className="text-[11px] text-slate-500">
               {ebookManifest
-                ? "Reasoner-backed book editor and critic"
+                ? "Edit your book with natural language"
                 : "Edit your academy with natural language"}
             </p>
             {ebookManifest && ebookPipelineSnapshot && (
@@ -599,8 +480,6 @@ export function AssistantPanel({ isOpen, onClose, academy, onUpdate, siteConfig,
                       {([
                         ["Full audit", "Audit the book"],
                         ["View contents", "Show me the table of contents"],
-                        ["Critical review", "Give me a critical review of this manuscript and suggest amendments for approval"],
-                        ["Weak areas", "What areas of this book need more material or amendment?"],
                         ["Repetition check", "Check for concept duplicates and repeated content"],
                         ["Overused words", "Show overused words in the book"],
                         ["Similar sections", "Show structurally similar sections"],

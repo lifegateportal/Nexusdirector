@@ -3,25 +3,13 @@ import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { env } from "@/lib/env";
 import { ExportRequestSchema } from "@/lib/schemas/ebook";
-import { generatePdfBuffer, generateEpubBuffer, generateDocxBuffer } from "@/lib/ebook-generator";
+import { generatePdfBuffer, generateEpubBuffer, generateDocxBuffer } from "@/lib/ebook-generator.tsx";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
 
 export async function POST(req: NextRequest) {
-  let body: unknown;
-  try {
-    body = await req.json();
-  } catch (err) {
-    return NextResponse.json(
-      {
-        route: "ebook/export",
-        error: err instanceof Error ? err.message : "Invalid JSON payload",
-      },
-      { status: 400 }
-    );
-  }
-
+  const body = await req.json() as unknown;
   let input;
   try {
     input = ExportRequestSchema.parse(body);
@@ -30,10 +18,6 @@ export async function POST(req: NextRequest) {
   }
 
   const { manifest, formats, template } = input;
-  if (!Array.isArray(manifest.chapters) || manifest.chapters.length === 0) {
-    return NextResponse.json({ error: "Manifest must include at least one chapter to export." }, { status: 422 });
-  }
-
   const safeBookTitle = typeof manifest.bookTitle === "string" ? manifest.bookTitle : "ebook";
   const slug = safeBookTitle
     .toLowerCase()
@@ -58,7 +42,7 @@ export async function POST(req: NextRequest) {
 
     // ── Generate DOCX ───────────────────────────────────────────────────────────
     if (formats.docx) {
-      const docxBuffer = await generateDocxBuffer(manifest, template);
+      const docxBuffer = await generateDocxBuffer(manifest, template, input.printSpec);
       results.docxUrl = await uploadOrStream(
         docxBuffer,
         `${prefix}.docx`,
@@ -72,6 +56,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       route: "ebook/export",
       error: message,
+      details: err instanceof Error && err.stack
+        ? err.stack.split("\n").slice(0, 3).join(" | ")
+        : undefined,
     }, { status: 500 });
   }
 }

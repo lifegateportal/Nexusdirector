@@ -1,14 +1,11 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  output: "standalone",
-  productionBrowserSourceMaps: false,
   serverExternalPackages: ["@deepgram/sdk", "epub-gen-memory", "pdfkit"],
   experimental: {
     serverActions: { bodySizeLimit: "30mb" },
-    optimizePackageImports: ["ai", "zod"],
   },
-  allowedDevOrigins: ["*.replit.dev", "*.replit.app", "*.riker.replit.dev"],
+  allowedDevOrigins: ["*"],
   outputFileTracingIncludes: {
     "/api/ebook/export": ["./node_modules/pdfkit/js/data/**/*"],
   },

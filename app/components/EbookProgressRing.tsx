@@ -47,13 +47,13 @@ export function EbookProgressRing({
         {/* Center text — counter-rotate so it reads normally */}
         <text
           x={size / 2}
-          y={size / 2}
+          y={size / 2 + 1}
           textAnchor="middle"
           dominantBaseline="middle"
           fontSize={size * 0.22}
           fontFamily="ui-monospace, monospace"
           fill={pct === 1 ? "#34d399" : "#06b6d4"}
-          transform={`rotate(90 ${size / 2} ${size / 2})`}
+          style={{ transform: `rotate(90deg) translate(0px, -${size}px)` }}
         >
           {displayPct}%
         </text>

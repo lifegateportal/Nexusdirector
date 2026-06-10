@@ -1,10 +1,9 @@
 "use client";
 
-import { useState, useRef, useCallback, useId, useEffect, useMemo } from "react";
+import { useState, useRef, useCallback, useId, useEffect } from "react";
 import { ProseEditor, ProseToolbarProvider, SharedProseToolbar } from "./ProseEditor";
 import { EbookProgressRing } from "@/app/components/EbookProgressRing";
 import { VoiceStudio } from "@/app/components/VoiceStudio";
-import { TranscriptSourceMapPanel } from "@/app/components/TranscriptSourceMapPanel";
 import {
   saveEbookJob,
   getEbookJob,
@@ -25,7 +24,6 @@ import type {
   EbookJobState,
   EbookManifest,
 } from "@/lib/schemas/ebook";
-import { ChapterPlanResponseSchema, SectionAssignmentSchema } from "@/lib/schemas/ebook";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -54,7 +52,7 @@ const STAGE_LABELS: Record<PipelineStage, string> = {
   assigning: "Assigning segments…",
   writing: "Writing sections…",
   polishing: "Polishing chapters…",
-  frontmatter: "Writing front and back matter…",
+  frontmatter: "Writing front matter…",
   exporting: "Generating PDF, EPUB & Word…",
   complete: "Complete",
   failed: "Failed",
@@ -66,11 +64,6 @@ const STAGE_ORDER: PipelineStage[] = [
 ];
 type SignalFilterState = "idle" | "applied" | "skipped";
 type QualityReport = { score: number; pass: boolean; issues: { severity: "warn" | "error"; message: string }[] };
-type ChapterPlanStep = { purpose: string; supportedExcerptNumbers: number[]; minExcerptNumber?: number };
-type ReviewTab = "manuscript" | "source-map";
-const DEFAULT_REQUEST_TIMEOUT_MS = 600000;
-const CHAPTER_WRITER_STREAM_IDLE_TIMEOUT_MS = 90000;
-const DEEPGRAM_REQUEST_TIMEOUT_MS = 900000;
 export type EbookPipelineSnapshot = {
   stage: PipelineStage;
   progress: { total: number; completed: number };
@@ -89,14 +82,11 @@ function routeLabel(url: string): string {
 
 function parseSignalFilterLog(logEntries: string[]): { state: SignalFilterState; detail: string | null } {
   const relevant = [...logEntries].reverse().find(
-    (entry) => entry.includes("Signal filter unavailable")
-      || entry.includes("Signal filtered")
-      || entry.includes("Signal filter complete")
-      || entry.includes("signal filter skipped")
+    (entry) => entry.includes("Signal filter unavailable") || entry.includes("Signal filtered") || entry.includes("Signal filter complete")
   );
   if (!relevant) return { state: "idle", detail: null };
   const message = relevant.replace(/^\[[^\]]+\]\s*/, "");
-  if (message.includes("Signal filter unavailable") || message.includes("signal filter skipped")) {
+  if (message.includes("Signal filter unavailable")) {
     return { state: "skipped", detail: message };
   }
   return { state: "applied", detail: message };
@@ -104,47 +94,22 @@ function parseSignalFilterLog(logEntries: string[]): { state: SignalFilterState;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-async function withTimeout<T>(promise: Promise<T>, label: string, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS): Promise<T> {
-  let timeoutId: ReturnType<typeof setTimeout> | null = null;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<T>((_, reject) => {
-        timeoutId = setTimeout(() => reject(new Error(`${label} timed out after ${Math.round(timeoutMs / 1000)}s`)), timeoutMs);
-      }),
-    ]);
-  } finally {
-    if (timeoutId) clearTimeout(timeoutId);
-  }
-}
-
-async function postJson<T>(url: string, body: unknown, retries = 2): Promise<T> {
+async function postJson<T>(url: string, body: unknown, retries = 1): Promise<T> {
   const route = routeLabel(url);
   for (let attempt = 0; attempt <= retries; attempt++) {
     let res: Response;
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(new Error(`${route} timed out`)), DEFAULT_REQUEST_TIMEOUT_MS);
-
     try {
       res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
-        signal: controller.signal,
       });
     } catch (err) {
-      clearTimeout(timeoutId);
       const cause = err instanceof Error ? err.message : "Unknown network failure";
-      if (attempt < retries) {
-        const backoffMs = Math.min(9000, 1500 * Math.pow(2, attempt));
-        await new Promise<void>((r) => setTimeout(r, backoffMs));
-        continue;
-      }
       throw new Error([`Request failed: ${route}`, `Cause: ${cause}`].join("\n"));
     }
-    clearTimeout(timeoutId);
     if (!res.ok) {
-      const rawText = await withTimeout(res.text(), `${route} error body`, DEFAULT_REQUEST_TIMEOUT_MS);
+      const rawText = await res.text();
       let err: { error?: string; details?: string; route?: string } = {};
       try {
         err = rawText ? JSON.parse(rawText) as { error?: string; details?: string; route?: string } : {};
@@ -152,10 +117,9 @@ async function postJson<T>(url: string, body: unknown, retries = 2): Promise<T> 
         err = rawText ? { details: rawText } : {};
       }
       const msg = err.error || `HTTP ${res.status} error from ${route}`;
-      // Retry transient upstream/proxy/rate-limit failures with bounded exponential backoff.
-      if (attempt < retries && (res.status === 401 || res.status === 408 || res.status === 425 || res.status === 429 || res.status === 499 || res.status === 500 || res.status === 502 || res.status === 503 || res.status === 504 || res.status === 520 || res.status === 521 || res.status === 522 || res.status === 523 || res.status === 524)) {
-        const backoffMs = Math.min(9000, 1500 * Math.pow(2, attempt));
-        await new Promise<void>((r) => setTimeout(r, backoffMs));
+      // Retry once on transient gateway/auth errors (Codespaces proxy warm-up or LLM timeout)
+      if (attempt < retries && (res.status === 401 || res.status === 502 || res.status === 503 || res.status === 504)) {
+        await new Promise<void>((r) => setTimeout(r, 3000));
         continue;
       }
       // Surface a helpful message for persistent 401s
@@ -169,7 +133,7 @@ async function postJson<T>(url: string, body: unknown, retries = 2): Promise<T> 
         err.details ? `Details: ${err.details}` : "",
       ].filter(Boolean).join("\n"));
     }
-    return await withTimeout(res.json() as Promise<T>, `${route} response body`, DEFAULT_REQUEST_TIMEOUT_MS);
+    return res.json() as Promise<T>;
   }
   throw new Error(`Request failed after retries: ${route}`);
 }
@@ -181,84 +145,12 @@ async function streamSection(
   const result = await postJson<{ body: string; claimLedger?: Array<{ claim: string; excerptNumbers: number[] }>; passiveVoiceCount?: number; unfullfilledHook?: string | null; sequenceBreakCount?: number }>(
     "/api/ebook/write-section", { assignment, ...(authorConfig ? { authorConfig } : {}) }
   );
-  
-  // Validate response shape before using
-  if (!result || typeof result !== "object") {
-    throw new Error("Invalid write-section response: not an object");
-  }
-  if (typeof result.body !== "string" || !result.body.trim()) {
-    throw new Error("Invalid write-section response: missing or empty body");
-  }
-  if (result.claimLedger !== undefined && !Array.isArray(result.claimLedger)) {
-    throw new Error("Invalid write-section response: claimLedger must be an array");
-  }
-  if (result.passiveVoiceCount !== undefined && typeof result.passiveVoiceCount !== "number") {
-    throw new Error("Invalid write-section response: passiveVoiceCount must be a number");
-  }
-  
   return {
-    body: result.body.trim(),
+    body: (result.body ?? "").trim(),
     claimLedger: result.claimLedger ?? [],
     passiveVoiceCount: result.passiveVoiceCount ?? 0,
     unfullfilledHook: result.unfullfilledHook ?? null,
     sequenceBreakCount: result.sequenceBreakCount ?? 0,
-  };
-}
-
-async function fetchWithRetry(
-  input: RequestInfo | URL,
-  init?: RequestInit,
-  retries = 2,
-  timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
-): Promise<Response> {
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(new Error("Request timed out")), timeoutMs);
-    try {
-      const res = await fetch(input, { ...init, signal: controller.signal });
-      clearTimeout(timeoutId);
-      const retryableStatus = res.status === 408 || res.status === 425 || res.status === 429 || res.status === 499 || res.status === 500 || res.status === 502 || res.status === 503 || res.status === 504 || res.status === 520 || res.status === 521 || res.status === 522 || res.status === 523 || res.status === 524;
-      if (attempt < retries && retryableStatus) {
-        const backoffMs = Math.min(9000, 1000 * Math.pow(2, attempt));
-        await new Promise<void>((resolve) => setTimeout(resolve, backoffMs));
-        continue;
-      }
-      return res;
-    } catch {
-      clearTimeout(timeoutId);
-      if (attempt < retries) {
-        const backoffMs = Math.min(9000, 1000 * Math.pow(2, attempt));
-        await new Promise<void>((resolve) => setTimeout(resolve, backoffMs));
-        continue;
-      }
-      throw new Error("Network request failed after retries");
-    }
-  }
-  throw new Error("Network request failed after retries");
-}
-
-function buildArchitectContentMap(contentMap: ContentMap, includeRawText: boolean): ContentMap {
-  const ARCHITECT_RAW_TEXT_WORD_CAP = 1800;
-  if (includeRawText) {
-    return {
-      ...contentMap,
-      segments: contentMap.segments.map((segment) => ({
-        ...segment,
-        rawText: segment.rawText
-          .split(/\s+/)
-          .slice(0, ARCHITECT_RAW_TEXT_WORD_CAP)
-          .join(" "),
-      })),
-    };
-  }
-  // Architect does not need transcript bodies unless oneChapterPerUpload is enabled.
-  // Stripping rawText keeps large projects under request-size/proxy limits.
-  return {
-    ...contentMap,
-    segments: contentMap.segments.map((segment) => ({
-      ...segment,
-      rawText: "",
-    })),
   };
 }
 
@@ -269,13 +161,12 @@ function countWords(text: string): number {
 // ─── Upgrade 4 (writer): Illustration / story label extractor ────────────────
 // Scans written prose for story-opening sentences and returns short labels
 // (first 100 chars) so later sections can be told not to retell the same story.
-const STORY_OPENERS = /\b(when i was|i remember|there was a|let me tell you|i once|one day|a man named|a woman named|i met a|i spoke to|i was in|years ago|i had a|the story of|he told me|she told me|they told me|i saw a|i witnessed)\b/gi;
+const STORY_OPENERS = /\b(when i was|i remember|there was a|let me tell you|i once|one day|a man named|a woman named|i met a|i spoke to|i was in|years ago|i had a|the story of|he told me|she told me|they told me|i saw a|i witnessed)\b/i;
 
 function extractIllustrationLabels(body: string): string[] {
   const labels: string[] = [];
   const sentences = body.replace(/^#{1,3} .+$/gm, "").split(/(?<=[.!?])\s+/).filter(Boolean);
   for (const sentence of sentences) {
-    STORY_OPENERS.lastIndex = 0;
     if (STORY_OPENERS.test(sentence)) {
       labels.push(sentence.replace(/[#>*_]/g, "").trim().slice(0, 100));
     }
@@ -440,18 +331,16 @@ function extractSequenceTurns(excerpts: string[]): string[] {
 // Finds story-opening sentences and the principle/payoff sentence that follows
 // within 4 sentences. Passed to the writer as ordered pairs: setup must come
 // before payoff — reversing them violates the speaker's teaching logic.
-const PRINCIPLE_SIGNALS = /\b(the (?:lesson|point|truth|key|principle|answer|secret) (?:is|here is)|what (?:this|that) (?:teaches|shows|tells|means)|(?:and )?(?:that'?s? why|that'?s? the|this is why|this means)|so the (?:point|truth|lesson)|here'?s? the truth|the moral (?:is|of)|what god (?:was|is) saying|what (?:he|she|they) (?:was|were|is) trying to say|the takeaway|the (?:real )?question is|the (?:real )?issue (?:is|here)|so what|and so|therefore)\b/gi;
+const PRINCIPLE_SIGNALS = /\b(the (?:lesson|point|truth|key|principle|answer|secret) (?:is|here is)|what (?:this|that) (?:teaches|shows|tells|means)|(?:and )?(?:that'?s? why|that'?s? the|this is why|this means)|so the (?:point|truth|lesson)|here'?s? the truth|the moral (?:is|of)|what god (?:was|is) saying|what (?:he|she|they) (?:was|were|is) trying to say|the takeaway|the (?:real )?question is|the (?:real )?issue (?:is|here)|so what|and so|therefore)\b/i;
 
 function extractStoryPayoffPairs(excerpts: string[]): { setup: string; principle: string }[] {
   const pairs: { setup: string; principle: string }[] = [];
   for (const excerpt of excerpts) {
     const sentences = excerpt.split(/(?<=[.!?])\s+/).filter(Boolean);
     for (let i = 0; i < sentences.length; i++) {
-      STORY_OPENERS.lastIndex = 0;
       if (!STORY_OPENERS.test(sentences[i])) continue;
       // Look forward up to 5 sentences for the payoff
       for (let j = i + 1; j < Math.min(i + 6, sentences.length); j++) {
-        PRINCIPLE_SIGNALS.lastIndex = 0;
         if (PRINCIPLE_SIGNALS.test(sentences[j])) {
           pairs.push({
             setup: sentences[i].replace(/[#>*_]/g, "").trim().slice(0, 130),
@@ -687,17 +576,16 @@ function AudioCard({
 
 // ─── Stage Tracker ───────────────────────────────────────────────────────────
 
-const STAGE_STEPS: { id: string; key: PipelineStage; label: string; description: string }[] = [
-  { id: "transcribing", key: "transcribing", label: "Transcribe",   description: "Converting audio to text via Deepgram nova-2" },
-  { id: "filtering",    key: "filtering",    label: "Signal Filter", description: "Stripping prayers, announcements, and non-teaching content from transcript" },
-  { id: "analyzing",    key: "analyzing",    label: "Voice DNA",    description: "Extracting author's signature phrases, tone, and teaching style" },
-  { id: "mapping",      key: "mapping",      label: "Content Map",  description: "Inventorying every teaching segment, scripture, and quote" },
-  { id: "architecting", key: "architecting", label: "Chapters",     description: "Designing chapter and section structure from the content" },
-  { id: "writing",      key: "writing",      label: "Writing",      description: "Drafting each section strictly from transcript source material" },
-  { id: "polishing",    key: "polishing",    label: "Polish",       description: "Adding chapter intros, conclusions, and key takeaways" },
-  { id: "frontmatter",  key: "frontmatter",  label: "Front Matter", description: "Writing introduction and conclusion from your words" },
-  { id: "backmatter",   key: "frontmatter",  label: "Back Matter",  description: "Generating glossary, discussion guide, and scripture index" },
-  { id: "exporting",    key: "exporting",    label: "Export",       description: "Generating PDF and EPUB files for download" },
+const STAGE_STEPS: { key: PipelineStage; label: string; description: string }[] = [
+  { key: "transcribing", label: "Transcribe",   description: "Converting audio to text via Deepgram nova-2" },
+  { key: "filtering",    label: "Signal Filter", description: "Stripping prayers, announcements, and non-teaching content from transcript" },
+  { key: "analyzing",    label: "Voice DNA",    description: "Extracting author's signature phrases, tone, and teaching style" },
+  { key: "mapping",      label: "Content Map",  description: "Inventorying every teaching segment, scripture, and quote" },
+  { key: "architecting", label: "Chapters",     description: "Designing chapter and section structure from the content" },
+  { key: "writing",      label: "Writing",      description: "Drafting each section strictly from transcript source material" },
+  { key: "polishing",    label: "Polish",       description: "Adding chapter intros, conclusions, and key takeaways" },
+  { key: "frontmatter",  label: "Front Matter", description: "Writing introduction and conclusion from your words" },
+  { key: "exporting",    label: "Export",       description: "Generating PDF and EPUB files for download" },
 ];
 
 // Collapse adjacent stages so assigning/polishing/frontmatter light up their parent step
@@ -758,7 +646,7 @@ function EbookStageTracker({
           const active = step.key === activeKey && current !== "complete" && current !== "failed" && current !== "idle";
           const skipped = step.key === "filtering" && signalFilterState === "skipped";
           return (
-            <div key={step.id} className="flex items-center gap-1.5">
+            <div key={step.key} className="flex items-center gap-1.5">
               <span
                 className={`h-2 w-2 flex-shrink-0 rounded-full transition-all ${
                   skipped ? "bg-amber-400" :
@@ -828,14 +716,6 @@ function ChapterCard({
     });
   };
 
-  const removeSection = (sectionNumber: number) => {
-    if (!onChange) return;
-    onChange({
-      ...chapter,
-      sections: chapter.sections.filter((section) => section.sectionNumber !== sectionNumber),
-    });
-  };
-
   const patchListField = (field: "keyTakeaways" | "reflectionQuestions", value: string) => {
     if (!onChange) return;
     const items = value.split(/\n+/).map((item) => item.trim()).filter(Boolean);
@@ -892,49 +772,26 @@ function ChapterCard({
             </div>
           )}
 
-          {chapter.sections.map((s, sectionIndex) => {
-            const heading = s.heading?.trim() || `Section ${sectionIndex + 1}`;
-            return (
-            <div key={s.sectionNumber} className={editable ? "space-y-2 rounded-xl border border-slate-700/50 bg-slate-900/50 p-3" : ""}>
+          {chapter.sections.map((s) => (
+            <div key={s.sectionNumber}>
               {editable ? (
-                <>
-                  <div className="flex flex-wrap items-end gap-2">
-                    <div className="min-w-[220px] flex-1">
-                      <label className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-500">Subsection Title</label>
-                      <input
-                        value={s.heading}
-                        onChange={(e) => patchSection(s.sectionNumber, { heading: e.target.value })}
-                        placeholder={`Section ${sectionIndex + 1}`}
-                        className="w-full min-h-[48px] rounded-xl border border-slate-700/60 bg-slate-950/70 px-3 py-2 text-base text-slate-100 outline-none ring-0 focus:border-cyan-500/40"
-                      />
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => removeSection(s.sectionNumber)}
-                      className="min-h-[48px] rounded-xl border border-red-500/35 bg-red-500/10 px-3 py-2 text-sm font-semibold text-red-200"
-                    >
-                      Delete Subsection
-                    </button>
-                  </div>
-                  <ProseEditor
-                    label={heading}
-                    value={s.body ?? ""}
-                    onChange={(v) => patchSection(s.sectionNumber, { body: v, wordCount: countWords(v) })}
-                    rows={10}
-                    placeholder="Write section body…"
-                  />
-                </>
+                <ProseEditor
+                  label={s.heading}
+                  value={s.body ?? ""}
+                  onChange={(v) => patchSection(s.sectionNumber, { body: v, wordCount: countWords(v) })}
+                  rows={10}
+                  placeholder="Write section body…"
+                />
               ) : (
                 <>
-                  <p className="text-xs font-semibold text-cyan-400/80 mb-1">{heading}</p>
+                  <p className="text-xs font-semibold text-cyan-400/80 mb-1">{s.heading}</p>
                   <p className="text-xs text-slate-400 leading-relaxed line-clamp-3">
                     {(s.body ?? "").slice(0, 220)}{(s.body ?? "").length > 220 ? "…" : ""}
                   </p>
                 </>
               )}
             </div>
-            );
-          })}
+          ))}
 
           {editable ? (
             <div className="grid gap-3 md:grid-cols-2">
@@ -1612,22 +1469,15 @@ const JOB_STATE_KEY = "nexus_ebook_job_state";    // stores full state as JSON (
 
 export function EbookPipeline({
   ebookManifest,
-  initialJobState,
   onManifestReady,
   onPipelineSnapshotChange,
-  onJobStateChange,
   onSaveProject,
-  onAutoSaveProject,
 }: {
   ebookManifest?: EbookManifest | null;
-  initialJobState?: EbookJobState | null;
   onManifestReady?: (manifest: EbookManifest) => void;
   onPipelineSnapshotChange?: (snapshot: EbookPipelineSnapshot | null) => void;
-  onJobStateChange?: (jobState: EbookJobState | null) => void;
   /** Called when the user clicks Save inside the pipeline. Receives the chosen project name. */
   onSaveProject?: (name: string) => void;
-  /** Called for debounced silent autosave during editor changes. */
-  onAutoSaveProject?: (payload: { name: string; manifest: EbookManifest }) => Promise<void> | void;
 } = {}) {
   const [audioFiles, setAudioFiles] = useState<(File | null)[]>([null, null, null, null, null, null]);
   const [transcriptFiles, setTranscriptFiles] = useState<(File | null)[]>([null, null, null, null, null, null]);
@@ -1658,19 +1508,6 @@ export function EbookPipeline({
   const [showSaveBar, setShowSaveBar] = useState(false);
   const [saveName, setSaveName] = useState("");
   const [savedConfirm, setSavedConfirm] = useState(false);
-  const [reviewTab, setReviewTab] = useState<ReviewTab>("manuscript");
-  const [sectionAssignments, setSectionAssignments] = useState<SectionAssignment[]>([]);
-  const [sourceTranscripts, setSourceTranscripts] = useState<Array<{ label: string; text: string }>>([]);
-  const sourceMapImportRef = useRef<HTMLInputElement | null>(null);
-  const isLikelyIOS = useMemo(() => {
-    if (typeof navigator === "undefined") return false;
-    const ua = navigator.userAgent || "";
-    const platform = navigator.platform || "";
-    const touchPoints = typeof navigator.maxTouchPoints === "number" ? navigator.maxTouchPoints : 0;
-    return /iPad|iPhone|iPod/i.test(ua)
-      || (/Mac/i.test(platform) && touchPoints > 1)
-      || /iPad|iPhone|iPod/i.test(platform);
-  }, []);
   const jobIdRef = useRef<string>(newJobId());
   // Mirror of log in a ref so runPipeline (async) can read the current value for checkpoints
   const logRef = useRef<string[]>([]);
@@ -1678,10 +1515,6 @@ export function EbookPipeline({
   const savedJobRef = useRef<EbookJobState | null>(null);
   // Prevent double-triggering the auto-download across re-renders
   const autoDownloadedRef = useRef(false);
-  // Prevent auto-save firing more than once per completed pipeline run
-  const autoSavedRef = useRef(false);
-  // Debounce autosave during frequent editor changes.
-  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Track the ebookManifest prop at mount time so the restore effect can detect when an
   // externally-edited manifest was already provided and must NOT be overwritten by the
   // job-state reconstruction (which only knows about the original pipeline output).
@@ -1691,27 +1524,6 @@ export function EbookPipeline({
     const entry = `[${new Date().toLocaleTimeString()}] ${msg}`;
     logRef.current = [...logRef.current.slice(-80), entry];
     setLog([...logRef.current]);
-  }, []);
-
-  const scheduleAutoSave = useCallback((manifest: EbookManifest) => {
-    if (!onAutoSaveProject) return;
-    if (autoSaveTimerRef.current) {
-      clearTimeout(autoSaveTimerRef.current);
-    }
-    const debounceMs = isLikelyIOS ? 2600 : 900;
-    autoSaveTimerRef.current = setTimeout(() => {
-      const name = manifest.bookTitle?.trim() || "My Ebook";
-      void Promise.resolve(onAutoSaveProject({ name, manifest }));
-      autoSaveTimerRef.current = null;
-    }, debounceMs);
-  }, [isLikelyIOS, onAutoSaveProject]);
-
-  useEffect(() => {
-    return () => {
-      if (autoSaveTimerRef.current) {
-        clearTimeout(autoSaveTimerRef.current);
-      }
-    };
   }, []);
 
   const recalculateManifestTotal = useCallback((manifest: EbookManifest): EbookManifest => {
@@ -1746,101 +1558,6 @@ export function EbookPipeline({
     setExportUrls(null);
     onManifestReady?.(normalized);
   }, [onManifestReady, recalculateManifestTotal]);
-
-  const persistSourceMapState = useCallback(async (
-    assignments: SectionAssignment[],
-    transcripts?: Array<{ label: string; text: string }>,
-  ) => {
-    const nextTranscripts = transcripts ?? sourceTranscripts;
-    const base = (() => {
-      try {
-        const raw = localStorage.getItem(JOB_STATE_KEY);
-        if (!raw) return savedJobRef.current;
-        return JSON.parse(raw) as EbookJobState;
-      } catch {
-        return savedJobRef.current;
-      }
-    })();
-
-    if (!base) return;
-    const updated: EbookJobState = {
-      ...base,
-      sectionAssignments: assignments,
-      transcripts: nextTranscripts,
-      updatedAt: new Date().toISOString(),
-    };
-    savedJobRef.current = updated;
-    onJobStateChange?.(updated);
-    try { localStorage.setItem(JOB_STATE_KEY, JSON.stringify(updated)); } catch {}
-    try { await saveEbookJob(updated); } catch {}
-  }, [onJobStateChange, sourceTranscripts]);
-
-  const downloadSourceMap = useCallback(() => {
-    if (sectionAssignments.length === 0) {
-      addLog("⚠ Source Map export skipped — no section assignments available");
-      return;
-    }
-    const payload = {
-      version: 1,
-      exportedAt: new Date().toISOString(),
-      jobId: jobIdRef.current,
-      sectionAssignments,
-      transcripts: sourceTranscripts,
-    };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `source-map-${jobIdRef.current}.json`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-    addLog(`✓ Source Map exported — ${sectionAssignments.length} section assignments`);
-  }, [addLog, sectionAssignments, sourceTranscripts]);
-
-  const handleSourceMapUpload = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0] ?? null;
-    if (!file) return;
-    try {
-      const text = await file.text();
-      const parsed = JSON.parse(text) as {
-        sectionAssignments?: unknown;
-        assignments?: unknown;
-        transcripts?: unknown;
-      };
-
-      const assignmentCandidate = parsed.sectionAssignments ?? parsed.assignments ?? [];
-      const assignmentsParsed = SectionAssignmentSchema.array().safeParse(assignmentCandidate);
-      if (!assignmentsParsed.success) {
-        throw new Error("Invalid Source Map file: assignment payload is malformed.");
-      }
-
-      const transcriptEntries = Array.isArray(parsed.transcripts)
-        ? parsed.transcripts
-          .filter((entry): entry is { label?: unknown; text?: unknown } => Boolean(entry && typeof entry === "object"))
-          .map((entry) => ({
-            label: typeof entry.label === "string" ? entry.label : "",
-            text: typeof entry.text === "string" ? entry.text : "",
-          }))
-          .filter((entry) => entry.text.length > 0)
-        : undefined;
-
-      setSectionAssignments(assignmentsParsed.data);
-      if (transcriptEntries && transcriptEntries.length > 0) {
-        setSourceTranscripts(transcriptEntries);
-      }
-      await persistSourceMapState(assignmentsParsed.data, transcriptEntries);
-      setReviewTab("source-map");
-      addLog(`✓ Source Map imported — ${assignmentsParsed.data.length} section assignments`);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Failed to import Source Map";
-      setError(message);
-      addLog(`✗ Source Map import failed: ${message}`);
-    } finally {
-      event.target.value = "";
-    }
-  }, [addLog, persistSourceMapState]);
 
   useEffect(() => {
   if (!ebookManifest && !completedManifest) {
@@ -1903,10 +1620,9 @@ export function EbookPipeline({
       setExportUrls(null);
       setQualityReport(null);
       onManifestReady?.(next);
-      scheduleAutoSave(next);
       return next;
     });
-  }, [onManifestReady, recalculateManifestTotal, scheduleAutoSave]);
+  }, [onManifestReady, recalculateManifestTotal]);
 
   const exportFinalBook = useCallback(async () => {
     if (!completedManifest || !reviewContext) return;
@@ -1993,7 +1709,6 @@ export function EbookPipeline({
   useEffect(() => {
     if (!exportUrls?.pdfUrl || autoDownloadedRef.current) return;
     autoDownloadedRef.current = true;
-    if (isLikelyIOS) return;
     try {
       const popup = window.open(exportUrls.pdfUrl, "_blank", "noopener,noreferrer");
       if (!popup) {
@@ -2008,58 +1723,24 @@ export function EbookPipeline({
     } catch {
       // pop-up blocked — user can still open manually from the download button
     }
-  }, [exportUrls, isLikelyIOS]);
-
-  // ── Auto-save once when pipeline first reaches complete ──────────────────
-  useEffect(() => {
-    if (
-      stage !== "complete" ||
-      !completedManifest ||
-      !onAutoSaveProject ||
-      autoSavedRef.current
-    ) return;
-    autoSavedRef.current = true;
-    const name = completedManifest.bookTitle?.trim() || "My Ebook";
-    Promise.resolve(onAutoSaveProject({ name, manifest: completedManifest }))
-      .then(() => {
-        addLog(`✓ Auto-saved project: "${name}"`);
-      })
-      .catch((err) => {
-        autoSavedRef.current = false;
-        const msg = err instanceof Error ? err.message : "unknown error";
-        addLog(`⚠ Auto-save failed: ${msg}`);
-      });
-  }, [stage, completedManifest, onAutoSaveProject, addLog]);
+  }, [exportUrls]);
 
   // ── Hydrate from localStorage (primary) or IndexedDB (fallback) on mount ──
-
-  const sanitizeTranscriptEntries = (value: unknown): { label: string; text: string }[] => {
-    const entries = Array.isArray(value) ? value : [];
-    return entries
-      .filter((item): item is { label?: unknown; text?: unknown } => Boolean(item && typeof item === "object"))
-      .map((item) => ({
-        label: typeof item.label === "string" ? item.label : "",
-        text: typeof item.text === "string" ? item.text : "",
-      }))
-      .filter((item) => item.text);
-  };
-
-  const buildMasterTranscript = (value: unknown): string => (
-    sanitizeTranscriptEntries(value)
-      .map((item) => `[${item.label}]\n${item.text}`)
-      .join("\n\n═══════════════════════════════════════\n\n")
-  );
 
   // Sanitize raw localStorage data — applies missing defaults that Zod can't fill
   // because data is loaded with JSON.parse (not Zod.parse), so .default() never runs.
   function normalizeJob(raw: EbookJobState): EbookJobState {
     const fixArrays = <T,>(v: unknown): T[] => (Array.isArray(v) ? v as T[] : []);
-    const fixObjectArrays = <T extends Record<string, unknown>>(v: unknown): T[] => (
-      fixArrays<unknown>(v).filter((item): item is T => Boolean(item && typeof item === "object"))
-    );
     const fixStr = (v: unknown, fb = ""): string => (typeof v === "string" ? v : fb);
-    const transcripts = sanitizeTranscriptEntries(raw.transcripts as unknown);
-    const rebuiltMasterTranscript = buildMasterTranscript(transcripts);
+    const transcripts = fixArrays<Record<string, unknown>>(raw.transcripts as unknown)
+      .map((t) => ({
+        label: fixStr(t.label),
+        text: fixStr(t.text),
+      }))
+      .filter((t) => t.text);
+    const rebuiltMasterTranscript = transcripts
+      .map((t) => `[${t.label}]\n${t.text}`)
+      .join("\n\n═══════════════════════════════════════\n\n");
 
     const vdna = raw.voiceDNA as Record<string, unknown> | null;
     const voiceDNA = vdna ? {
@@ -2083,7 +1764,7 @@ export function EbookPipeline({
       uniqueVocabulary:  fixArrays(cm.uniqueVocabulary),
       toneMap:           fixStr(cm.toneMap),
       allQuotes: fixArrays(cm.allQuotes),
-      segments: fixObjectArrays<Record<string, unknown>>(cm.segments).map((s) => ({
+      segments: fixArrays<Record<string, unknown>>(cm.segments).map((s) => ({
         ...s,
         keyPoints: fixArrays(s.keyPoints),
         quotes:    fixArrays(s.quotes),
@@ -2094,10 +1775,10 @@ export function EbookPipeline({
     const arch = raw.architecture as Record<string, unknown> | null;
     const architecture = arch ? {
       ...arch,
-      chapters: fixObjectArrays<Record<string, unknown>>(arch.chapters).map((c) => ({
+      chapters: fixArrays<Record<string, unknown>>(arch.chapters).map((c) => ({
         ...c,
         quotesInChapter: fixArrays(c.quotesInChapter),
-        sections: fixObjectArrays<Record<string, unknown>>(c.sections).map((s) => ({
+        sections: fixArrays<Record<string, unknown>>(c.sections).map((s) => ({
           ...s,
           keyPoints:       fixArrays(s.keyPoints),
           quotesInSection: fixArrays(s.quotesInSection),
@@ -2106,13 +1787,13 @@ export function EbookPipeline({
       })),
     } : null;
 
-    const sections = fixObjectArrays<Record<string, unknown>>(raw.sections as unknown).map((s) => ({
+    const sections = fixArrays<Record<string, unknown>>(raw.sections as unknown).map((s) => ({
       ...s,
       body:    fixStr(s.body),
       heading: fixStr(s.heading),
     }));
 
-    const sectionAssignments = fixObjectArrays<Record<string, unknown>>(raw.sectionAssignments as unknown).map((a) => {
+    const sectionAssignments = fixArrays<Record<string, unknown>>(raw.sectionAssignments as unknown).map((a) => {
       const avdna = a.voiceDNA as Record<string, unknown> | null | undefined;
       return {
         ...a,
@@ -2132,62 +1813,18 @@ export function EbookPipeline({
       };
     });
 
-    const chapterPlans = (() => {
-      const rawPlans = raw.chapterPlans as unknown;
-      if (!rawPlans || typeof rawPlans !== "object") return {} as Record<string, Record<string, ChapterPlanStep[]>>;
-
-      const normalized: Record<string, Record<string, ChapterPlanStep[]>> = {};
-      for (const [chapterKey, chapterValue] of Object.entries(rawPlans as Record<string, unknown>)) {
-        if (!chapterValue || typeof chapterValue !== "object") continue;
-        const sectionPlans: Record<string, ChapterPlanStep[]> = {};
-
-        for (const [sectionKey, sectionValue] of Object.entries(chapterValue as Record<string, unknown>)) {
-          const entries = fixObjectArrays<Record<string, unknown>>(sectionValue).map((entry) => ({
-            purpose: fixStr(entry.purpose),
-            supportedExcerptNumbers: fixArrays<number>(entry.supportedExcerptNumbers)
-              .filter((n) => Number.isInteger(n) && n > 0)
-              .map((n) => Number(n)),
-            minExcerptNumber: typeof entry.minExcerptNumber === "number" && Number.isInteger(entry.minExcerptNumber) && entry.minExcerptNumber > 0
-              ? entry.minExcerptNumber
-              : undefined,
-          }));
-          if (entries.length > 0) {
-            sectionPlans[sectionKey] = entries;
-          }
-        }
-
-        if (Object.keys(sectionPlans).length > 0) {
-          normalized[chapterKey] = sectionPlans;
-        }
-      }
-
-      return normalized;
-    })();
-
-    const chapters = fixObjectArrays<Record<string, unknown>>(raw.chapters as unknown).map((c) => ({
+    const chapters = fixArrays<Record<string, unknown>>(raw.chapters as unknown).map((c) => ({
       ...c,
       intro:               fixStr(c.intro),
       forwardQuestion:     fixStr(c.forwardQuestion),
       keyTakeaways:        fixArrays(c.keyTakeaways),
       reflectionQuestions: fixArrays(c.reflectionQuestions),
-      sections: fixObjectArrays<Record<string, unknown>>(c.sections).map((s) => ({
+      sections: fixArrays<Record<string, unknown>>(c.sections).map((s) => ({
         ...s,
         body:    fixStr(s.body),
         heading: fixStr(s.heading),
       })),
     }));
-
-    const rawProgress = (raw as EbookJobState & { progress?: unknown }).progress;
-    const progressObj = rawProgress && typeof rawProgress === "object"
-      ? rawProgress as Record<string, unknown>
-      : {};
-    const total = typeof progressObj.total === "number" && Number.isFinite(progressObj.total)
-      ? Math.max(0, Math.floor(progressObj.total))
-      : 0;
-    const completedRaw = typeof progressObj.completed === "number" && Number.isFinite(progressObj.completed)
-      ? Math.max(0, Math.floor(progressObj.completed))
-      : 0;
-    const completed = total > 0 ? Math.min(completedRaw, total) : completedRaw;
 
     return {
       ...raw,
@@ -2200,9 +1837,7 @@ export function EbookPipeline({
       architecture,
       sections,
       sectionAssignments,
-      chapterPlans,
       chapters,
-      progress: { total, completed },
     } as EbookJobState;
   }
 
@@ -2212,16 +1847,12 @@ export function EbookPipeline({
       try {
         const raw = localStorage.getItem(JOB_STATE_KEY);
         if (!raw) return null;
-        const parsed = JSON.parse(raw) as EbookJobState;
-        return normalizeJob(parsed);
-      } catch {
-        return null;
-      }
+        return normalizeJob(JSON.parse(raw) as EbookJobState);
+      } catch { return null; }
     };
 
     const restore = (job: EbookJobState) => {
       savedJobRef.current = job;
-      onJobStateChange?.(job);
       const filterInfo = parseSignalFilterLog(job.errorLog ?? []);
       setSignalFilterState(filterInfo.state);
       setSignalFilterDetail(filterInfo.detail);
@@ -2244,17 +1875,8 @@ export function EbookPipeline({
       setStage(job.status as PipelineStage);
       logRef.current = job.errorLog ?? [];
       setLog(job.errorLog ?? []);
-      const safeTotal = typeof job.progress?.total === "number" && Number.isFinite(job.progress.total)
-        ? Math.max(0, Math.floor(job.progress.total))
-        : 0;
-      const safeCompletedRaw = typeof job.progress?.completed === "number" && Number.isFinite(job.progress.completed)
-        ? Math.max(0, Math.floor(job.progress.completed))
-        : 0;
-      const safeCompleted = safeTotal > 0 ? Math.min(safeCompletedRaw, safeTotal) : safeCompletedRaw;
-      setProgress({ total: safeTotal, completed: safeCompleted });
+      setProgress(job.progress ?? { total: 0, completed: 0 });
       setChapters(job.chapters ?? []);
-      setSectionAssignments(job.sectionAssignments ?? []);
-      setSourceTranscripts(job.transcripts ?? []);
       // Restore error so the Resume button is visible after refresh
       if (job.status === "failed") {
         const lastErr = (job.errorLog ?? []).findLast?.((e) => e.includes("✗"));
@@ -2286,7 +1908,6 @@ export function EbookPipeline({
           subtitle: job.architecture.subtitle,
           authorName: job.architecture.authorName,
           frontMatter: job.frontMatter,
-          backMatter: job.backMatter,
           chapters: job.chapters ?? [],
           totalWordCount: (job.chapters ?? []).reduce((sum, chapter) => sum + (chapter.totalWordCount ?? 0), 0),
           allQuotes: contentMap.allQuotes ?? [],
@@ -2304,17 +1925,8 @@ export function EbookPipeline({
       if (words > 0) setTotalWords(words);
     };
 
-    // If initialJobState was provided (e.g., from handleLoadProject), use it
-    if (initialJobState) {
-      restore(normalizeJob(initialJobState));
-      return;
-    }
-
     const fromLocal = tryLocalStorage();
-    if (fromLocal) {
-      restore(fromLocal);
-      return;
-    }
+    if (fromLocal) { restore(fromLocal); return; }
 
     // IndexedDB fallback
     const savedId = localStorage.getItem(JOB_STORAGE_KEY);
@@ -2324,7 +1936,7 @@ export function EbookPipeline({
       restore(normalizeJob(job));
     }).catch(() => { /* IndexedDB unavailable — ignore */ });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialJobState]);
+  }, []);
 
   const setAudio = useCallback((i: number, f: File | null) => {
     setAudioFiles((prev) => { const next = [...prev]; next[i] = f; return next; });
@@ -2359,7 +1971,7 @@ export function EbookPipeline({
     if (audioFile) {
       addLog(`Transcribing ${label} via Deepgram…`);
 
-      const tokenRes = await fetchWithRetry("/api/transcribe-token", undefined, 2);
+      const tokenRes = await fetch("/api/transcribe-token");
       if (!tokenRes.ok) throw new Error(`Could not get Deepgram token (HTTP ${tokenRes.status})`);
       const { apiKey } = await tokenRes.json() as { apiKey: string };
 
@@ -2384,16 +1996,11 @@ export function EbookPipeline({
       });
 
       const buffer = await audioFile.arrayBuffer();
-      const dgRes = await fetchWithRetry(
-        `https://api.deepgram.com/v1/listen?${params}`,
-        {
-          method: "POST",
-          headers: { Authorization: `Token ${apiKey}`, "Content-Type": mimeType },
-          body: buffer,
-        },
-        2,
-        DEEPGRAM_REQUEST_TIMEOUT_MS
-      );
+      const dgRes = await fetch(`https://api.deepgram.com/v1/listen?${params}`, {
+        method: "POST",
+        headers: { Authorization: `Token ${apiKey}`, "Content-Type": mimeType },
+        body: buffer,
+      });
 
       if (!dgRes.ok) {
         const dgErr = await dgRes.json().catch(() => ({})) as { err_msg?: string };
@@ -2401,7 +2008,7 @@ export function EbookPipeline({
       }
 
       type DgResponse = { results?: { channels?: Array<{ alternatives?: Array<{ transcript?: string }> }> } };
-      const data = await withTimeout(dgRes.json() as Promise<DgResponse>, `${label} transcription response`, DEEPGRAM_REQUEST_TIMEOUT_MS) as DgResponse;
+      const data = await dgRes.json() as DgResponse;
       const transcript = data.results?.channels?.[0]?.alternatives?.[0]?.transcript ?? "";
       if (!transcript.trim()) throw new Error(`Deepgram returned an empty transcript for ${label}`);
 
@@ -2428,8 +2035,6 @@ export function EbookPipeline({
       setReviewContext(null);
       setQualityReport(null);
       setTotalWords(0);
-      setSectionAssignments([]);
-      setSourceTranscripts([]);
       autoDownloadedRef.current = false;
     }
     const jobId = resume?.jobId ?? jobIdRef.current;
@@ -2446,8 +2051,7 @@ export function EbookPipeline({
           chapters: resume.chapters ?? [],
           sections: resume.sections ?? [],
           sectionAssignments: resume.sectionAssignments ?? [],
-          chapterPlans: resume.chapterPlans ?? {},
-          transcripts: sanitizeTranscriptEntries(resume.transcripts),
+          transcripts: resume.transcripts ?? [],
           errorLog: resume.errorLog ?? [],
         }
       : {
@@ -2460,7 +2064,6 @@ export function EbookPipeline({
           contentMap: null,
           architecture: null,
           sectionAssignments: [],
-          chapterPlans: {},
           sections: [],
           chapters: [],
           frontMatter: null,
@@ -2471,12 +2074,6 @@ export function EbookPipeline({
           createdAt: now,
           updatedAt: now,
         };
-
-    // Expose the initial running state immediately so Save Project does not
-    // race with async persistence on fast taps.
-    savedJobRef.current = { ...acc };
-    onJobStateChange?.({ ...acc });
-
     const checkpoint = async (s: PipelineStage) => {
       acc.status = s;
       acc.currentStage = s;
@@ -2486,13 +2083,7 @@ export function EbookPipeline({
       try { localStorage.setItem(JOB_STATE_KEY, JSON.stringify(acc)); } catch { /* quota */ }
       // Secondary: IndexedDB
       try { await saveEbookJob({ ...acc }); } catch { /* silently fail */ }
-      onJobStateChange?.({ ...acc });
     };
-
-    // Persist immediately so Save Project works from the first running stage.
-    await checkpoint("transcribing");
-
-    const skippedFilterSlots: string[] = [];
 
     try {
       // ── Stage 1: Transcribe (skip if resuming with existing transcript) ────
@@ -2511,7 +2102,7 @@ export function EbookPipeline({
           let slotText = rawText;
           try {
             addLog(`  Filtering ${label} signal…`);
-            const slotFilter = await postJson<FilterResult>("/api/ebook/filter-signal", { masterTranscript: rawText }, 2);
+            const slotFilter = await postJson<FilterResult>("/api/ebook/filter-signal", { masterTranscript: rawText });
             slotText = slotFilter.cleanedTranscript || rawText;
             const rawWords = countWords(rawText);
             const cleanWords = countWords(slotText);
@@ -2522,13 +2113,14 @@ export function EbookPipeline({
               addLog(`  ✓ ${label} — no non-teaching content found`);
             }
           } catch {
-            skippedFilterSlots.push(label);
             addLog(`  ⚠ ${label} signal filter skipped — using raw text`);
           }
 
           transcriptResults.push({ label, text: slotText });
         }
-        masterTranscript = buildMasterTranscript(transcriptResults);
+        masterTranscript = transcriptResults
+          .map((t) => `[${t.label}]\n${t.text}`)
+          .join("\n\n═══════════════════════════════════════\n\n");
         addLog(`Master transcript assembled — ${countWords(masterTranscript).toLocaleString()} words after per-slot filtering`);
 
         // ── Stage 1b: Glossary sanitization — zero-cost regex ASR correction ─
@@ -2548,11 +2140,9 @@ export function EbookPipeline({
 
         acc.masterTranscript = masterTranscript;
         acc.transcripts = transcriptResults;
-        setSourceTranscripts(transcriptResults);
         await checkpoint("filtering");
       } else {
         addLog(`↩ Resuming — transcript available (${countWords(masterTranscript).toLocaleString()} words)`);
-        setSourceTranscripts(acc.transcripts ?? []);
       }
 
       // ── Stage 2: Signal Filter — final safety pass on the combined transcript
@@ -2561,30 +2151,33 @@ export function EbookPipeline({
       let filteredTranscript = (acc as EbookJobState & { filteredTranscript?: string }).filteredTranscript ?? "";
       if (!filteredTranscript) {
         setStage("filtering");
-        // Per-slot filtering already ran above. Re-running a full combined pass
-        // adds latency and duplicate LLM calls; use the assembled transcript here.
-        filteredTranscript = masterTranscript;
-        if (skippedFilterSlots.length > 0) {
-          setSignalFilterState("skipped");
-          setSignalFilterDetail(`Signal filter skipped for ${skippedFilterSlots.join(", ")}`);
-          addLog(`⚠ Signal filter partially skipped (${skippedFilterSlots.length} slot${skippedFilterSlots.length !== 1 ? "s" : ""}) — downstream stages use mixed filtered/raw text`);
-        } else {
+        addLog("Running final combined signal filter pass…");
+        try {
+          type FilterResult = { cleanedTranscript: string; removedSegments: { reason: string; excerpt: string }[]; summary: string };
+          const filterResult = await postJson<FilterResult>("/api/ebook/filter-signal", { masterTranscript });
+          filteredTranscript = filterResult.cleanedTranscript || masterTranscript;
+          const removedCount = filterResult.removedSegments.length;
+          if (removedCount > 0) {
+            addLog(`✓ Final filter — removed ${removedCount} additional block${removedCount !== 1 ? "s" : ""}: ${filterResult.summary}`);
+          } else {
+            addLog("✓ Final filter pass — no additional non-teaching content found");
+          }
           setSignalFilterState("applied");
-          setSignalFilterDetail("Per-slot signal filter applied");
+          setSignalFilterDetail(filterResult.summary || null);
+          (acc as EbookJobState & { filteredTranscript: string; filterRemovedCount: number }).filteredTranscript = filteredTranscript;
+          (acc as EbookJobState & { filteredTranscript: string; filterRemovedCount: number }).filterRemovedCount = removedCount;
+        } catch (filterErr) {
+          // Non-fatal: if filtering fails, proceed with the per-slot-filtered transcript
+          filteredTranscript = masterTranscript;
+          const detail = filterErr instanceof Error ? filterErr.message : "unknown error";
+          setSignalFilterState("skipped");
+          setSignalFilterDetail(detail);
+          addLog(`⚠ Final signal filter unavailable — using per-slot filtered transcript (${detail})`);
         }
-        (acc as EbookJobState & { filteredTranscript: string; filterRemovedCount: number }).filteredTranscript = filteredTranscript;
-        (acc as EbookJobState & { filteredTranscript: string; filterRemovedCount: number }).filterRemovedCount = 0;
-        addLog("✓ Signal filter complete (per-slot pass)");
         await checkpoint("analyzing");
       } else {
-        const restoredFilter = parseSignalFilterLog(logRef.current);
-        if (restoredFilter.state === "idle") {
-          setSignalFilterState("applied");
-          setSignalFilterDetail(null);
-        } else {
-          setSignalFilterState(restoredFilter.state);
-          setSignalFilterDetail(restoredFilter.detail);
-        }
+        setSignalFilterState("applied");
+        setSignalFilterDetail(null);
         addLog(`↩ Resuming — filtered transcript available (${countWords(filteredTranscript).toLocaleString()} teaching words)`);
       }
 
@@ -2596,7 +2189,7 @@ export function EbookPipeline({
       if (!voiceDNA) {
         setStage("analyzing");
         addLog("Extracting Voice DNA…");
-        voiceDNA = await postJson<VoiceDNA>("/api/ebook/voice-dna", { masterTranscript: teachingTranscript }, 2);
+        voiceDNA = await postJson<VoiceDNA>("/api/ebook/voice-dna", { masterTranscript: teachingTranscript });
         addLog(`✓ Voice DNA captured — tone: ${voiceDNA.toneProfile}`);
         acc.voiceDNA = voiceDNA;
         await checkpoint("mapping");
@@ -2609,7 +2202,7 @@ export function EbookPipeline({
       if (!contentMap) {
         setStage("mapping");
         addLog("Mapping content segments…");
-        contentMap = await postJson<ContentMap>("/api/ebook/content-map", { masterTranscript: teachingTranscript, voiceDNA }, 3);
+        contentMap = await postJson<ContentMap>("/api/ebook/content-map", { masterTranscript: teachingTranscript, voiceDNA });
         addLog(`✓ Content mapped — ${contentMap.segments.length} segments, ${contentMap.allQuotes.length} scriptures/quotes`);
         acc.contentMap = contentMap;
         await checkpoint("architecting");
@@ -2622,8 +2215,7 @@ export function EbookPipeline({
       if (!architecture) {
         setStage("architecting");
         addLog("Designing chapter structure…");
-        const architectContentMap = buildArchitectContentMap(contentMap, oneChapterPerUpload);
-        architecture = await postJson<BookArchitecture>("/api/ebook/architect", { contentMap: architectContentMap, voiceDNA, oneChapterPerUpload }, 3);
+        architecture = await postJson<BookArchitecture>("/api/ebook/architect", { contentMap, voiceDNA, oneChapterPerUpload });
         const totalSections = architecture.chapters.reduce((a, c) => a + c.sections.length, 0);
         addLog(`✓ Architecture: "${architecture.bookTitle}" — ${architecture.chapters.length} chapters, ${totalSections} sections`);
         acc.architecture = architecture;
@@ -2670,17 +2262,14 @@ export function EbookPipeline({
         addLog("Assigning transcript segments to sections…");
         const result = await postJson<{ assignments: SectionAssignment[] }>(
           "/api/ebook/assign-segments",
-          { architecture, contentMap, voiceDNA },
-          2
+          { architecture, contentMap, voiceDNA }
         );
         assignments = result.assignments;
         addLog(`✓ ${assignments.length} section assignments ready`);
         acc.sectionAssignments = assignments;
-        setSectionAssignments(assignments);
         await checkpoint("writing");
       } else {
         addLog(`↩ Resuming — ${assignments.length} section assignments available`);
-        setSectionAssignments(assignments);
       }
 
       // ── Stage 6: Write Sections (sequential with continuity) ─────────────
@@ -2876,33 +2465,15 @@ export function EbookPipeline({
             const chapterAssignments = assignments.filter(
               (a) => a.chapterNumber === assignment.chapterNumber
             );
-            const pendingSectionNumbers = chapterAssignments
-              .filter((a) => !completedSectionKeys.has(`${a.chapterNumber}-${a.sectionNumber}`))
-              .map((a) => a.sectionNumber);
             const incompleteCount = chapterAssignments.filter(
               (a) => !completedSectionKeys.has(`${a.chapterNumber}-${a.sectionNumber}`)
             ).length;
             if (incompleteCount > 0) {
-              const chapterKey = String(assignment.chapterNumber);
-              const persistedPlansForChapter = acc.chapterPlans?.[chapterKey] ?? {};
-              for (const sectionNumber of pendingSectionNumbers) {
-                const persisted = persistedPlansForChapter[String(sectionNumber)] ?? [];
-                if (persisted.length > 0) {
-                  chapterPlanMap.set(sectionNumber, persisted);
-                }
-              }
-
-              const missingPendingFromPersisted = pendingSectionNumbers.filter((n) => {
-                const plan = chapterPlanMap.get(n);
-                return !plan || plan.length === 0;
-              });
-
-              if (missingPendingFromPersisted.length === 0) {
-                addLog(`  ♻ Reusing persisted Chapter ${assignment.chapterNumber} plan (${pendingSectionNumbers.length} pending sections)`);
-              } else {
-                addLog(`  📋 Planning Chapter ${assignment.chapterNumber} (${incompleteCount} sections remaining)…`);
-                try {
-                  const chapterPlanRequest = {
+              addLog(`  📋 Planning Chapter ${assignment.chapterNumber} (${incompleteCount} sections remaining)…`);
+              try {
+                const chapterPlanResult = await postJson<{ sectionPlans: Array<{ sectionNumber: number; paragraphPlan: Array<{ purpose: string; supportedExcerptNumbers: number[]; minExcerptNumber?: number }> }> }>(
+                  "/api/ebook/chapter-plan",
+                  {
                     chapterNumber: assignment.chapterNumber,
                     chapterTitle: assignment.chapterTitle,
                     nextChapterTitle: (() => {
@@ -2941,72 +2512,19 @@ export function EbookPipeline({
                         return !next || next.chapterNumber !== a.chapterNumber;
                       })(),
                     })),
-                  };
-
-                  let accepted = false;
-                  for (let attempt = 1; attempt <= 2; attempt++) {
-                    const chapterPlanRaw = await postJson<unknown>("/api/ebook/chapter-plan", chapterPlanRequest);
-                    const parsedPlan = ChapterPlanResponseSchema.safeParse(chapterPlanRaw);
-                    if (!parsedPlan.success) {
-                      if (attempt < 2) {
-                        addLog(`  ↺ Chapter ${assignment.chapterNumber} plan response invalid — retrying…`);
-                        continue;
-                      }
-                      throw new Error(`Invalid chapter-plan response for Chapter ${assignment.chapterNumber}`);
-                    }
-
-                    chapterPlanMap.clear();
-                    for (const sectionNumber of pendingSectionNumbers) {
-                      const persisted = persistedPlansForChapter[String(sectionNumber)] ?? [];
-                      if (persisted.length > 0) {
-                        chapterPlanMap.set(sectionNumber, persisted);
-                      }
-                    }
-                    for (const sp of parsedPlan.data.sectionPlans ?? []) {
-                      if ((sp.paragraphPlan ?? []).length > 0) {
-                        chapterPlanMap.set(sp.sectionNumber, sp.paragraphPlan);
-                      }
-                    }
-
-                    const missingPending = pendingSectionNumbers.filter((n) => {
-                      const plan = chapterPlanMap.get(n);
-                      return !plan || plan.length === 0;
-                    });
-
-                    if (missingPending.length > 0) {
-                      if (attempt < 2) {
-                        addLog(`  ↺ Chapter ${assignment.chapterNumber} plan missing section(s) ${missingPending.join(", ")} — retrying…`);
-                        continue;
-                      }
-                      throw new Error(`Chapter ${assignment.chapterNumber} plan incomplete. Missing section plan(s): ${missingPending.join(", ")}`);
-                    }
-
-                    accepted = true;
-                    break;
                   }
-
-                  if (!accepted) {
-                    throw new Error(`Failed to produce a valid plan for Chapter ${assignment.chapterNumber}`);
+                );
+                for (const sp of chapterPlanResult.sectionPlans ?? []) {
+                  if ((sp.paragraphPlan ?? []).length > 0) {
+                    chapterPlanMap.set(sp.sectionNumber, sp.paragraphPlan);
                   }
-
-                  const persistedChapter: Record<string, ChapterPlanStep[]> = {};
-                  for (const [sectionNumber, plan] of chapterPlanMap.entries()) {
-                    if (plan.length > 0) {
-                      persistedChapter[String(sectionNumber)] = plan;
-                    }
-                  }
-                  acc.chapterPlans = {
-                    ...(acc.chapterPlans ?? {}),
-                    [chapterKey]: persistedChapter,
-                  };
-                  await checkpoint("writing");
-                  addLog(`  ✓ Chapter ${assignment.chapterNumber} plan ready and persisted (${chapterPlanMap.size} sections planned)`);
-                } catch (planErr) {
-                  const detail = planErr instanceof Error ? planErr.message : String(planErr);
-                  addLog(`  ✗ Chapter plan failed for Chapter ${assignment.chapterNumber}: ${detail}`);
-                  console.warn("[chapter-plan] failed:", planErr);
-                  throw new Error(`Chapter planning failed before writing Chapter ${assignment.chapterNumber}: ${detail}`);
                 }
+                addLog(`  ✓ Chapter ${assignment.chapterNumber} plan ready (${chapterPlanMap.size} sections planned)`);
+              } catch (planErr) {
+                addLog(`  ⚠ Chapter plan failed — pipeline will stop at write-section (Fix 2: no fallback planner)`);
+                console.warn("[chapter-plan] failed:", planErr);
+                // FIX 2: No fallback planner. Write-section will return 400 error.
+                // This forces the user to retry with a working chapter-plan.
               }
             }
           }
@@ -3014,7 +2532,7 @@ export function EbookPipeline({
           // ── Proposal 2: single-call chapter writer ──────────────────────
           // When useChapterWriter is on, write ALL sections of this chapter
           // in one LLM call. Results cached — per-section loop reads from cache.
-          // If this fails, stop with a hard error (correctness over silent downgrade).
+          // Falls back to per-section writes if the call fails.
           if (useChapterWriter && chapterWrittenForChapter !== assignment.chapterNumber) {
             chapterWrittenForChapter = assignment.chapterNumber;
             chapterWriteCache.clear();
@@ -3026,69 +2544,53 @@ export function EbookPipeline({
               addLog(`  ✍ Writing Chapter ${assignment.chapterNumber} in one pass (${chapterAssignmentsForWrite.length} sections)…`);
               try {
                 // G6: route now returns SSE — read the stream and parse the data: line
-                const chapterWriteRes = await fetchWithRetry(
-                  "/api/ebook/write-chapter",
-                  {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                      chapterNumber: assignment.chapterNumber,
-                      chapterTitle: assignment.chapterTitle,
-                      chapterPremise: (architecture.chapters.find((ch) => ch.number === assignment.chapterNumber) as { chapterPremise?: string } | undefined)?.chapterPremise ?? undefined,
-                      nextChapterTitle: (() => {
-                        const last = chapterAssignmentsForWrite[chapterAssignmentsForWrite.length - 1];
-                        const lastIdx = assignments.indexOf(last);
-                        return assignments[lastIdx + 1]?.chapterTitle;
-                      })(),
-                      coreThesis: contentMap.coreThesis || undefined,
-                      primaryTranslation: chapterAssignmentsForWrite[0]?.primaryTranslation,
-                      voiceDNA,
-                      authorConfig: (authorInstructions || targetAudience) ? { instructions: authorInstructions, targetAudience } : undefined,
-                      priorSectionsSample: buildProseSampleForDedup(assignment.chapterNumber),
-                      bannedRecaps: extractBannedRecaps(allSections),
-                      alreadyQuotedRefs: [...usedQuoteRefs],
-                      forbiddenVerseTexts: Array.from(quotedVerseTextsByRef.values()).filter(Boolean),
-                      overusedPhrases: extractOverusedPhrases(writtenCorpus, 10), // G4
-                      sections: chapterAssignmentsForWrite.map((a) => {
-                        const filtered = (a.transcriptExcerpts ?? []).filter((_, idx) => {
-                          const segId = (a.sourceSegmentIds ?? [])[idx];
-                          return !segId || !consumedSegmentIds.has(segId);
-                        });
-                        const idx2 = assignments.indexOf(a);
-                        const next2 = assignments[idx2 + 1];
-                        return {
-                          sectionNumber: a.sectionNumber,
-                          heading: a.heading,
-                          transcriptExcerpts: filtered.length > 0 ? filtered : a.transcriptExcerpts,
-                          keyPoints: a.keyPoints ?? [],
-                          quotes: a.quotes ?? [],
-                          targetWordCount: a.targetWordCount ?? 500,
-                          isLastSectionInChapter: !next2 || next2.chapterNumber !== a.chapterNumber,
-                          assignedPlan: chapterPlanMap.get(a.sectionNumber),
-                        };
-                      }),
+                const chapterWriteRes = await fetch("/api/ebook/write-chapter", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    chapterNumber: assignment.chapterNumber,
+                    chapterTitle: assignment.chapterTitle,
+                    chapterPremise: (architecture.chapters.find((ch) => ch.number === assignment.chapterNumber) as { chapterPremise?: string } | undefined)?.chapterPremise ?? undefined,
+                    nextChapterTitle: (() => {
+                      const last = chapterAssignmentsForWrite[chapterAssignmentsForWrite.length - 1];
+                      const lastIdx = assignments.indexOf(last);
+                      return assignments[lastIdx + 1]?.chapterTitle;
+                    })(),
+                    coreThesis: contentMap.coreThesis || undefined,
+                    primaryTranslation: chapterAssignmentsForWrite[0]?.primaryTranslation,
+                    voiceDNA,
+                    authorConfig: (authorInstructions || targetAudience) ? { instructions: authorInstructions, targetAudience } : undefined,
+                    priorSectionsSample: buildProseSampleForDedup(assignment.chapterNumber),
+                    bannedRecaps: extractBannedRecaps(allSections),
+                    alreadyQuotedRefs: [...usedQuoteRefs],
+                    forbiddenVerseTexts: Array.from(quotedVerseTextsByRef.values()).filter(Boolean),
+                    overusedPhrases: extractOverusedPhrases(writtenCorpus, 10), // G4
+                    sections: chapterAssignmentsForWrite.map((a) => {
+                      const filtered = (a.transcriptExcerpts ?? []).filter((_, idx) => {
+                        const segId = (a.sourceSegmentIds ?? [])[idx];
+                        return !segId || !consumedSegmentIds.has(segId);
+                      });
+                      const idx2 = assignments.indexOf(a);
+                      const next2 = assignments[idx2 + 1];
+                      return {
+                        sectionNumber: a.sectionNumber,
+                        heading: a.heading,
+                        transcriptExcerpts: filtered.length > 0 ? filtered : a.transcriptExcerpts,
+                        keyPoints: a.keyPoints ?? [],
+                        quotes: a.quotes ?? [],
+                        targetWordCount: a.targetWordCount ?? 500,
+                        isLastSectionInChapter: !next2 || next2.chapterNumber !== a.chapterNumber,
+                        assignedPlan: chapterPlanMap.get(a.sectionNumber),
+                      };
                     }),
-                  },
-                  3,
-                  DEFAULT_REQUEST_TIMEOUT_MS,
-                );
-
-                if (!chapterWriteRes.ok) {
-                  throw new Error(`write-chapter failed (HTTP ${chapterWriteRes.status})`);
-                }
-                if (!chapterWriteRes.body) {
-                  throw new Error("write-chapter returned no stream body");
-                }
+                  }),
+                });
                 // Read SSE buffer, extract the data: JSON line
-                const reader = chapterWriteRes.body.getReader();
+                const reader = chapterWriteRes.body!.getReader();
                 const dec = new TextDecoder();
                 let buf = "";
                 while (true) {
-                  const { done, value } = await withTimeout(
-                    reader.read(),
-                    "write-chapter stream idle",
-                    CHAPTER_WRITER_STREAM_IDLE_TIMEOUT_MS,
-                  );
+                  const { done, value } = await reader.read();
                   if (done) break;
                   buf += dec.decode(value, { stream: true });
                 }
@@ -3096,6 +2598,7 @@ export function EbookPipeline({
                 for (const line of buf.split("\n")) {
                   if (line.startsWith("data: ")) {
                     chapterWriteResult = JSON.parse(line.slice(6));
+                    break;
                   }
                 }
                 if (!chapterWriteResult || chapterWriteResult.error) throw new Error(chapterWriteResult?.error ?? "Empty response from write-chapter");
@@ -3108,10 +2611,8 @@ export function EbookPipeline({
                 }
                 addLog(`  ✓ Chapter ${assignment.chapterNumber} written (${chapterWriteCache.size} sections cached)`);
               } catch (writeErr) {
-                const detail = writeErr instanceof Error ? writeErr.message : String(writeErr);
-                addLog(`  ✗ Chapter write failed for Chapter ${assignment.chapterNumber}: ${detail}`);
+                addLog(`  ⚠ Chapter write call failed — falling back to per-section writes`);
                 console.warn("[write-chapter] failed:", writeErr);
-                throw new Error(`Single-pass chapter writer failed for Chapter ${assignment.chapterNumber}: ${detail}`);
               }
             }
           }
@@ -3193,12 +2694,6 @@ export function EbookPipeline({
           // Chapter-level pre-computed plan — skips per-section planner in write-section
           assignedPlan: chapterPlanMap.get(assignment.sectionNumber),
         };
-
-        if ((augmented.assignedPlan ?? []).length === 0) {
-          throw new Error(
-            `Missing chapter plan for Ch${assignment.chapterNumber} §${assignment.sectionNumber}. Resume will retry chapter-plan and continue once complete.`
-          );
-        }
         addLog(`Writing Ch ${assignment.chapterNumber} § ${assignment.sectionNumber}: ${assignment.heading}…`);
 
         // Update section status to "writing"
@@ -3423,7 +2918,7 @@ export function EbookPipeline({
             })(),
           },
           ...((authorInstructions || targetAudience) ? { authorConfig: { instructions: authorInstructions, targetAudience } } : {}),
-        }, 2);
+        });
 
         // Restore full section bodies that were stripped for the request
         const fullPolished: ChapterDraft = {
@@ -3457,7 +2952,9 @@ export function EbookPipeline({
         // prayers, announcements, and altar calls don't bleed into the preface/introduction.
         const frontMatterTranscript = typeof teachingTranscript === "string" && teachingTranscript
           ? teachingTranscript
-            : buildMasterTranscript(acc.transcripts);
+          : acc.transcripts
+              .map((t) => `[${t.label}]\n${t.text}`)
+              .join("\n\n═══════════════════════════════════════\n\n");
         if (countWords(frontMatterTranscript) < 100) {
           throw new Error("Saved job is missing transcript text required for front matter");
         }
@@ -3466,7 +2963,7 @@ export function EbookPipeline({
           architecture,
           voiceDNA,
           ...((authorInstructions || targetAudience) ? { authorConfig: { instructions: authorInstructions, targetAudience } } : {}),
-        }, 2);
+        });
         addLog("✓ Front and back matter complete");
         acc.frontMatter = frontMatter;
         await checkpoint("complete");
@@ -3497,7 +2994,7 @@ export function EbookPipeline({
       // ── Back Matter: glossary, reading group guide, scripture index ─────
       addLog("Generating back matter (glossary, discussion guide, scripture index)…");
       try {
-        const backMatter = await postJson<BackMatter>("/api/ebook/backmatter", { manifest: harmonizedManifest }, 2);
+        const backMatter = await postJson<BackMatter>("/api/ebook/backmatter", { manifest: harmonizedManifest });
         harmonizedManifest.backMatter = backMatter;
         acc.backMatter = backMatter;
         await checkpoint("complete");
@@ -3548,7 +3045,6 @@ export function EbookPipeline({
       try { await saveEbookJob({ ...acc }); } catch { /* ignore */ }
       // Update savedJobRef so the Resume button has the partial state
       savedJobRef.current = { ...acc };
-      onJobStateChange?.({ ...acc });
       setStage("failed");
       addLog(`✗ Error: ${msg}`);
     }
@@ -3557,28 +3053,17 @@ export function EbookPipeline({
   // ─── Render ──────────────────────────────────────────────────────────────
 
   const isRunning = stage !== "idle" && stage !== "complete" && stage !== "failed";
-  const resumeCandidate = (() => {
-    if (savedJobRef.current) return savedJobRef.current;
-    if (typeof window === "undefined") return null;
-    try {
-      const raw = localStorage.getItem(JOB_STATE_KEY);
-      if (!raw) return null;
-      return normalizeJob(JSON.parse(raw) as EbookJobState);
-    } catch {
-      return null;
-    }
-  })();
   const hasResumableState = Boolean(
-    resumeCandidate && (
-      resumeCandidate.masterTranscript ||
-      (resumeCandidate.transcripts?.length ?? 0) > 0 ||
-      resumeCandidate.voiceDNA ||
-      resumeCandidate.contentMap ||
-      resumeCandidate.architecture ||
-      (resumeCandidate.sectionAssignments?.length ?? 0) > 0 ||
-      (resumeCandidate.sections?.length ?? 0) > 0 ||
-      (resumeCandidate.chapters?.length ?? 0) > 0 ||
-      resumeCandidate.frontMatter
+    savedJobRef.current && (
+      savedJobRef.current.masterTranscript ||
+      savedJobRef.current.transcripts.length > 0 ||
+      savedJobRef.current.voiceDNA ||
+      savedJobRef.current.contentMap ||
+      savedJobRef.current.architecture ||
+      savedJobRef.current.sectionAssignments.length > 0 ||
+      savedJobRef.current.sections.length > 0 ||
+      savedJobRef.current.chapters.length > 0 ||
+      savedJobRef.current.frontMatter
     )
   );
 
@@ -3893,46 +3378,17 @@ export function EbookPipeline({
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-2 rounded-xl border border-slate-700/40 bg-slate-900/50 p-1.5">
-              <button
-                type="button"
-                onClick={() => setReviewTab("manuscript")}
-                className={[
-                  "min-h-[48px] rounded-lg border px-3 py-2 text-sm font-semibold transition-colors",
-                  reviewTab === "manuscript"
-                    ? "border-cyan-400/40 bg-cyan-500/15 text-cyan-200"
-                    : "border-slate-700/50 bg-slate-900/60 text-slate-300",
-                ].join(" ")}
-              >
-                Manuscript
-              </button>
-              <button
-                type="button"
-                onClick={() => setReviewTab("source-map")}
-                className={[
-                  "min-h-[48px] rounded-lg border px-3 py-2 text-sm font-semibold transition-colors",
-                  reviewTab === "source-map"
-                    ? "border-violet-400/40 bg-violet-500/15 text-violet-200"
-                    : "border-slate-700/50 bg-slate-900/60 text-slate-300",
-                ].join(" ")}
-              >
-                Source Map
-              </button>
-            </div>
+            {/* Shared word processor toolbar — one bar for all editors */}
+            <SharedProseToolbar className="sticky top-0 z-20" />
 
-            {reviewTab === "manuscript" && (
-              <>
-                {/* Shared word processor toolbar — one bar for all editors */}
-                <SharedProseToolbar className="sticky top-0 z-20" />
+            {/* Print Specification Toggle */}
+            <PrintSpecPanel
+              trimSize={printSpec.trimSize}
+              runningHeaders={printSpec.runningHeaders}
+              onChange={setPrintSpec}
+            />
 
-                {/* Print Specification Toggle */}
-                <PrintSpecPanel
-                  trimSize={printSpec.trimSize}
-                  runningHeaders={printSpec.runningHeaders}
-                  onChange={setPrintSpec}
-                />
-
-                {qualityReport && (
+            {qualityReport && (
               <div className={`rounded-xl border px-4 py-3 ${qualityReport.pass ? "border-emerald-400/20 bg-emerald-400/5" : "border-amber-400/20 bg-amber-400/5"}`}>
                 <div className="flex items-center justify-between gap-3">
                   <p className={`text-sm font-semibold ${qualityReport.pass ? "text-emerald-300" : "text-amber-300"}`}>
@@ -3950,9 +3406,9 @@ export function EbookPipeline({
                   </ul>
                 )}
               </div>
-              )}
+            )}
 
-              <div className="grid gap-3 md:grid-cols-3">
+            <div className="grid gap-3 md:grid-cols-3">
               <ProseEditor
                 label="Preface"
                 value={completedManifest.frontMatter.preface}
@@ -3974,9 +3430,9 @@ export function EbookPipeline({
                 rows={5}
                 placeholder="Book conclusion…"
               />
-              </div>
+            </div>
 
-              <div className="grid gap-3 md:grid-cols-2">
+            <div className="grid gap-3 md:grid-cols-2">
               <ProseEditor
                 label="About Author"
                 value={completedManifest.frontMatter.aboutAuthor ?? ""}
@@ -3999,53 +3455,18 @@ export function EbookPipeline({
                   className="w-full rounded-xl border border-slate-700/60 bg-slate-950/70 px-3 py-2 text-base text-slate-100 outline-none focus:border-cyan-500/40"
                 />
               </div>
-              </div>
+            </div>
 
-                {/* Back Matter — only shown when the back matter generation stage has completed */}
-                {completedManifest.backMatter && (
+            {/* Back Matter — only shown when the back matter generation stage has completed */}
+            {completedManifest.backMatter && (
               <div className="border-t border-slate-700/40 pt-4 space-y-3">
                 <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Back Matter</p>
 
                 {/* Glossary */}
                 {(completedManifest.backMatter.glossary?.length ?? 0) > 0 && (
-                  <div className="space-y-2 rounded-xl border border-slate-700/50 bg-slate-900/45 p-3">
-                    <div className="flex flex-wrap items-end gap-2">
-                      <div className="min-w-[220px] flex-1">
-                        <label className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-500">Subsection Title</label>
-                        <input
-                          value={completedManifest.backMatter.glossaryTitle ?? "Glossary"}
-                          onChange={(e) => updateCompletedManifest((current) => {
-                            if (!current.backMatter) return current;
-                            return {
-                              ...current,
-                              backMatter: {
-                                ...current.backMatter,
-                                glossaryTitle: e.target.value,
-                              },
-                            };
-                          })}
-                          className="w-full min-h-[48px] rounded-xl border border-slate-700/60 bg-slate-950/70 px-3 py-2 text-base text-slate-100 outline-none ring-0 focus:border-cyan-500/40"
-                        />
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => updateCompletedManifest((current) => {
-                          if (!current.backMatter) return current;
-                          return {
-                            ...current,
-                            backMatter: {
-                              ...current.backMatter,
-                              glossary: [],
-                            },
-                          };
-                        })}
-                        className="min-h-[48px] rounded-xl border border-red-500/35 bg-red-500/10 px-3 py-2 text-sm font-semibold text-red-200"
-                      >
-                        Delete Subsection Box
-                      </button>
-                    </div>
+                  <div>
                     <label className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-500">
-                      {completedManifest.backMatter.glossary.length} terms
+                      Glossary ({completedManifest.backMatter.glossary.length} terms)
                     </label>
                     <div className="space-y-2 max-h-56 overflow-y-auto rounded-xl border border-slate-700/60 bg-slate-950/70 px-3 py-2">
                       {completedManifest.backMatter.glossary.map((entry, i) => (
@@ -4061,44 +3482,9 @@ export function EbookPipeline({
 
                 {/* Reading Group Guide */}
                 {(completedManifest.backMatter.readingGroupGuide?.length ?? 0) > 0 && (
-                  <div className="space-y-2 rounded-xl border border-slate-700/50 bg-slate-900/45 p-3">
-                    <div className="flex flex-wrap items-end gap-2">
-                      <div className="min-w-[220px] flex-1">
-                        <label className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-500">Subsection Title</label>
-                        <input
-                          value={completedManifest.backMatter.readingGroupGuideTitle ?? "Reading Group Guide"}
-                          onChange={(e) => updateCompletedManifest((current) => {
-                            if (!current.backMatter) return current;
-                            return {
-                              ...current,
-                              backMatter: {
-                                ...current.backMatter,
-                                readingGroupGuideTitle: e.target.value,
-                              },
-                            };
-                          })}
-                          className="w-full min-h-[48px] rounded-xl border border-slate-700/60 bg-slate-950/70 px-3 py-2 text-base text-slate-100 outline-none ring-0 focus:border-cyan-500/40"
-                        />
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => updateCompletedManifest((current) => {
-                          if (!current.backMatter) return current;
-                          return {
-                            ...current,
-                            backMatter: {
-                              ...current.backMatter,
-                              readingGroupGuide: [],
-                            },
-                          };
-                        })}
-                        className="min-h-[48px] rounded-xl border border-red-500/35 bg-red-500/10 px-3 py-2 text-sm font-semibold text-red-200"
-                      >
-                        Delete Subsection Box
-                      </button>
-                    </div>
+                  <div>
                     <label className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-500">
-                      {completedManifest.backMatter.readingGroupGuide.length} chapters
+                      Reading Group Guide ({completedManifest.backMatter.readingGroupGuide.length} chapters)
                     </label>
                     <div className="space-y-3 max-h-64 overflow-y-auto rounded-xl border border-slate-700/60 bg-slate-950/70 px-3 py-2">
                       {completedManifest.backMatter.readingGroupGuide.map((chapter, i) => (
@@ -4119,44 +3505,9 @@ export function EbookPipeline({
 
                 {/* Scripture Index */}
                 {(completedManifest.backMatter.scriptureIndex?.length ?? 0) > 0 && (
-                  <div className="space-y-2 rounded-xl border border-slate-700/50 bg-slate-900/45 p-3">
-                    <div className="flex flex-wrap items-end gap-2">
-                      <div className="min-w-[220px] flex-1">
-                        <label className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-500">Subsection Title</label>
-                        <input
-                          value={completedManifest.backMatter.scriptureIndexTitle ?? "Scripture Index"}
-                          onChange={(e) => updateCompletedManifest((current) => {
-                            if (!current.backMatter) return current;
-                            return {
-                              ...current,
-                              backMatter: {
-                                ...current.backMatter,
-                                scriptureIndexTitle: e.target.value,
-                              },
-                            };
-                          })}
-                          className="w-full min-h-[48px] rounded-xl border border-slate-700/60 bg-slate-950/70 px-3 py-2 text-base text-slate-100 outline-none ring-0 focus:border-cyan-500/40"
-                        />
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => updateCompletedManifest((current) => {
-                          if (!current.backMatter) return current;
-                          return {
-                            ...current,
-                            backMatter: {
-                              ...current.backMatter,
-                              scriptureIndex: [],
-                            },
-                          };
-                        })}
-                        className="min-h-[48px] rounded-xl border border-red-500/35 bg-red-500/10 px-3 py-2 text-sm font-semibold text-red-200"
-                      >
-                        Delete Subsection Box
-                      </button>
-                    </div>
+                  <div>
                     <label className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-500">
-                      {completedManifest.backMatter.scriptureIndex.length} references
+                      Scripture Index ({completedManifest.backMatter.scriptureIndex.length} references)
                     </label>
                     <div className="max-h-48 overflow-y-auto rounded-xl border border-slate-700/60 bg-slate-950/70 px-3 py-2 space-y-1">
                       {completedManifest.backMatter.scriptureIndex.map((entry, i) => (
@@ -4170,10 +3521,10 @@ export function EbookPipeline({
                   </div>
                 )}
               </div>
-              )}
+            )}
 
-                {/* Audit Results */}
-                {(auditReport || auditRunning) && (
+            {/* Audit Results */}
+            {(auditReport || auditRunning) && (
               <div className="border-t border-slate-700/40 pt-4 space-y-3">
                 <div className="flex items-center gap-2">
                   <p className="text-xs font-bold uppercase tracking-widest text-amber-300">Audit Results</p>
@@ -4198,10 +3549,10 @@ export function EbookPipeline({
                   />
                 )}
               </div>
-              )}
+            )}
 
-                {/* Chapter Cards — inside Final Review so everything is co-located */}
-                {chapters.length > 0 && (
+            {/* Chapter Cards — inside Final Review so everything is co-located */}
+            {chapters.length > 0 && (
               <div className="border-t border-slate-700/40 pt-4 space-y-2">
                 <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Chapters</p>
                 {chapters.map((ch) => (
@@ -4218,73 +3569,10 @@ export function EbookPipeline({
                   />
                 ))}
               </div>
-                )}
-
-                {/* Voice Studio — audiobook narration */}
-                <VoiceStudio manifest={completedManifest} slug={completedManifest.jobId} />
-              </>
             )}
 
-            {reviewTab === "source-map" && (
-              <>
-                <div className="rounded-xl border border-slate-700/40 bg-slate-900/45 p-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <p className="text-xs text-slate-300">
-                      Source Map fallback tools
-                    </p>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={downloadSourceMap}
-                        className="min-h-[48px] rounded-xl border border-violet-400/35 bg-violet-500/10 px-3 py-2 text-sm font-semibold text-violet-100"
-                      >
-                        Download Source Map
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => sourceMapImportRef.current?.click()}
-                        className="min-h-[48px] rounded-xl border border-cyan-400/35 bg-cyan-500/10 px-3 py-2 text-sm font-semibold text-cyan-100"
-                      >
-                        Upload Source Map
-                      </button>
-                      <input
-                        ref={sourceMapImportRef}
-                        type="file"
-                        accept="application/json,.json"
-                        className="sr-only"
-                        onChange={(event) => {
-                          void handleSourceMapUpload(event);
-                        }}
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                <TranscriptSourceMapPanel
-                  chapters={chapters}
-                  sectionAssignments={sectionAssignments}
-                  transcriptEntries={sourceTranscripts}
-                  authorConfig={{ instructions: authorInstructions, targetAudience }}
-                  onSectionBodyChange={(chapterNumber, sectionNumber, body) => {
-                    updateCompletedManifest((current) => ({
-                      ...current,
-                      chapters: current.chapters.map((chapter) => {
-                        if (chapter.number !== chapterNumber) return chapter;
-                        return {
-                          ...chapter,
-                          sections: chapter.sections.map((section) => (
-                            section.sectionNumber === sectionNumber
-                              ? { ...section, body, wordCount: countWords(body) }
-                              : section
-                          )),
-                        };
-                      }),
-                    }));
-                    void persistSourceMapState(sectionAssignments);
-                  }}
-                />
-              </>
-            )}
+            {/* Voice Studio — audiobook narration */}
+            <VoiceStudio manifest={completedManifest} slug={completedManifest.jobId} />
 
             {/* Start new project */}
             <div className="border-t border-slate-700/40 pt-3 flex justify-end">
@@ -4299,12 +3587,8 @@ export function EbookPipeline({
                   setCompletedManifest(null);
                   setTotalWords(0);
                   setProgress({ total: 0, completed: 0 });
-                  setSectionAssignments([]);
-                  setSourceTranscripts([]);
-                  setReviewTab("manuscript");
                   jobIdRef.current = newJobId();
                   autoDownloadedRef.current = false;
-                  autoSavedRef.current = false;
                   localStorage.removeItem(JOB_STORAGE_KEY);
                   localStorage.removeItem(JOB_STATE_KEY);
                 }}
@@ -4329,8 +3613,7 @@ export function EbookPipeline({
             <button
               type="button"
               onClick={() => {
-                const saved = resumeCandidate;
-                if (!saved) return;
+                const saved = savedJobRef.current!;
                 setError(null);
                 setSignalFilterState(parseSignalFilterLog(saved.errorLog ?? []).state);
                 setSignalFilterDetail(parseSignalFilterLog(saved.errorLog ?? []).detail);
@@ -4344,8 +3627,7 @@ export function EbookPipeline({
               className="w-full min-h-[48px] rounded-xl bg-gradient-to-r from-amber-500/80 to-orange-500/80 text-white font-semibold text-sm active:scale-[0.98] transition-all"
             >
               {(() => {
-                const saved = resumeCandidate;
-                if (!saved) return "Resume pipeline";
+                const saved = savedJobRef.current!;
                 if (!saved.voiceDNA) return "Resume — retry from Voice DNA";
                 if (!saved.contentMap) return "Resume — retry from Content Map";
                 if (!saved.architecture) return "Resume — retry from Chapter Design";

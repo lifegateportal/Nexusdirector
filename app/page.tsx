@@ -1,7 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect, useRef } from "react";
-import dynamic from "next/dynamic";
+import { useState, useCallback, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { NexusNav } from "@/app/components/NexusNav";
 import { StatusBar } from "@/app/components/StatusBar";
@@ -10,7 +9,10 @@ import { MediaUpload } from "@/app/components/MediaUpload";
 import { ProjectCard } from "@/app/components/ProjectCard";
 import { PipelineResults } from "@/app/components/PipelineResults";
 import { PromptBar } from "@/app/components/PromptBar";
+import { AssistantPanel } from "@/app/components/AssistantPanel";
 import { ProjectsPanel } from "@/app/components/ProjectsPanel";
+import { EbookPipeline } from "@/app/components/EbookPipeline";
+import { SermonAssistantPanel } from "@/app/components/SermonAssistantPanel";
 import type { EbookPipelineSnapshot } from "@/app/components/EbookPipeline";
 import { EbookJobStateSchema } from "@/lib/schemas/ebook";
 import type { EbookManifest } from "@/lib/schemas/ebook";
@@ -37,21 +39,6 @@ import {
 } from "@/lib/ebook-project-store";
 import type { ProjectSnapshot, ChatMessage } from "@/lib/project-store";
 
-const EbookPipeline = dynamic(
-  () => import("@/app/components/EbookPipeline").then((mod) => mod.EbookPipeline),
-  { ssr: false },
-);
-
-const SermonAssistantPanel = dynamic(
-  () => import("@/app/components/SermonAssistantPanel").then((mod) => mod.SermonAssistantPanel),
-  { ssr: false },
-);
-
-const AssistantPanel = dynamic(
-  () => import("@/app/components/AssistantPanel").then((mod) => mod.AssistantPanel),
-  { ssr: false },
-);
-
 const INITIAL_MODELS: ModelState[] = [
   { name: "Gemini",   handle: "gemini",   role: "Analyst",           status: "standby" },
   { name: "DeepSeek", handle: "deepseek", role: "Engineer",          status: "standby" },
@@ -59,49 +46,6 @@ const INITIAL_MODELS: ModelState[] = [
   { name: "Curator",  handle: "curator",  role: "Academy Producer",  status: "standby" },
   { name: "Manus",    handle: "manus",    role: "Executive",         status: "standby" }
 ];
-
-function sanitizeChapters(chapters: unknown): Array<{ totalWordCount?: number }> {
-  return Array.isArray(chapters)
-    ? chapters.filter((chapter): chapter is { totalWordCount?: number } => Boolean(chapter && typeof chapter === "object"))
-    : [];
-}
-
-function sumChapterWords(chapters: unknown): number {
-  return sanitizeChapters(chapters).reduce((sum, chapter) => sum + (typeof chapter.totalWordCount === "number" ? chapter.totalWordCount : 0), 0);
-}
-
-function synthesizeEbookManifest(
-  job: { jobId: string; architecture?: { bookTitle?: string; subtitle?: string; authorName?: string } | null; frontMatter?: unknown; chapters?: unknown; contentMap?: { allQuotes?: unknown[] } | null; updatedAt?: string },
-  fallbackTitle: string,
-  coverImageUrl?: string,
-  authorImageUrl?: string,
-): EbookManifest | null {
-  const chapters = sanitizeChapters(job.chapters);
-  if (chapters.length === 0) return null;
-
-  return {
-    jobId: job.jobId,
-    bookTitle: job.architecture?.bookTitle ?? fallbackTitle,
-    subtitle: job.architecture?.subtitle ?? "",
-    authorName: job.architecture?.authorName ?? "the author",
-    frontMatter: (job.frontMatter as EbookManifest["frontMatter"] | undefined) ?? {
-      preface: "",
-      introduction: "",
-      conclusion: "",
-      aboutAuthor: null,
-      resourcesList: [],
-      scriptureIndex: [],
-    },
-    chapters: chapters as EbookManifest["chapters"],
-    totalWordCount: sumChapterWords(chapters),
-    allQuotes: job.contentMap?.allQuotes ?? [],
-    generatedAt: job.updatedAt ?? new Date().toISOString(),
-    selectedTemplate: "devotional",
-    printSpec: { trimSize: "6x9", runningHeaders: true, bleed: false, cropMarks: false },
-    coverImageUrl: coverImageUrl ?? null,
-    authorImageUrl: authorImageUrl ?? null,
-  };
-}
 
 export default function HomePage() {
   const router = useRouter();
@@ -129,102 +73,106 @@ export default function HomePage() {
   const [currentProjectId, setCurrentProjectId] = useState<string>("");
   const [chatHistory,     setChatHistory]     = useState<ChatMessage[]>([]);
   const [panelLoadKey,    setPanelLoadKey]    = useState<string>("");
-  const hasRemoteProjectSyncRef = useRef(false);
-
-  const loadMergedLocalProjects = useCallback(async (): Promise<ProjectSnapshot[]> => {
-    const main = await listProjects();
-    const mainIds = new Set(main.map((p) => p.id));
-    const ebookOnly = (await listEbookProjects().catch(() => []))
-      .filter((e) => !mainIds.has(e.id))
-      .map((e) => ({
-        id: e.id,
-        name: e.name,
-        createdAt: e.createdAt,
-        updatedAt: e.updatedAt,
-        academy: null,
-        siteConfig: SiteConfigSchema.parse({}),
-        deliveryInstructions: "",
-        chatHistory: [],
-        blueprint: null,
-        logicResult: null,
-        uiResult: null,
-        ebookManifest: null,
-        ebookJobState: e.jobState,
-        publishedSlug: e.publishedSlug,
-        coverImageUrl: e.coverImageUrl,
-        authorImageUrl: e.authorImageUrl,
-      }));
-
-    return [...main, ...ebookOnly];
-  }, []);
-
-  const runRemoteProjectSync = useCallback(async () => {
-    if (hasRemoteProjectSyncRef.current) return;
-    hasRemoteProjectSyncRef.current = true;
-
-    try {
-      const localProjects = await loadMergedLocalProjects();
-      const r2res = await fetch("/api/projects");
-      if (!r2res.ok) return;
-
-      const { projects: r2projects } = await r2res.json() as { projects: ProjectSnapshot[] };
-      if (!Array.isArray(r2projects) || r2projects.length === 0) {
-        // R2 is empty — push all local projects up (initial upload)
-        for (const p of localProjects) {
-          await fetch("/api/projects", {
-            method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ project: p }),
-          }).catch(() => {});
-        }
-        return;
-      }
-
-      const r2ById = new Map(r2projects.map((p: ProjectSnapshot) => [p.id, p]));
-      const localById = new Map(localProjects.map((p) => [p.id, p]));
-      const toPullLocal: ProjectSnapshot[] = [];
-      const toPushR2: ProjectSnapshot[] = [];
-
-      // Pull: R2 has newer or unknown project
-      for (const r2p of r2projects) {
-        const local = localById.get(r2p.id);
-        if (!local || new Date(r2p.updatedAt) > new Date(local.updatedAt)) {
-          toPullLocal.push(r2p as ProjectSnapshot);
-        }
-      }
-
-      // Push: local has newer or unknown project
-      for (const localP of localProjects) {
-        const r2p = r2ById.get(localP.id);
-        if (!r2p || new Date(localP.updatedAt) > new Date((r2p as ProjectSnapshot).updatedAt)) {
-          toPushR2.push(localP);
-        }
-      }
-
-      for (const p of toPullLocal) {
-        await saveProject(p).catch(() => {});
-      }
-      for (const p of toPushR2) {
-        await fetch("/api/projects", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ project: p }),
-        }).catch(() => {});
-      }
-
-      if (toPullLocal.length > 0) {
-        const refreshed = await loadMergedLocalProjects();
-        setProjects(refreshed);
-      }
-    } catch {
-      // R2 sync is best-effort.
-    }
-  }, [loadMergedLocalProjects]);
 
   // Load persisted state client-side only (avoids SSR hydration mismatch)
   useEffect(() => {
     void (async () => {
       try {
-        const mergedLocal = await loadMergedLocalProjects();
+        const main = await listProjects();
+        const mainIds = new Set(main.map((p) => p.id));
+        const ebookOnly = (await listEbookProjects().catch(() => []))
+          .filter((e) => !mainIds.has(e.id))
+          .map((e) => ({
+            id: e.id,
+            name: e.name,
+            createdAt: e.createdAt,
+            updatedAt: e.updatedAt,
+            academy: null,
+            siteConfig: SiteConfigSchema.parse({}),
+            deliveryInstructions: "",
+            chatHistory: [],
+            blueprint: null,
+            logicResult: null,
+            uiResult: null,
+            ebookManifest: null,
+            ebookJobState: e.jobState,
+            publishedSlug: e.publishedSlug,
+            coverImageUrl: e.coverImageUrl,
+            authorImageUrl: e.authorImageUrl,
+          }));
+        const mergedLocal = [...main, ...ebookOnly];
         setProjects(mergedLocal);
+
+        // ── Background R2 bidirectional sync ──────────────────────────────
+        void (async () => {
+          try {
+            const r2res = await fetch("/api/projects");
+            if (!r2res.ok) return;
+            const { projects: r2projects } = await r2res.json() as { projects: ProjectSnapshot[] };
+            if (!Array.isArray(r2projects) || r2projects.length === 0) {
+              // R2 is empty — push all local projects up (initial upload)
+              for (const p of mergedLocal) {
+                await fetch("/api/projects", {
+                  method: "POST", headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ project: p }),
+                }).catch(() => {});
+              }
+              return;
+            }
+            const r2ById  = new Map(r2projects.map((p: ProjectSnapshot) => [p.id, p]));
+            const localById = new Map(mergedLocal.map((p) => [p.id, p]));
+            const toPullLocal: ProjectSnapshot[] = [];
+            const toPushR2: ProjectSnapshot[] = [];
+            // Pull: R2 has newer or unknown project
+            for (const r2p of r2projects) {
+              const local = localById.get(r2p.id);
+              if (!local || new Date(r2p.updatedAt) > new Date(local.updatedAt)) {
+                toPullLocal.push(r2p as ProjectSnapshot);
+              }
+            }
+            // Push: local has newer or unknown project
+            for (const localP of mergedLocal) {
+              const r2p = r2ById.get(localP.id);
+              if (!r2p || new Date(localP.updatedAt) > new Date((r2p as ProjectSnapshot).updatedAt)) {
+                toPushR2.push(localP);
+              }
+            }
+            for (const p of toPullLocal) {
+              await saveProject(p).catch(() => {});
+            }
+            for (const p of toPushR2) {
+              await fetch("/api/projects", {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ project: p }),
+              }).catch(() => {});
+            }
+            if (toPullLocal.length > 0) {
+              const refreshedMain = await listProjects();
+              const refreshedMainIds = new Set(refreshedMain.map((p) => p.id));
+              const refreshedEbook = (await listEbookProjects().catch(() => []))
+                .filter((e) => !refreshedMainIds.has(e.id))
+                .map((e) => ({
+                  id: e.id,
+                  name: e.name,
+                  createdAt: e.createdAt,
+                  updatedAt: e.updatedAt,
+                  academy: null,
+                  siteConfig: SiteConfigSchema.parse({}),
+                  deliveryInstructions: "",
+                  chatHistory: [],
+                  blueprint: null,
+                  logicResult: null,
+                  uiResult: null,
+                  ebookManifest: null,
+                  ebookJobState: e.jobState,
+                  publishedSlug: e.publishedSlug,
+                  coverImageUrl: e.coverImageUrl,
+                  authorImageUrl: e.authorImageUrl,
+                }));
+              setProjects([...refreshedMain, ...refreshedEbook]);
+            }
+          } catch { /* R2 sync is best-effort */ }
+        })();
       } catch { /* ignore */ }
       try {
         setDeliveryInstructions(localStorage.getItem("nexus_delivery_instructions") ?? "");
@@ -232,28 +180,7 @@ export default function HomePage() {
         if (raw) setSiteConfig(SiteConfigSchema.parse(JSON.parse(raw) as unknown));
       } catch { /* ignore */ }
     })();
-
-    let timeoutId: ReturnType<typeof setTimeout> | null = null;
-    let idleId: number | null = null;
-    const triggerRemoteSync = () => {
-      void runRemoteProjectSync();
-    };
-
-    if (typeof window !== "undefined" && "requestIdleCallback" in window) {
-      idleId = (window as Window & {
-        requestIdleCallback: (cb: () => void, options?: { timeout: number }) => number;
-      }).requestIdleCallback(triggerRemoteSync, { timeout: 2500 });
-    } else {
-      timeoutId = setTimeout(triggerRemoteSync, 1200);
-    }
-
-    return () => {
-      if (timeoutId) clearTimeout(timeoutId);
-      if (idleId !== null && typeof window !== "undefined" && "cancelIdleCallback" in window) {
-        (window as Window & { cancelIdleCallback: (id: number) => void }).cancelIdleCallback(idleId);
-      }
-    };
-  }, [loadMergedLocalProjects, runRemoteProjectSync]);
+  }, []);
 
   // Populate boot logs client-side only to avoid server/client timestamp mismatch.
   useEffect(() => {
@@ -318,15 +245,6 @@ export default function HomePage() {
       const raw = localStorage.getItem(EBOOK_JOB_KEY);
       if (raw) ebookJobState = EbookJobStateSchema.parse(JSON.parse(raw) as unknown);
     } catch { /* ignore — job state is optional */ }
-    const resolvedEbookManifest = ebookManifest ?? (ebookJobState
-      ? synthesizeEbookManifest(
-          ebookJobState,
-          name,
-          existingProject?.coverImageUrl ?? existingEbookProject?.coverImageUrl,
-          existingProject?.authorImageUrl ?? existingEbookProject?.authorImageUrl,
-        )
-      : null);
-
     const snapshot: ProjectSnapshot = {
       id,
       name,
@@ -339,7 +257,7 @@ export default function HomePage() {
       blueprint: blueprint ?? null,
       logicResult: logicResult ?? null,
       uiResult: uiResult ?? null,
-      ebookManifest: resolvedEbookManifest,
+      ebookManifest: ebookManifest ?? null,
       ebookJobState: ebookJobState ?? undefined,
       publishedSlug: existingProject?.publishedSlug ?? existingEbookProject?.publishedSlug,
       coverImageUrl: existingProject?.coverImageUrl ?? existingEbookProject?.coverImageUrl,
@@ -348,17 +266,16 @@ export default function HomePage() {
     try {
       await saveProject(snapshot);
       if (ebookJobState) {
-        const safeChapters = sanitizeChapters(ebookJobState.chapters);
         await saveEbookProject({
           id,
           name,
           createdAt: snapshot.createdAt,
           updatedAt: snapshot.updatedAt,
           bookTitle: ebookJobState.architecture?.bookTitle ?? name,
-          chapterCount: safeChapters.length,
-          totalWordCount: sumChapterWords(safeChapters),
+          chapterCount: ebookJobState.chapters?.length ?? 0,
+          totalWordCount: (ebookJobState.chapters ?? []).reduce((sum, chapter) => sum + (chapter.totalWordCount ?? 0), 0),
           status: ebookJobState.status,
-          jobState: { ...ebookJobState, chapters: safeChapters as typeof ebookJobState.chapters },
+          jobState: ebookJobState,
           publishedSlug: snapshot.publishedSlug,
           coverImageUrl: snapshot.coverImageUrl,
           authorImageUrl: snapshot.authorImageUrl,
@@ -490,7 +407,6 @@ export default function HomePage() {
     setEbookManifest(p.ebookManifest ?? null);
     // Restore full ebook pipeline state so the pipeline can resume from where it left off
     if (loadableEbookJobState) {
-      const safeChapters = sanitizeChapters(loadableEbookJobState.chapters);
       try {
         localStorage.setItem(EBOOK_JOB_KEY, JSON.stringify(loadableEbookJobState));
         localStorage.setItem(EBOOK_PENDING_MOUNT_KEY, JSON.stringify({
@@ -510,10 +426,10 @@ export default function HomePage() {
         createdAt: p.createdAt,
         updatedAt: new Date().toISOString(),
         bookTitle: loadableEbookJobState.architecture?.bookTitle ?? p.name,
-        chapterCount: safeChapters.length,
-        totalWordCount: sumChapterWords(safeChapters),
+        chapterCount: loadableEbookJobState.chapters?.length ?? 0,
+        totalWordCount: (loadableEbookJobState.chapters ?? []).reduce((sum, chapter) => sum + (chapter.totalWordCount ?? 0), 0),
         status: loadableEbookJobState.status,
-        jobState: { ...loadableEbookJobState, chapters: safeChapters as typeof loadableEbookJobState.chapters },
+        jobState: loadableEbookJobState,
         publishedSlug: p.publishedSlug,
         coverImageUrl: p.coverImageUrl,
         authorImageUrl: p.authorImageUrl,
@@ -579,17 +495,16 @@ export default function HomePage() {
   const handleImportProject = useCallback(async (snapshot: ProjectSnapshot) => {
     await saveProject(snapshot);
     if (snapshot.ebookJobState) {
-      const safeChapters = sanitizeChapters(snapshot.ebookJobState.chapters);
       await saveEbookProject({
         id: snapshot.id,
         name: snapshot.name,
         createdAt: snapshot.createdAt,
         updatedAt: snapshot.updatedAt,
         bookTitle: snapshot.ebookJobState.architecture?.bookTitle ?? snapshot.name,
-        chapterCount: safeChapters.length,
-        totalWordCount: sumChapterWords(safeChapters),
+        chapterCount: snapshot.ebookJobState.chapters?.length ?? 0,
+        totalWordCount: (snapshot.ebookJobState.chapters ?? []).reduce((sum, chapter) => sum + (chapter.totalWordCount ?? 0), 0),
         status: snapshot.ebookJobState.status,
-        jobState: { ...snapshot.ebookJobState, chapters: safeChapters as typeof snapshot.ebookJobState.chapters },
+        jobState: snapshot.ebookJobState,
         publishedSlug: snapshot.publishedSlug,
         coverImageUrl: snapshot.coverImageUrl,
         authorImageUrl: snapshot.authorImageUrl,
@@ -647,8 +562,8 @@ export default function HomePage() {
           subtitle:      job!.architecture!.subtitle,
           authorName:    job!.architecture!.authorName,
           frontMatter:   job!.frontMatter,
-          chapters:      sanitizeChapters(job!.chapters),
-          totalWordCount: sumChapterWords(job!.chapters),
+          chapters:      job!.chapters ?? [],
+          totalWordCount: (job!.chapters ?? []).reduce((s: number, c: { totalWordCount?: number }) => s + (c.totalWordCount ?? 0), 0),
           allQuotes:     job!.contentMap?.allQuotes ?? [],
           generatedAt:   job!.updatedAt ?? new Date().toISOString(),
           selectedTemplate: "devotional",
@@ -999,9 +914,6 @@ export default function HomePage() {
   const showActivityPanel = !isSermonView && !isBookView;
 
   const handleNavSelect = useCallback((id: string) => {
-    if (id === "projects") {
-      void runRemoteProjectSync();
-    }
     if (id === "ebook") {
       router.push("/ebook?tab=pipeline");
       return;
@@ -1011,7 +923,7 @@ export default function HomePage() {
       return;
     }
     setActiveNav(id);
-  }, [router, runRemoteProjectSync]);
+  }, [router]);
 
   return (
     <div className="flex min-h-dvh max-h-dvh overflow-hidden bg-shell-950 bg-grid bg-radial-glow safe-area-frame">
@@ -1048,7 +960,7 @@ export default function HomePage() {
               {/* Primary panel — full width on mobile, sermon uses full desktop width */}
               <div
                 key={activeNav}
-                className={isSermonView ? "flex h-full min-w-0 flex-1 flex-col" : isBookView ? "flex min-h-[65dvh] flex-col animate-fade-up lg:flex-1 lg:min-h-0" : `min-h-[65dvh] animate-fade-up lg:min-h-0 ${showActivityPanel ? "lg:col-span-4" : "lg:col-span-5"}`}
+                className={isSermonView ? "flex h-full flex-col" : isBookView ? "flex min-h-[65dvh] flex-col animate-fade-up lg:flex-1 lg:min-h-0" : `min-h-[65dvh] animate-fade-up lg:min-h-0 ${showActivityPanel ? "lg:col-span-4" : "lg:col-span-5"}`}
               >
                 {activeNav === "projects" ? (
                   <ProjectsPanel

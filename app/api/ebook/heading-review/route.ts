@@ -38,7 +38,7 @@ function extractHeadingIndex(architecture: z.infer<typeof BookArchitectureSchema
   for (const chapter of architecture.chapters ?? []) {
     lines.push(`Chapter ${chapter.number}: "${chapter.title}"`);
     for (const section of chapter.sections ?? []) {
-      lines.push(`  §${section.sectionNumber} "${section.heading}"`);
+      lines.push(`  §${section.number} "${section.heading}"`);
     }
   }
   return lines.join("\n");
@@ -47,19 +47,7 @@ function extractHeadingIndex(architecture: z.infer<typeof BookArchitectureSchema
 // ── Route handler ─────────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
-  let body: unknown;
-  try {
-    body = await req.json();
-  } catch (err) {
-    return NextResponse.json(
-      {
-        route: "ebook/heading-review",
-        error: err instanceof Error ? err.message : "Invalid JSON payload",
-      },
-      { status: 400 }
-    );
-  }
-
+  const body = (await req.json()) as unknown;
   let input: z.infer<typeof HeadingReviewRequestSchema>;
   try {
     input = HeadingReviewRequestSchema.parse(body);

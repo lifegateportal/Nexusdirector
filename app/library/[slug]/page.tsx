@@ -1,5 +1,4 @@
 import Link from "next/link";
-import { use } from "react";
 import { notFound } from "next/navigation";
 import { EbookManifestSchema } from "@/lib/schemas/ebook";
 import { PublishedCatalogSchema } from "@/lib/schemas/published-book";
@@ -91,16 +90,16 @@ async function fetchAccent(slug: string): Promise<string> {
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
-export default function BookLandingPage({
+export default async function BookLandingPage({
   params,
 }: {
   params: Promise<{ slug: string }>;
 }) {
-  const { slug } = use(params);
-  const [manifest, accent] = use(Promise.all([
+  const { slug } = await params;
+  const [manifest, accent] = await Promise.all([
     fetchManifest(slug),
     fetchAccent(slug),
-  ]));
+  ]);
 
   if (!manifest) notFound();
 

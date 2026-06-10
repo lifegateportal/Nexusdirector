@@ -50,19 +50,7 @@ const CoherenceReportSchema = z.object({
 export type CoherenceReport = z.infer<typeof CoherenceReportSchema>;
 
 export async function POST(req: NextRequest) {
-  let body: unknown;
-  try {
-    body = await req.json();
-  } catch (err) {
-    return NextResponse.json(
-      {
-        route: "ebook/coherence",
-        error: err instanceof Error ? err.message : "Invalid JSON payload",
-      },
-      { status: 400 }
-    );
-  }
-
+  const body = await req.json() as unknown;
   let input;
   try {
     input = CoherenceRequestSchema.parse(body);
@@ -81,7 +69,7 @@ export async function POST(req: NextRequest) {
     .join("\n\n");
 
   const chapterOpening = (chapter.intro ?? "").split(/(?<=[.!?])\s+/).filter(Boolean).slice(0, 3).join(" ");
-  const chapterClosing = (chapter.forwardQuestion ?? "").split(/(?<=[.!?])\s+/).filter(Boolean).slice(-3).join(" ");
+  const chapterClosing = (chapter.conclusion ?? "").split(/(?<=[.!?])\s+/).filter(Boolean).slice(-3).join(" ");
 
   const thesisBlock = coreThesis
     ? `\nBOOK CORE THESIS: "${coreThesis}"\nEvery chapter must advance this thesis. Flag any section that has no traceable connection to it as a filler section.`

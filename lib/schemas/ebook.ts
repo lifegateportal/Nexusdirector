@@ -277,9 +277,6 @@ export const FrontBackMatterSchema = z.object({
 // ─── Back Matter (generated separately after manuscript is complete) ──────────
 
 export const BackMatterSchema = z.object({
-  glossaryTitle: z.string().optional(),
-  readingGroupGuideTitle: z.string().optional(),
-  scriptureIndexTitle: z.string().optional(),
   scriptureIndex: z.array(z.object({
     reference: z.string(),
     translation: z.string(),
@@ -346,15 +343,15 @@ export const EbookManifestSchema = z.object({
   /** Print trim size and running-header preferences */
   printSpec: PrintSpecSchema.default({ trimSize: "6x9", runningHeaders: true }),
   /** Optional R2 public URL for the book cover image */
-  coverImageUrl: z.string().url().nullish(),
+  coverImageUrl: z.string().url().optional().nullable(),
   /** Optional R2 public URL for the author's photo */
-  authorImageUrl: z.string().url().nullish(),
+  authorImageUrl: z.string().url().optional().nullable(),
   /** Optional published narration map keyed by chapter/front-matter audio track id */
   narrationUrls: z.record(z.string().min(1), z.string().min(1)).optional(),
   /** Voice DNA captured during the pipeline — threaded into audit + apply-audit for voice fidelity */
-  voiceDNA: VoiceDNASchema.nullish(),
+  voiceDNA: VoiceDNASchema.optional().nullable(),
   /** Back matter: glossary, reading group guide, scripture index, recommended resources */
-  backMatter: BackMatterSchema.nullish(),
+  backMatter: BackMatterSchema.optional().nullable(),
   /** Audit trail — rolling log of every assistant edit (max 50 entries, oldest dropped first) */
   changeLog: z.array(z.object({
     timestamp:   z.string().datetime(),
@@ -384,19 +381,6 @@ export const EbookJobStateSchema = z.object({
   contentMap: ContentMapSchema.nullable().default(null),
   architecture: BookArchitectureSchema.nullable().default(null),
   sectionAssignments: z.array(SectionAssignmentSchema).default([]),
-  // Persisted chapter-level paragraph plans keyed by chapterNumber -> sectionNumber.
-  // This lets resume continue writing without losing the plan contract.
-  chapterPlans: z.record(
-    z.string(),
-    z.record(
-      z.string(),
-      z.array(z.object({
-        purpose: z.string().default(""),
-        supportedExcerptNumbers: z.array(z.number().int().positive()).default([]),
-        minExcerptNumber: z.number().int().positive().optional(),
-      })).default([])
-    )
-  ).default({}),
   sections: z.array(SectionDraftSchema).default([]),
   chapters: z.array(ChapterDraftSchema).default([]),
   frontMatter: FrontBackMatterSchema.nullable().default(null),

@@ -28,49 +28,8 @@ export type FilterSignalResult = {
   summary: string;
 };
 
-async function withRetry<T>(fn: () => Promise<T>, retries = 2): Promise<T> {
-  let lastErr: unknown;
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    try {
-      return await fn();
-    } catch (err) {
-      lastErr = err;
-      if (attempt >= retries) break;
-      const backoffMs = Math.min(7000, 1000 * Math.pow(2, attempt));
-      await new Promise<void>((resolve) => setTimeout(resolve, backoffMs));
-    }
-  }
-  throw lastErr instanceof Error ? lastErr : new Error("signal filter request failed");
-}
-
-async function withTimeout<T>(promise: Promise<T>, label: string, timeoutMs = 90000): Promise<T> {
-  let timeoutId: ReturnType<typeof setTimeout> | null = null;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<T>((_, reject) => {
-        timeoutId = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs / 1000}s`)), timeoutMs);
-      }),
-    ]);
-  } finally {
-    if (timeoutId) clearTimeout(timeoutId);
-  }
-}
-
 export async function POST(req: NextRequest) {
-  let body: unknown;
-  try {
-    body = await req.json();
-  } catch (err) {
-    return NextResponse.json(
-      {
-        route: "ebook/filter-signal",
-        error: err instanceof Error ? err.message : "Invalid JSON payload",
-      },
-      { status: 400 }
-    );
-  }
-
+  const body = await req.json() as unknown;
   let input;
   try {
     input = RequestSchema.parse(body);
@@ -79,6 +38,9 @@ export async function POST(req: NextRequest) {
       {
         route: "ebook/filter-signal",
         error: err instanceof Error ? err.message : "Invalid input",
+        details: err instanceof Error && err.stack
+          ? err.stack.split("\n").slice(0, 2).join(" | ")
+          : undefined,
       },
       { status: 400 }
     );
@@ -99,11 +61,10 @@ export async function POST(req: NextRequest) {
     : headSample;
 
   try {
-    const { text } = await withRetry(
-      () => withTimeout(generateText({
-        model: deepSeekModel,
-        temperature: 0.1,
-        system: `You are a content signal filter for a book production pipeline.
+    const { text } = await generateText({
+      model: deepSeekModel,
+      temperature: 0.1,
+      system: `You are a content signal filter for a book production pipeline.
 
 Your job is to find the VERBATIM start and end markers of the core teaching so the server can trim only the genuine non-teaching edges. BE CONSERVATIVE — when in doubt, keep content.
 
@@ -142,10 +103,8 @@ Return VERBATIM phrases (exact words from the transcript, 80-120 chars each) so 
 
 Respond with ONLY a valid JSON object — no markdown, no code blocks, no explanation:
 {"teachingStartPhrase":"...","teachingEndPhrase":"...","removedCategories":[],"summary":"..."}`,
-        prompt: `Identify the teaching start and end markers:\n\n${sample}`,
-      }), "ebook/filter-signal"),
-      2
-    );
+      prompt: `Identify the teaching start and end markers:\n\n${sample}`,
+    });
     let _parsed: unknown;
     try {
       const _jsonMatch = text.match(/\{[\s\S]*\}/);
@@ -231,6 +190,9 @@ Respond with ONLY a valid JSON object — no markdown, no code blocks, no explan
     return NextResponse.json({
       route: "ebook/filter-signal",
       error: message,
+      details: err instanceof Error && err.stack
+        ? err.stack.split("\n").slice(0, 3).join(" | ")
+        : undefined,
     }, { status: 500 });
   }
 }

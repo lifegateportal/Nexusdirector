@@ -9,21 +9,6 @@ import { SOURCE_LOCK_RULES } from "@/lib/editorial-style-bible";
 export const runtime = "nodejs";
 export const maxDuration = 120;
 
-async function withRetry<T>(fn: () => Promise<T>, retries = 2): Promise<T> {
-  let lastErr: unknown;
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    try {
-      return await fn();
-    } catch (err) {
-      lastErr = err;
-      if (attempt >= retries) break;
-      const backoffMs = Math.min(8000, 1200 * Math.pow(2, attempt));
-      await new Promise<void>((resolve) => setTimeout(resolve, backoffMs));
-    }
-  }
-  throw lastErr instanceof Error ? lastErr : new Error("architect request failed");
-}
-
 // ── Upgrade helpers ───────────────────────────────────────────────────────────
 
 type ArcRole = "hook" | "context" | "mechanism" | "application" | "untagged";
@@ -260,13 +245,12 @@ async function architectOneChapterFromTranscript(
     ].join("\n");
   }).join("\n\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n");
 
-  const { object } = await withRetry(() =>
-    generateObject({
-      model: deepSeekModel,
-      schema: SingleChapterPlanSchema,
-      mode: "json",
-      temperature: 0.15,
-      system: `You are a senior structural editor turning one teaching message into a premium book chapter.
+  const { object } = await generateObject({
+    model: deepSeekModel,
+    schema: SingleChapterPlanSchema,
+    mode: "json",
+    temperature: 0.15,
+    system: `You are a senior structural editor turning one teaching message into a premium book chapter.
 
 SOURCE-LOCK — ABSOLUTE RULE:
 Every title, section heading, and key theme you write MUST derive word-for-word or idea-for-idea from the transcript segments below. You may NOT invent, assume, or extrapolate anything not explicitly present in the provided text.
@@ -291,15 +275,14 @@ STRUCTURE RULES:
 - Apply a natural teaching arc: Hook → Context → Core Mechanism → Application → Landing
 
 ${SOURCE_LOCK_RULES}`,
-      prompt: `AVAILABLE SEGMENT IDs: ${segments.map((s) => s.id).join(", ")}
+    prompt: `AVAILABLE SEGMENT IDs: ${segments.map((s) => s.id).join(", ")}
 CHAPTER THEME HINT: ${chapterHint}
 CORE THESIS: ${coreThesis}
 TEACHING ARC: ${teachingArc}
 VOICE TONE: ${voiceDNATone}
 
 ${transcriptBlock}`,
-    })
-  , 2);
+  });
   return object;
 }
 
@@ -364,7 +347,6 @@ function normalizeArchitecture(
   // Deduplicate segment IDs globally — each segment must feed exactly one section.
   // First-come-first-served: whichever section claims a segment first keeps it.
   const globalUsedSegIds = new Set<string>();
-  const removedSegments: { chapterNum: number; sectionNum: number; segmentIds: string[] }[] = [];
 
   const chapters = (minimal.chapters ?? [])
     .map((chapter, chapterIndex) => ({
@@ -373,17 +355,8 @@ function normalizeArchitecture(
       keyTheme: (chapter.keyTheme || "").trim() || fallback.chapters[0].keyTheme,
       sections: (chapter.sections ?? [])
         .map((section, sectionIndex) => {
-          const requestedIds = (section.sourceSegmentIds ?? []);
-          const uniqueIds = requestedIds
+          const uniqueIds = (section.sourceSegmentIds ?? [])
             .filter((id) => validIds.has(id) && !globalUsedSegIds.has(id));
-          const removedIds = requestedIds.filter((id) => !uniqueIds.includes(id));
-          if (removedIds.length > 0) {
-            removedSegments.push({
-              chapterNum: Math.max(1, Math.trunc(chapter.number || chapterIndex + 1)),
-              sectionNum: Math.max(1, Math.trunc(section.sectionNumber || sectionIndex + 1)),
-              segmentIds: removedIds,
-            });
-          }
           uniqueIds.forEach((id) => globalUsedSegIds.add(id));
           return {
             sectionNumber: Math.max(1, Math.trunc(section.sectionNumber || sectionIndex + 1)),
@@ -399,11 +372,6 @@ function normalizeArchitecture(
         .map((section, si) => ({ ...section, sectionNumber: si + 1 })),
     }))
     .filter((chapter) => chapter.sections.length > 0);
-  
-  // Log any segment loss for debugging
-  if (removedSegments.length > 0) {
-    console.warn("[architect] Segments removed during architecture normalization:", removedSegments);
-  }
 
   // ── Amendment 8: Section heading quality checks ─────────────────────────────
   // Three checks: (1) headings > 12 words are too long for print section headings,
@@ -462,19 +430,7 @@ function normalizeArchitecture(
 }
 
 export async function POST(req: NextRequest) {
-  let body: unknown;
-  try {
-    body = await req.json();
-  } catch (err) {
-    return NextResponse.json(
-      {
-        route: "ebook/architect",
-        error: err instanceof Error ? err.message : "Invalid JSON payload",
-      },
-      { status: 400 }
-    );
-  }
-
+  const body = await req.json() as unknown;
   let input;
   try {
     input = ArchitectRequestSchema.parse(body);
@@ -512,7 +468,7 @@ export async function POST(req: NextRequest) {
         }
         const audioKeys = audioOrder.filter((k) => segsByAudio.has(k));
 
-        const chapterPlanResults = await Promise.allSettled(
+        const chapterPlans = await Promise.all(
           audioKeys.map((audioKey, idx) => {
             const segs = segsByAudio.get(audioKey)!;
             const chapterHint = (input.contentMap.overarchingThemes[idx] || "").trim()
@@ -524,30 +480,22 @@ export async function POST(req: NextRequest) {
               input.contentMap.coreThesis,
               input.contentMap.teachingArc,
               input.voiceDNA.toneProfile,
-            );
+            ).catch(() => null);
           })
         );
 
-        const failedAudioPlans = chapterPlanResults
-          .map((result, idx) => ({ result, audioKey: audioKeys[idx] }))
-          .filter(({ result }) => result.status === "rejected");
-        if (failedAudioPlans.length > 0) {
-          return NextResponse.json({
-            route: "ebook/architect",
-            error: "One or more per-audio chapter plans failed",
-            details: failedAudioPlans
-              .map(({ audioKey, result }) => `${audioKey}: ${result.status === "rejected" ? String(result.reason) : "unknown"}`)
-              .join(" | "),
-          }, { status: 502 });
-        }
-
         const validIds = new Set(input.contentMap.segments.map((s) => s.id));
-        const chapters = chapterPlanResults.map((planResult, idx) => {
+        const chapters = chapterPlans.map((plan, idx) => {
           const segs = segsByAudio.get(audioKeys[idx])!;
           const themeHint = (input.contentMap.overarchingThemes[idx] || segs[0]?.topic || `Chapter ${idx + 1}`).trim();
-          const plan = planResult.status === "fulfilled" ? planResult.value : null;
           if (!plan || plan.sections.length === 0) {
-            throw new Error(`oneChapterPerUpload produced an empty plan for ${audioKeys[idx]}`);
+            const grouped = groupSegmentsIntoSections(segs, 5);
+            return {
+              number: idx + 1,
+              title: themeHint,
+              keyTheme: themeHint,
+              sections: grouped.map((sec, si) => ({ sectionNumber: si + 1, ...sec })),
+            };
           }
           return {
             number: idx + 1,
@@ -834,6 +782,9 @@ This content is a sermon series. The author's preaching sequence IS the book's s
     return NextResponse.json({
       route: "ebook/architect",
       error: message,
+      details: err instanceof Error && err.stack
+        ? err.stack.split("\n").slice(0, 3).join(" | ")
+        : undefined,
     }, { status: 500 });
   }
 }

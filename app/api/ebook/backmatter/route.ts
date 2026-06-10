@@ -60,19 +60,7 @@ function buildScriptureIndex(manifest: z.infer<typeof EbookManifestSchema>): Bac
 }
 
 export async function POST(req: NextRequest) {
-  let body: unknown;
-  try {
-    body = await req.json();
-  } catch (err) {
-    return NextResponse.json(
-      {
-        route: "ebook/backmatter",
-        error: err instanceof Error ? err.message : "Invalid JSON payload",
-      },
-      { status: 400 }
-    );
-  }
-
+  const body = await req.json() as unknown;
   let input;
   try {
     input = BackMatterRequestSchema.parse(body);

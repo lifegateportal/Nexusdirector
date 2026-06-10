@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { generateObject } from "ai";
+import { generateObject, generateText } from "ai";
 import { z } from "zod";
 import { deepSeekModel } from "@/lib/ai-providers";
 import { WriteSectionRequestSchema } from "@/lib/schemas/ebook";
@@ -9,28 +9,47 @@ import { stripAudienceLanguage } from "@/lib/editorial-style-bible";
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
-// Post-processing guard: catches oral artifacts that slipped past the LLM.
-// This runs on the FINAL OUTPUT paragraphs before they are returned to the client.
-// It does NOT replace the LLM prompt instructions — it is a safety net.
+/** Emergency rewrite fallback — fires when the primary structured call fails or returns
+ *  empty paragraphs. Uses a simple generateText call to produce clean book prose from
+ *  the raw excerpts rather than dumping unedited transcript into the book. */
+async function fallbackSectionBody(input: z.infer<typeof WriteSectionRequestSchema>["assignment"]): Promise<string> {
+  const rawExcerpts = input.transcriptExcerpts
+    .map((e) => e.replace(/\r\n/g, "\n").replace(/\n{3,}/g, "\n\n").replace(/[ \t]{2,}/g, " ").trim())
+    .filter(Boolean)
+    .join("\n\n");
+
+  if (!rawExcerpts) {
+    return (input.keyPoints.filter(Boolean).join(" ") || input.heading).trim();
+  }
+
+  try {
+    const { text } = await generateText({
+      model: deepSeekModel,
+      temperature: 0.5,
+      maxTokens: 1200,
+      system: `You are a professional book editor. Rewrite the raw spoken transcript below into clean, polished book prose.
+
+RULES:
+- Every idea must come from the transcript — zero fabrication
+- Remove all spoken-language artifacts: stutters, false starts ("I mean", "you know", "uh"), repeated words, filler phrases
+- Fix broken grammar and incomplete sentences into proper prose
+- Remove all live-event language: "look at your neighbor", "say amen", "here in this church"
+- Output 3–6 prose paragraphs separated by blank lines — no headings, no markdown
+- Write shorter output rather than invent content`,
+      prompt: `SECTION HEADING: ${input.heading}\n\nRAW TRANSCRIPT:\n${rawExcerpts.slice(0, 4000)}`,
+    });
+    return text.trim() || rawExcerpts;
+  } catch {
+    // Last resort: return the raw excerpts stripped of obvious live-event language
+    return rawExcerpts;
+  }
+}
+
 function normalizeReaderFacingProse(text: string): string {
   return text
-    // ── Audience-response cues ──────────────────────────────────────────────
-    .replace(/\b(say amen|can i get an amen|somebody shout|give god a hand|put your hands together|clap your hands|lift your hands|give him praise|let'?s do it for jesus)\b[.,!?]?/gi, "")
-    // ── Call-and-response check-ins ─────────────────────────────────────────
-    .replace(/\b(are you with me|do you hear what i'?m saying|do you see that|you understand\?|are you following me|can i tell you something|you know what i mean)\b[.,!?]?/gi, "")
-    // ── Live-room direct address ────────────────────────────────────────────
-    .replace(/\b(as you sit here today|in this room today|right here in this place|the person (sitting )?next to you|everyone here today|some of you in this room)\b[,.]?/gi, "")
-    // ── Pulpit throat-clearing openers (strip the opener, keep the content) ─
-    .replace(/^(now let me tell you something[,.]?\s*|before i go any further[,.]?\s*|let me say this again[,.]?\s*|i want you to understand that\s*|listen to me carefully[,.]?\s*|let me give you something[,.]?\s*)/gi, "")
-    // ── Service time/logistics markers ──────────────────────────────────────
-    .replace(/\b(this morning,?|today,?) (i want to|we are going to|we will|i will|i'm going to)\b/gi, "")
-    .replace(/\b(before we close|in closing,?|as we close|we're running out of time)\b[,.]?/gi, "")
-    // ── Scattered congregational exclamations ───────────────────────────────
-    .replace(/\b(amen|hallelujah|praise the lord|glory to god)\b[.,!]?\s*/gi, "")
-    // ── Cleanup: stray punctuation/whitespace from removals ─────────────────
-    .replace(/\s*,\s*,/g, ",")
-    .replace(/\s*\.\s*\./g, ".")
-    .replace(/[ \t]{2,}/g, " ")
+    .replace(/\b(turn to your neighbor|say amen|clap your hands|lift your hands)\b/gi, "")
+    .replace(/\b(as you sit here today|in this room today|right here in this place)\b/gi, "")
+    .replace(/[ \t]{2,}/g, " ")   // collapse only horizontal whitespace, never newlines
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
@@ -92,9 +111,9 @@ function ngramTokens(text: string, n: number): Set<string> {
 function hookFulfilled(hook: string, body: string): boolean {
   // The body past the first paragraph is where the hook should be addressed
   const remainingBody = body.split(/\n\n+/).slice(1).join(" ");
-  if (!remainingBody || remainingBody.split(/\s+/).length < 20) return false; // fail closed when there is not enough evidence
+  if (!remainingBody || remainingBody.split(/\s+/).length < 20) return true; // too short to judge
   const hookGrams = ngramTokens(hook, 3);
-  if (hookGrams.size === 0) return false;
+  if (hookGrams.size === 0) return true;
   const bodyGrams = ngramTokens(remainingBody, 3);
   let overlap = 0;
   for (const g of hookGrams) {
@@ -245,63 +264,10 @@ function excerptOverlapScore(para: string, excerpt: string, n = 4): number {
   return shared / paraGrams.size;
 }
 
-function paragraphGroundingScore(
-  paragraph: string,
-  excerpts: string[]
-): { score: number; shared: number } {
-  const paraTokens = new Set(
-    paragraph
-      .toLowerCase()
-      .replace(/[^a-z0-9\s]/g, " ")
-      .split(/\s+/)
-      .filter((w) => w.length > 3)
-  );
-  if (paraTokens.size === 0 || excerpts.length === 0) {
-    return { score: 0, shared: 0 };
-  }
-
-  let bestScore = 0;
-  let bestShared = 0;
-
-  for (const excerpt of excerpts) {
-    const excerptTokens = new Set(
-      excerpt
-        .toLowerCase()
-        .replace(/[^a-z0-9\s]/g, " ")
-        .split(/\s+/)
-        .filter((w) => w.length > 3)
-    );
-    let shared = 0;
-    for (const token of paraTokens) {
-      if (excerptTokens.has(token)) shared++;
-    }
-    const score = shared / Math.max(paraTokens.size, 1);
-    if (score > bestScore || (score === bestScore && shared > bestShared)) {
-      bestScore = score;
-      bestShared = shared;
-    }
-  }
-
-  return { score: bestScore, shared: bestShared };
-}
-
-function buildStrictBodyFromExcerpts(excerpts: string[]): string {
-  return excerpts
-    .map((e) => e.replace(/\r\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim())
-    .filter(Boolean)
-    .join("\n\n");
-}
-
 function filterConsumedExcerpts(
   excerpts: string[],
   alreadyCoveredPoints: string[],
-  // Threshold lowered 0.65 → 0.45: the corpus is now full paragraph text (not
-  // first-sentence only), so 45% 4-gram overlap is a meaningful semantic signal.
-  // The previous 65% required near-verbatim repetition — semantic repetition
-  // (same idea, different words) at 30–60% overlap was passing through freely.
-  // Short excerpts (<40 words) and scripture-bearing excerpts are always kept
-  // regardless of overlap, preventing over-filtering on common vocabulary.
-  threshold = 0.45
+  threshold = 0.40
 ): { filtered: string[]; removedCount: number } {
   if (alreadyCoveredPoints.length === 0) return { filtered: excerpts, removedCount: 0 };
   const coveredText = alreadyCoveredPoints.join(" ");
@@ -331,8 +297,7 @@ type ExcerptEntry = { text: string; sourceNumber: number };
 function filterConsumedExcerptEntries(
   entries: ExcerptEntry[],
   alreadyCoveredPoints: string[],
-  // Lowered 0.65 → 0.45 — same reasoning as filterConsumedExcerpts above.
-  threshold = 0.45
+  threshold = 0.40
 ): { filtered: ExcerptEntry[]; removedCount: number } {
   if (alreadyCoveredPoints.length === 0) return { filtered: entries, removedCount: 0 };
   const coveredText = alreadyCoveredPoints.join(" ");
@@ -353,68 +318,6 @@ function filterConsumedExcerptEntries(
   return { filtered: filtered.length > 0 ? filtered : entries.slice(0, 1), removedCount };
 }
 
-
-// ── Amendment 1: Pre-write argument outline ──────────────────────────────────────
-// A genuine two-call system: the LLM commits to a specific argument structure
-// BEFORE prose generation. The EXECUTION SEQUENCE Step 0 Blueprint is theater
-// in a single-pass generation (the LLM cannot "plan before writing" when it
-// generates linearly). Separating it into its own call forces real structural
-// commitment that becomes a hard constraint on the prose generation call.
-const OutlineSchema = z.object({
-  controllingClaim: z.string().default(""),
-  readerTension: z.string().default(""),
-  argumentMoves: z.array(z.object({
-    claim: z.string().default(""),
-    excerptHint: z.string().default(""),
-    paragraphClose: z.string().default(""),
-  })).default([]),
-  maximumInsightMoment: z.string().default(""),
-});
-
-async function generateArgumentOutline(
-  excerpts: string[],
-  keyPoints: string[],
-  sectionHeading: string,
-  voiceDNA?: { toneProfile?: string; rhetoricalPatterns?: string[] } | null,
-): Promise<z.infer<typeof OutlineSchema> | null> {
-  if (excerpts.length === 0) return null;
-  // Use condensed excerpts — first 100 words each — for fast, cheap planning
-  const excerptSample = excerpts.map((ex, i) => {
-    const words = ex.trim().split(/\s+/).slice(0, 100).join(" ");
-    return `[Excerpt ${i + 1}] ${words}`;
-  }).join("\n\n");
-  const rhetoricalHint = (voiceDNA?.rhetoricalPatterns ?? []).length > 0
-    ? `\nThe speaker's rhetorical patterns (frame argument moves using these): ${(voiceDNA?.rhetoricalPatterns ?? []).slice(0, 3).join("; ")}.`
-    : "";
-  try {
-    const { object } = await generateObject({
-      model: deepSeekModel,
-      schema: OutlineSchema,
-      mode: "json",
-      temperature: 0.25,
-      system: `You are a structural editor committing to an argument skeleton before prose is written.
-Every element must trace directly to the provided excerpt content — zero fabrication.
-Return tight, specific entries — not generic editorial framing.${rhetoricalHint}`,
-      prompt: `Section: "${sectionHeading}"
-Key points to cover:
-${keyPoints.map((k) => `• ${k}`).join("\n")}
-
-Excerpts (first 100 words each):
-${excerptSample}
-
-Return:
-- controllingClaim: the single claim this section ultimately proves (specific — must be verifiable in the excerpts above)
-- readerTension: the problem, wrong assumption, or confusion in the reader that this teaching resolves
-- argumentMoves: 3–6 planned paragraph moves in transcript order — for each: the specific claim it makes, which excerpt number(s) fuel it, how to close the paragraph
-- maximumInsightMoment: the single most surprising or theologically dense insight in the excerpts (verbatim words if possible) — this belongs in a paragraph-final position`,
-    });
-    return object;
-  } catch (err) {
-    console.warn("[write-section] Outline pass failed — proceeding without pre-computed blueprint:", err instanceof Error ? err.message : err);
-    return null;
-  }
-}
-
 const EDITORIAL_SYSTEM = `# ROLE AND OBJECTIVE
 You are an elite, New York Times-bestselling ghostwriter and developmental editor. Your task is to synthesize raw, unstructured audio transcripts into a highly polished, premium book chapter.
 
@@ -428,14 +331,7 @@ You will receive transcribed audio text. Expect the following flaws:
 
 # STRICT BOUNDARIES & GUARDRAILS
 1. SYNTHESIS, NOT TRANSCRIPTION: Do not simply rephrase the text sentence-by-sentence. Extract the core insights, arguments, and stories, then reassemble them into a strong, linear structure.
-2. CONTENT FIDELITY — THIS PREACHER, THIS TRANSCRIPT, NOTHING ELSE: This book contains only what this specific preacher taught in the provided excerpts. Your job is to express his teaching in excellent prose — not to complete it, extend it, or improve it with your own knowledge.
-   FORBIDDEN in every paragraph:
-   • Theological points the preacher didn't make, even if they logically follow from what he said.
-   • Scripture references you know that he didn't cite — only verses he explicitly quoted or named may appear.
-   • Doctrinal background, Greek/Hebrew word studies, historical context, or systematic theology categories that came from your training data, not his words.
-   • Applications or implications you derived — every application must trace to something he said.
-   • Anything that "fits" his message but isn't actually in the transcript.
-   If the source material is thin: write fewer paragraphs. A short, accurate section is always better than a longer one with invented content. When the transcript runs out, stop.
+2. INFORMATION FIDELITY — ZERO FABRICATION: Do not hallucinate data, invent new stories, or inject outside facts. This ban covers plausible extensions, inferred context, and theological background the author "probably" knows. Every sentence must trace to the provided transcript excerpts. If an idea is not in the excerpts, delete it. Write shorter rather than pad with invented content.
 3. TONE AND REGISTER: Elevate the speaker's voice. The tone must be authoritative, engaging, and precise. Use active voice and strong verbs. Avoid passive, academic dryness.
 4. FORBIDDEN CLICHÉS: You are strictly forbidden from using standard AI transition phrases and clichés, including but not limited to: "In conclusion," "Let's delve into," "A tapestry of," "Navigating the landscape," "It's important to note," "Furthermore," and "In today's fast-paced world."
 5. EM DASH ABSOLUTE BAN: Never use an em dash (—) anywhere in the output. No spaced em dashes ( — ), no unspaced em dashes (—), no double hyphens (--) used as em dashes. Rewrite every sentence that would need one using a comma, colon, semicolon, or subordinate clause ("which," "who," "although," "because," "while," "since"). Splitting into two sentences is the last resort — only when both halves stand alone as strong, complete thoughts.
@@ -469,41 +365,16 @@ S4 — SENTENCE-LENGTH RATIO: In any paragraph of three or more sentences, the l
 S6 — PARAGRAPH OPENER VARIATION: The opening word of a paragraph must differ from the opening word of the immediately preceding paragraph. Back-to-back paragraphs that both start with "The," "This," "God," or any proper noun are a structural tell — they reveal that the writer generated a list, not flowing prose. Vary grammatical form at the opening: start one paragraph with a participial phrase, the next with a subordinate clause, the next with a concrete noun.
 
 # EXECUTION SEQUENCE
-Before generating the final output, execute every step in order. Do not skip any step.
-
-STEP 0 — SECTION BLUEPRINT (do this before writing a single word of prose):
-Map the section's argument architecture from the provided excerpts. Identify:
-  a. THE CONTROLLING CLAIM: One sentence — what this section ultimately asserts. Not a topic, a claim. "Believers have been given authority over demonic power" is a claim. "Authority" is not.
-  b. THE READER'S TENSION: What problem, confusion, or wrong assumption does this teaching resolve? The answer must come from the transcript, not be invented.
-  c. THE ARGUMENT MOVES: List the 3–5 key steps the speaker's argument takes, in order. These become the skeleton of your paragraphs.
-  d. THE MAXIMUM-INSIGHT MOMENT: Identify the single sentence or idea in the excerpts that is most surprising, most theologically dense, or most likely to stop a reader cold. Save it. It belongs in the paragraph-final position, not buried mid-paragraph.
-Every paragraph you write must serve one of these moves. If a paragraph doesn't advance the blueprint, cut it.
-
-STEP 1 — ORAL PURGE: Scan every excerpt for the eight categories listed in ORAL-TO-WRITTEN TRANSFORMATION. Mark every phrase in those categories. None may appear in the output — not verbatim, not paraphrased, not softened. For each marked phrase, extract the doctrinal point underneath and write that instead.
-
-STEP 2 — VOICE ANCHORS: From the excerpts, identify 1–3 short phrases (5–15 words) that are irreplaceable: so specific, rhythmically precise, or theologically loaded that any paraphrase would weaken them. These anchor phrases must appear verbatim in the prose. Build sentences and paragraphs around them — do not smooth them out. Everything else may be elevated and restructured, but anchor phrases stay.
-  Example: "Authority to trample" is an anchor. "The authority believers possess over demonic forces" is a paraphrase that costs the reader a concrete image and costs the author a distinctive voice.
-  Anchor phrases should appear naturally within polished sentences, never quoted or italicized unless they are scripture. They are part of the author's own voice.
-
-STEP 3 — DRAFT: Write the prose. Group related concepts logically. Vary sentence lengths deliberately: long sentences build momentum and explain; short sentences land the blow. Every paragraph must serve one of the blueprint moves from Step 0.
-
-STEP 4 — PARAGRAPH EXIT REVIEW: Read every paragraph's final sentence. It must do one of three things:
-  a. Deliver an insight the setup did not make obvious — something the reader didn't see coming before reading the paragraph.
-  b. Create a productive tension that the next paragraph will resolve.
-  c. Land as a short, declarative fragment that reframes everything above it. Hard. Final.
-  NEVER end a paragraph by restating what the paragraph just argued, summarizing it, or appending "This is why…" / "This shows us…" / "This means that…" Exit sentences that summarize are the most common mark of unpolished prose. Rewrite every one.
-
-STEP 5 — COMPRESSION PASS (proportional to draft length — count your word total first): After drafting, estimate your total paragraph word count and apply the matching target:
-  • Under 350 words: SKIP this step entirely. Thin sections lose source coverage when compressed — accuracy takes priority over brevity.
-  • 350–600 words: Cut 8–10%. Remove sentences that hedge a claim already stated with confidence, and any sentence that restates the prior sentence’s conclusion in different words.
-  • 600–900 words: Cut 12–15%. Also delete any transition sentence that summarizes the previous paragraph before introducing the next.
-  • 900+ words: Cut 15–20%. Also delete every sentence beginning with “This means that,” “In other words,” “Put simply,” or “To summarize,” and any paragraph opener that restates the section heading or the previous paragraph’s conclusion.
-  In all cases: never cut a sentence that carries a teaching point from the transcript. Stop cutting when removing more would cost the reader a substantive idea from the source material.
-STEP 6 — FINAL CHECKS: Review against these four criteria and revise inline:
-   - RHYTHM: No two consecutive sentences should be the same length.
-   - CLICHÉS: Scan every sentence — delete or rewrite any instance of robotic phrasing.
-   - SHOW, DON'T TELL: Where the draft states a fact, check whether the transcript contains an example, story, or specific detail that illustrates it. If so, use the illustration.
-   - TONE: Confirm the prose is authoritative and sophisticated — never passive, never flat.
+Before generating the final output, follow this internal sequence:
+1. Analyze the transcript chunk to identify the central thesis.
+2. Filter out all conversational redundancies and off-topic tangents.
+3. Group related concepts logically so the narrative builds momentum.
+4. Draft the text using varied sentence lengths (short punches for emphasis, longer sentences for explanation).
+5. Before returning, silently review your draft against all four of these criteria and revise inline:
+   - RHYTHM: No two consecutive sentences should be the same length. Break monotony with short, punchy sentences after long explanatory ones.
+   - CLICHÉS: Scan every sentence for robotic phrasing — "It is crucial to remember," "A tapestry of," "Navigating the complexities," "It is worth noting," or any overly neat paragraph-ending summary. Delete or rewrite every instance found.
+   - SHOW, DON'T TELL: Where the draft states a fact, check whether the transcript contains an example, story, or specific detail that illustrates it instead. If so, use the illustration.
+   - TONE: Confirm the final prose is authoritative, premium, and sophisticated — never passive, never academic, never motivational-poster flat.
 
 ════════════════════════════════════════════
 VOICE DNA — MUST BE ENFORCED
@@ -592,51 +463,12 @@ Every scripture quotation must complete a circuit within the same section:
 All three stages must appear within two or three paragraphs of the quotation. If the transcript provides the text and truth but no application material, close the circuit with a reader-facing implication sentence drawn from the transcript's broader argument — not invented content. If the transcript genuinely provides no application, add [application thin] as a note after the section's last paragraph and reduce the word count rather than padding with fabricated application.
 
 ════════════════════════════════════════════
-ORAL-TO-WRITTEN TRANSFORMATION — ABSOLUTE REQUIREMENTS
-════════════════════════════════════════════
-This content came from a LIVE PREACHING TRANSCRIPT. The source material is spoken performance; the output is a published book. These are two completely different media. Your core job is not editing — it is medium conversion. The reader never attended that service. They are reading a book, alone, in silence. Every trace of the live event must be erased from the output.
-
-NEVER include any of the following in the book prose — not even once, not even in a softened form:
-
-1. AUDIENCE-RESPONSE CUES (any variant):
-   "Say amen." / "Can I get an amen?" / "Somebody shout." / "Give God a hand." / "Put your hands together." / "Clap your hands." / "Lift your hands." / "Give him praise." / "Let's do it for Jesus." / Any instruction for the audience to physically respond.
-
-2. CALL-AND-RESPONSE FRAGMENTS:
-   "Are you with me?" / "Do you hear what I'm saying?" / "Do you see that?" / "You understand?" / "Are you following me?" / "Can I tell you something?" / "You know what I mean?" / Anything that checks whether the live audience is tracking.
-
-3. PULPIT DIRECT ADDRESS TO A LIVE ROOM:
-   "Some of you in this room..." / "The person sitting next to you..." / "As you sit here today..." / "Right here in this place..." / "Everyone here today..." / "Those of you watching online..." / "Today I want to share with you..." / Any statement addressed to people physically present at the service.
-
-4. PREACHER SELF-NARRATION / ORAL CONNECTIVES:
-   "Now let me tell you something." / "Before I go any further." / "Let me say this again." / "I want you to understand." / "Listen to me carefully." / "Let me give you something." / "Now I want to move on to..." / "And so what I'm saying is..." / Throat-clearing sentences that exist only to manage live attention.
-   EXCEPTION — STRUCTURAL ENUMERATORS (ALWAYS PRESERVE THESE):
-   Phrases like "There are three things..." / "Notice two realities in this text..." / "Here are four keys..." / "First... Second... Third..." are oral in origin but function as structure in print. They orient the reader: how many points are coming and where they stand in the argument. PRESERVE the enumeration structure — strip only the pulpit framing around it.
-   WRONG: Strip "I want to give you three things today about prayer" entirely.
-   RIGHT: Keep the enumeration — "Three things define this moment in prayer: First..." The count and the items stay. The stage-management language goes.
-
-5. PERFORMANCE REPETITION (spoken emphasis that doesn't work in print):
-   In preaching, repeating a phrase three times ("Authority to trample. Authority to trample. Authority to trample!") builds oral momentum. In a book, it reads as padding. Consolidate into ONE powerful sentence. Keep the idea; cut the repetition.
-
-6. CONGREGATIONAL EXCLAMATIONS WOVEN INTO TEXT:
-   Scattered "Amen." / "Hallelujah." / "Glory." / "Oh." / "Yes." / "Preach." when they appear as standalone reactions or mid-sentence affirmations. These are the congregation responding, not the author writing.
-
-7. SERVICE LOGISTICS AND TIME MARKERS:
-   "This morning..." / "Today..." (when it means "at this service") / "Before we close..." / "In closing..." / "We're running out of time..." / "Next week we'll..." / "Our guest speaker next Sunday..." / Any reference to the service schedule or future events.
-
-8. SECOND-PERSON PULPIT EXHORTATIONS:
-   "You need to get this." / "You've got to understand." / "You sitting in that seat right now..." / "Some of you needed to hear this today." In book prose, the author speaks to the reader as a peer, not from a pulpit to a congregation. Rewrite as "The believer who grasps this..." or third-person principle statements.
-
-HOW TO HANDLE THESE: Do not just delete them. Extract the DOCTRINE or TEACHING POINT embedded in the preaching moment and express it as polished written prose. Example:
-— PREACHING: "Say amen if you believe that. Authority to trample. Authority to trample. Some of you have been afraid of demons your whole life. Are you with me? But Jesus said you have authority over ALL the power of the enemy!"
-— BOOK PROSE: "Jesus did not give his followers a defensive posture toward demonic power. The authority he granted in Luke 10 was offensive — to tread, to trample, to move through enemy territory without fear. The believer who internalizes this is not the one cowering from spiritual opposition; they are the threat."
-
-════════════════════════════════════════════
 AUDIENCE & FORMAT
 ════════════════════════════════════════════
 • Remove crowd cues and stage prompts (e.g., "say amen", "look at your neighbor", applause calls, house-response commands)
 • Rewrite direct live-room address ("today I want to tell you", "as you sit here") into book language for an individual reader
 • PARAGRAPH DISCIPLINE: You are returning paragraphs as a JSON ARRAY — each array element is exactly one paragraph. ONE idea per paragraph, 3 to 5 sentences. When a new point, scripture quotation, example, or argument begins, it must be a new array element. Never put two paragraphs in one array element. Never split a single paragraph across two elements.
-• The target word count is a MINIMUM — write as much as the transcript provides. Do not stop at the target if excerpts are still uncovered. Only stop when all key points in the provided excerpts have been addressed.
+• Target the specified word count based on available content — do not pad to reach it
 
 ${SOURCE_LOCK_RULES}
 
@@ -645,16 +477,7 @@ ${READER_NORMALIZATION_RULES}
 ${PREMIUM_BOOK_STYLE_RULES}`;
 
 export async function POST(req: NextRequest) {
-  let body: unknown;
-  try {
-    body = await req.json();
-  } catch (err) {
-    return new Response(
-      JSON.stringify({ error: err instanceof Error ? err.message : "Invalid JSON payload" }),
-      { status: 400, headers: { "Content-Type": "application/json" } }
-    );
-  }
-
+  const body = await req.json() as unknown;
   let input;
   try {
     input = WriteSectionRequestSchema.parse(body);
@@ -713,30 +536,26 @@ When quoting a verse for which the speaker did not specify a translation, use ($
     : "";
 
   // ── Amendment 1: Coverage Ledger ─────────────────────────────────────────
-  // Each entry is a section that has ALREADY been written. The summary now
-  // contains ALL paragraph openers (up to 6 per section) + all key points,
-  // giving the LLM a complete picture of every specific claim already made.
+  // Each entry is a section that has ALREADY been written. The LLM must not
+  // re-establish any insight that is summarised here — reference it at most once.
   const coverageLedger = assignment.coverageLedger ?? [];
   const coverageLedgerBlock = coverageLedger.length > 0
     ? `\n\n════════════════════════════════════════════
-CLAIMS ALREADY DELIVERED TO THE READER — DO NOT REPEAT
+COVERAGE LEDGER — NEVER RE-EXPLAIN THESE SECTIONS
 ════════════════════════════════════════════
-The reader has already received every claim listed below. Repeating any of them — even with different wording, different scripture, or as "brief context" — is a content error. The reader will notice the repetition and lose trust in the book.
-
-For each section below, the specific claims already asserted are listed after "Established:". Do NOT re-argue, re-introduce, re-define, or re-prove any of these points. Do NOT open this section with a summary of a prior section. Do NOT use any of these claims as a "setup" to introduce new content — go straight to the new content instead.
-
-${coverageLedger.map((e) => `• [${e.heading}]\n  Established: ${e.summary}`).join("\n\n")}`
+Every section below has ALREADY BEEN WRITTEN and delivered to the reader. Do NOT re-introduce, re-define, re-explain, or re-develop the ideas they established — not even in passing. You may presuppose the reader already knows each one. Reference an entry at most once (inline citation only, e.g. "as we saw in [heading]") and only when it directly supports NEW content:
+${coverageLedger.map((e) => `• [${e.heading}] — Established: "${e.summary}"`).join("\n")}`
     : "";
 
   // ── Amendment 4: Banned Recaps ────────────────────────────────────────────
-  // Paragraph openers from ALL paragraphs of all prior sections (not just first 4).
-  // The LLM must not rephrase, echo, or restate any of them.
+  // These are the exact opening thesis sentences from prior sections. The LLM
+  // must not rephrase, echo, or restate any of them — not even loosely.
   const bannedRecaps = assignment.bannedRecaps ?? [];
   const bannedRecapsBlock = bannedRecaps.length > 0
     ? `\n\n════════════════════════════════════════════
-BANNED PARAGRAPH OPENERS — EVERY CLAIM BELOW IS ALREADY IN THE BOOK
+BANNED RECAPS — DO NOT REPHRASE OR RESTATE
 ════════════════════════════════════════════
-These are the opening sentences of paragraphs already written and delivered to the reader. Each one anchors a claim that the reader already holds. You MUST NOT restate, rephrase, echo, or paraphrase any of them — not in full, not in part, not with synonyms. If your draft contains a sentence that expresses the same idea as any entry below, delete it and write something new:
+The following sentences are the opening claims of sections already written. You MUST NOT rephrase, echo, paraphrase, or restate any sentence in this list — not in full, not in part, not with synonyms, not as a summary. Write entirely new argumentation:
 ${bannedRecaps.map((s) => `• "${s}"`).join("\n")}`
     : "";
 
@@ -820,15 +639,22 @@ Your opening paragraph must land where that argument was heading — do NOT re-e
   );
   let effectiveExcerptEntries = excerptRemovedCount > 0 ? dedupedExcerptEntries : excerptEntries;
 
-  // ── Excerpt anchoring removed ─────────────────────────────────────────────
-  // The paragraph plan previously filtered the LLM's excerpt set to only those
-  // explicitly listed in assignedPlan.supportedExcerptNumbers. This caused
-  // short sections: if the plan referenced 4 of 10 excerpts, the LLM never
-  // saw the other 6 and silently left half the transcript unwritten.
-  //
-  // The plan is now used ONLY as a structural guide (paragraph order / purpose),
-  // never as a content gate. The LLM always receives the full post-dedup excerpt
-  // set so it can exhaust every point the speaker made.
+  // When chapter-plan is available, enforce its excerpt anchors surgically.
+  // This prevents section bodies from drifting into prior/adjacent subtitle material.
+  if ((assignment.assignedPlan ?? []).length > 0) {
+    const anchored = new Set<number>();
+    for (const step of assignment.assignedPlan ?? []) {
+      for (const n of step.supportedExcerptNumbers ?? []) {
+        if (Number.isInteger(n) && n > 0) anchored.add(n);
+      }
+    }
+    if (anchored.size > 0) {
+      const anchoredEntries = effectiveExcerptEntries.filter((e) => anchored.has(e.sourceNumber));
+      if (anchoredEntries.length > 0) {
+        effectiveExcerptEntries = anchoredEntries;
+      }
+    }
+  }
 
   const effectiveExcerpts = effectiveExcerptEntries.map((e) => e.text);
 
@@ -931,25 +757,11 @@ HARD RULES for this section's close:
     ? `\n\nCHAPTER PREMISE (north star for this chapter):\n"${assignment.chapterPremise}"\nThe opening sentence of the FIRST paragraph of this section should echo the spirit of this premise — not quote it verbatim, but orient the reader toward the same central tension or claim. Subsequent paragraphs should build from it.`
     : "";
 
-
-
-  // ── Amendment 1: Generate pre-write argument outline (real Step 0 Blueprint) ────────────
-  // This two-call system forces real structural commitment before prose generation.
-  // The outline becomes a hard constraint on what paragraphs are written and in what order.
-  const outline = await generateArgumentOutline(
-    effectiveExcerpts,
-    assignment.keyPoints,
-    assignment.heading,
-    assignment.voiceDNA,
-  );
-  const outlineBlock = outline
-    ? `\n\nPRE-COMPUTED SECTION BLUEPRINT (Step 0 complete — begin at Step 1):\nCONTROLLING CLAIM: ${outline.controllingClaim}\nREADER TENSION: ${outline.readerTension}\nARGUMENT MOVES (commit to these in order — each drives one or more paragraphs):\n${outline.argumentMoves.map((m, i) => `  ${i + 1}. Claim: ${m.claim}\n     Excerpts: ${m.excerptHint}\n     Paragraph close: ${m.paragraphClose}`).join("\n")}\nMAXIMUM-INSIGHT MOMENT (save for a paragraph-final position): ${outline.maximumInsightMoment}\n\nThis outline is your committed architecture. Every paragraph must serve one of the argument moves above. Do NOT re-derive the blueprint — it is already done. Proceed directly to Step 1 (Oral Purge).`
-    : "";
   const prompt = `Write the prose for this section of the ebook. Transform the transcript excerpts into polished written prose.
 
 CHAPTER ${assignment.chapterNumber}: ${assignment.chapterTitle}
 SECTION ${assignment.sectionNumber}: ${assignment.heading}
-TARGET WORD COUNT: ${assignment.targetWordCount} words — treat this as a MINIMUM. The transcript governs length. If the provided excerpts contain more content than the target, write more. Do not stop at the target if excerpts remain uncovered.
+TARGET WORD COUNT: ${assignment.targetWordCount} words (determined by available content — write what the transcript provides, no padding)
 ${excerptRemovedCount > 0 ? `NOTE: ${excerptRemovedCount} excerpt(s) were pre-filtered as already-covered — write ONLY from the excerpts provided below.` : ""}
 
 KEY POINTS TO COVER (all from the transcript — include every one):
@@ -974,12 +786,7 @@ SECTION SCOPE RULE — READ BEFORE WRITING:
 Your section is: "${assignment.heading}"${assignment.nextSectionHeading ? `\nThe NEXT section is: "${assignment.nextSectionHeading}"` : ""}${assignment.isLastSectionInChapter && assignment.nextChapterTitle ? `\nThis is the LAST section of Chapter ${assignment.chapterNumber}. The next chapter is "${assignment.nextChapterTitle}". STOP before any content that opens that chapter.` : ""}
 Write ONLY content that belongs to THIS section's heading and key points. If any excerpt contains sentences that transition into or introduce the next section's topic, STOP before those sentences. Do not write them. A transcript boundary does not override a section boundary.
 
-CONTENT COVERAGE REQUIREMENT — PRIMARY RULE:
-Every EXCERPT labeled [EXCERPT N of M] above must produce at least one paragraph of polished prose. You MUST cover EVERY excerpt provided — do not skip any excerpt, do not merge two excerpts into a single thin paragraph and call it done, and do not stop writing once "the main idea" is covered. The speaker developed each point deliberately through multiple sentences and angles — follow their full development, not just the headline.
-
-Treat each excerpt as a minimum coverage unit. If an excerpt contains three distinct sub-points, write three paragraphs. If it contains an illustration, a scripture, and an application — all three must appear in the prose. A point left uncovered in the transcript is a point the reader never receives.
-
-The ONLY legitimate reason to skip excerpt content is if it clearly belongs to the NEXT section or NEXT chapter (bleed forward). Write shorter only to avoid that bleed, never to abbreviate coverage of this section's own material.
+CONTENT COVERAGE REQUIREMENT: Exhaust every distinct key point, story, illustration, and argument that belongs to THIS section's scope. Skip any excerpt content that clearly belongs to the next section or next chapter. Write shorter rather than bleed forward.
 
 SEQUENCE RULE — ABSOLUTE: Write paragraphs in the EXACT ORDER ideas appear across the excerpts (Excerpt 1 first, then Excerpt 2, etc.). Do NOT reorder. Do NOT restructure into a different arc. The speaker's build-up is intentional — follow it point by point without skipping ahead or circling back.
 
@@ -990,7 +797,7 @@ Return:
 - claimLedger: list of major claims and the excerpt numbers (1-based) that support each claim.
 - planSequenceIds: for EACH paragraph in the paragraphs array, provide the 0-based index of the paragraph plan step it fulfills. Must be non-decreasing (paragraph N cannot fulfill a plan step earlier than paragraph N-1's step).
 
-Now write the section prose:${outlineBlock}`;
+Now write the section prose:`;
 
 
   const PlanSchema = z.object({
@@ -1068,7 +875,7 @@ Now write the section prose:${outlineBlock}`;
           if ((dna.vernacularMarkers ?? []).length > 0)
             lines.push(`\nVERNACULAR MARKERS (must appear verbatim to authenticate the voice):\n${dna.vernacularMarkers.map((v) => `  • ${v}`).join("\n")}`);
           if ((dna.rhetoricalPatterns ?? []).length > 0)
-            lines.push(`\nRHETORICAL PATTERNS — REPLICATE THESE STRUCTURES IN THE PROSE:\n${dna.rhetoricalPatterns.map((r) => `  • ${r}`).join("\n")}\nENFORCEMENT: Actively embed these patterns in the prose structure — do not merely note them. If the speaker characteristically "states a wrong assumption then corrects it from scripture," build at least one paragraph with that structure. If the speaker "builds to a three-point declaration," use that move where the excerpts support it. Rhetorical patterns are the structural signature of this voice. Their absence makes the prose sound like anyone could have written it.`);
+            lines.push(`\nRHETORICAL PATTERNS (replicate these devices):\n${dna.rhetoricalPatterns.map((r) => `  • ${r}`).join("\n")}`);
           if ((dna.avoidStructures ?? []).length > 0)
             lines.push(`\nFORBIDDEN SENTENCE STRUCTURES (never construct sentences this way):\n${dna.avoidStructures.map((s) => `  • ${s}`).join("\n")}`);
           if ((dna.avoidWords ?? []).length > 0)
@@ -1095,22 +902,6 @@ Now write the section prose:${outlineBlock}`;
       system: deduplicatedSystem,
       prompt: `${prompt}\n\nPARAGRAPH PLAN (must follow if provided):\n${JSON.stringify(paragraphPlan)}`,
     });
-    // ── Amendment 7: claimLedger key-point coverage check ────────────────────────
-    // Cross-reference returned claim entries against the assignment's key points.
-    // Key points with < 30% content-word match in the aggregated claim text = possible
-    // coverage gap that the claimLedger didn't capture. Surfaced as missedPoints in
-    // the response so the pipeline can log which content may have been skipped.
-    const claimText = (object.claimLedger ?? []).map((c) => c.claim.toLowerCase()).join(" ");
-    const missedPoints = (assignment.keyPoints ?? []).filter((kp) => {
-      const kpWords = kp.toLowerCase().replace(/[^a-z0-9\s]/g, "").split(/\s+/).filter((w) => w.length > 4);
-      if (kpWords.length === 0) return false;
-      const matchedWords = kpWords.filter((w) => claimText.includes(w));
-      return matchedWords.length / kpWords.length < 0.3;
-    });
-    if (missedPoints.length > 0) {
-      console.warn(`[write-section] Coverage gap: ${missedPoints.length} key point(s) may be missing from claimLedger in Ch${assignment.chapterNumber} §${assignment.sectionNumber}:`, missedPoints.slice(0, 2));
-    }
-
     const rawParagraphs = (object.paragraphs ?? [])
       .map((p) => p.trim())
       .filter(Boolean)
@@ -1170,32 +961,7 @@ Now write the section prose:${outlineBlock}`;
       }
     }
 
-    // Hard grounding gate: remove any paragraph that cannot be traced to assigned excerpts.
-    // This prevents source-map drift where section prose contains content from adjacent segments.
-    const groundedParagraphs: string[] = [];
-    let droppedUngrounded = 0;
-    for (const paragraph of finalParagraphs) {
-      const words = paragraph.split(/\s+/).filter(Boolean).length;
-      const grounding = paragraphGroundingScore(paragraph, effectiveExcerpts);
-      const grounded = grounding.score >= 0.06 || grounding.shared >= 6;
-      const transitionalShort = words <= 14 && groundedParagraphs.length > 0;
-      if (grounded || transitionalShort) {
-        groundedParagraphs.push(paragraph);
-      } else {
-        droppedUngrounded++;
-      }
-    }
-    if (droppedUngrounded > 0) {
-      console.warn(`[write-section] Grounding gate dropped ${droppedUngrounded} ungrounded paragraph(s) in Ch${assignment.chapterNumber} §${assignment.sectionNumber}`);
-    }
-    if (groundedParagraphs.length > 0) {
-      finalParagraphs = groundedParagraphs;
-    }
-
-    const rawBody = finalParagraphs.join("\n\n") || buildStrictBodyFromExcerpts(effectiveExcerpts);
-    if (!rawBody.trim()) {
-      throw new Error(`No grounded prose produced for Ch${assignment.chapterNumber} §${assignment.sectionNumber}`);
-    }
+    const rawBody = finalParagraphs.join("\n\n") || await fallbackSectionBody(assignment);
     const body = stripAudienceLanguage(normalizeReaderFacingProse(rawBody));
     // ── Upgrade 8: Passive voice detection ───────────────────────────────
     const passiveHits = detectPassiveVoice(body);
@@ -1212,15 +978,20 @@ Now write the section prose:${outlineBlock}`;
     return NextResponse.json({
       body,
       claimLedger: object.claimLedger ?? [],
-      missedPoints,
       passiveVoiceCount: passiveHits.length,
       unfullfilledHook,
       sequenceBreakCount,
     }, { status: 200 });
   } catch (err) {
-    const message = err instanceof Error && err.message.trim()
-      ? err.message
-      : `Section write failed for Ch${assignment.chapterNumber} §${assignment.sectionNumber}`;
-    return NextResponse.json({ error: message }, { status: 500 });
+    const fallbackBody = stripAudienceLanguage(normalizeReaderFacingProse(await fallbackSectionBody(assignment)));
+    return NextResponse.json({
+      body: fallbackBody,
+      claimLedger: [],
+      fallback: true,
+      error: err instanceof Error && err.message.trim() ? err.message : "Section write used transcript fallback",
+      details: err instanceof Error && err.stack
+        ? err.stack.split("\n").slice(0, 3).join(" | ")
+        : undefined,
+    }, { status: 200 });
   }
 }

@@ -77,8 +77,6 @@ function resolvePdfFonts(doc: any): PdfFontSet {
     };
   }
 
-  console.warn("[ebook-generator] Georgia fonts unavailable; falling back to Times-Roman for PDF export.");
-
   return {
     serif: "Times-Roman",
     serifItalic: "Times-Italic",
@@ -405,16 +403,14 @@ export async function generatePdfBuffer(manifest: EbookManifest, templateId?: st
 
     if (manifest.backMatter && (manifest.backMatter.glossary ?? []).length > 0) {
       forceNextRecto();
-      const glossaryTitle = manifest.backMatter.glossaryTitle?.trim() || "Glossary";
-      currentChapterTitle = glossaryTitle;
-      writeGlossary(doc, manifest.backMatter, fonts, tpl, glossaryTitle, adjustedBodyFontSize);
+      currentChapterTitle = "Glossary";
+      writeGlossary(doc, manifest.backMatter, fonts, tpl, adjustedBodyFontSize);
     }
 
     if (manifest.backMatter && (manifest.backMatter.readingGroupGuide ?? []).length > 0) {
       forceNextRecto();
-      const readingGroupGuideTitle = manifest.backMatter.readingGroupGuideTitle?.trim() || "Reading Group Guide";
-      currentChapterTitle = readingGroupGuideTitle;
-      writeReadingGroupGuide(doc, manifest.backMatter, fonts, tpl, readingGroupGuideTitle, adjustedBodyFontSize);
+      currentChapterTitle = "Reading Group Guide";
+      writeReadingGroupGuide(doc, manifest.backMatter, fonts, tpl, adjustedBodyFontSize);
     }
 
     // ── Second pass ───────────────────────────────────────────────────────────
@@ -1300,9 +1296,9 @@ function writeResources(doc: any, fm: FrontBackMatter, fonts: PdfFontSet, tpl: B
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function writeGlossary(doc: any, bm: BackMatter, fonts: PdfFontSet, tpl: BookTemplateConfig, title = "Glossary", bodyFontSize?: number) {
+function writeGlossary(doc: any, bm: BackMatter, fonts: PdfFontSet, tpl: BookTemplateConfig, bodyFontSize?: number) {
   doc.addPage();
-  doc.fontSize(tpl.matterTitleSize).font(fonts.serifBold).fillColor(tpl.chapterTitleColor).text(title, { align: tpl.matterTitleAlign });
+  doc.fontSize(tpl.matterTitleSize).font(fonts.serifBold).fillColor(tpl.chapterTitleColor).text("Glossary", { align: tpl.matterTitleAlign });
   writeDivider(doc, tpl);
   const fs = bodyFontSize ?? tpl.bodyFontSize;
   for (const entry of (bm.glossary ?? [])) {
@@ -1313,9 +1309,9 @@ function writeGlossary(doc: any, bm: BackMatter, fonts: PdfFontSet, tpl: BookTem
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function writeReadingGroupGuide(doc: any, bm: BackMatter, fonts: PdfFontSet, tpl: BookTemplateConfig, title = "Reading Group Guide", bodyFontSize?: number) {
+function writeReadingGroupGuide(doc: any, bm: BackMatter, fonts: PdfFontSet, tpl: BookTemplateConfig, bodyFontSize?: number) {
   doc.addPage();
-  doc.fontSize(tpl.matterTitleSize).font(fonts.serifBold).fillColor(tpl.chapterTitleColor).text(title, { align: tpl.matterTitleAlign });
+  doc.fontSize(tpl.matterTitleSize).font(fonts.serifBold).fillColor(tpl.chapterTitleColor).text("Reading Group Guide", { align: tpl.matterTitleAlign });
   writeDivider(doc, tpl);
   const fs = bodyFontSize ?? tpl.bodyFontSize;
   for (const chapter of (bm.readingGroupGuide ?? [])) {
@@ -1521,7 +1517,7 @@ function backMatterChapters(fm: FrontBackMatter, quotes: Quote[], bm?: BackMatte
       const glossaryHtml = (bm.glossary ?? []).map((entry) =>
         `<dt><strong>${escapeHtml(entry.term)}</strong></dt><dd>${escapeHtml(entry.definition)}<br/><em>${escapeHtml(entry.firstAppearance)}</em></dd>`
       ).join("");
-      chapters.push({ title: bm.glossaryTitle?.trim() || "Glossary", content: `<dl>${glossaryHtml}</dl>` });
+      chapters.push({ title: "Glossary", content: `<dl>${glossaryHtml}</dl>` });
     }
 
     if ((bm.readingGroupGuide ?? []).length > 0) {
@@ -1529,14 +1525,14 @@ function backMatterChapters(fm: FrontBackMatter, quotes: Quote[], bm?: BackMatte
         const qs = chapter.questions.map((q) => `<li>${escapeHtml(q)}</li>`).join("");
         return `<h3>Chapter ${chapter.chapterNumber}: ${escapeHtml(chapter.chapterTitle)}</h3><ol>${qs}</ol>`;
       }).join("");
-      chapters.push({ title: bm.readingGroupGuideTitle?.trim() || "Reading Group Guide", content: guideHtml });
+      chapters.push({ title: "Reading Group Guide", content: guideHtml });
     }
 
     if ((bm.scriptureIndex ?? []).length > 0) {
       const indexHtml = (bm.scriptureIndex ?? []).map((entry) =>
         `<li><strong>${escapeHtml(entry.reference)}</strong> (${escapeHtml(entry.translation)}) — Ch. ${entry.chapters.join(", ")}</li>`
       ).join("");
-      chapters.push({ title: bm.scriptureIndexTitle?.trim() || "Scripture Index", content: `<ul>${indexHtml}</ul>` });
+      chapters.push({ title: "Scripture Index", content: `<ul>${indexHtml}</ul>` });
     }
   }
 

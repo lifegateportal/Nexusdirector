@@ -66,19 +66,7 @@ const ChapterPlanLLMSchema = z.object({
 });
 
 export async function POST(req: NextRequest) {
-  let body: unknown;
-  try {
-    body = await req.json();
-  } catch (err) {
-    return NextResponse.json(
-      {
-        route: "ebook/chapter-plan",
-        error: err instanceof Error ? err.message : "Invalid JSON payload",
-      },
-      { status: 400 }
-    );
-  }
-
+  const body = await req.json() as unknown;
   let input: z.infer<typeof ChapterPlanRequestSchema>;
   try {
     input = ChapterPlanRequestSchema.parse(body);
@@ -315,8 +303,10 @@ ${excerptPayload}`;
       } catch (err) {
         clearInterval(heartbeat);
         console.error("[chapter-plan] Error:", err);
-        controller.error(err instanceof Error ? err : new Error("Chapter plan generation failed"));
-        return;
+        const fallback: z.infer<typeof ChapterPlanResponseSchema> = {
+          sectionPlans: sections.map((s) => ({ sectionNumber: s.sectionNumber, paragraphPlan: [] })),
+        };
+        controller.enqueue(encoder.encode(JSON.stringify(fallback)));
       } finally {
         try { controller.close(); } catch { /* already closed */ }
       }

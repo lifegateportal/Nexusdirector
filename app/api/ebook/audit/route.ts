@@ -169,14 +169,8 @@ function extractSegments(manifest: EbookManifest): SegmentMeta[] {
         });
       }
     }
-    if (chapter.forwardQuestion?.trim().length ?? 0 > 80) {
-      segs.push({
-        id: `c${chapter.number}-forward`,
-        chapterNumber: chapter.number,
-        sectionNumber: null,
-        location: `Ch ${chapter.number} forward question`,
-        text: chapter.forwardQuestion!,
-      });
+    if (chapter.conclusion?.trim().length ?? 0 > 80) {
+      segs.push({ id: `c${chapter.number}-conc`, chapterNumber: chapter.number, sectionNumber: null, location: `Ch ${chapter.number} conclusion`, text: chapter.conclusion! });
     }
   }
 
@@ -300,7 +294,7 @@ function findOverusedWords(manifest: EbookManifest): Omit<OverusedWord, "alterna
     manifest.frontMatter.preface ?? "",
     manifest.frontMatter.introduction ?? "",
     manifest.frontMatter.conclusion ?? "",
-    ...manifest.chapters.flatMap((c) => [c.intro ?? "", ...c.sections.map((s) => s.body ?? ""), c.forwardQuestion ?? ""]),
+    ...manifest.chapters.flatMap((c) => [c.intro ?? "", ...c.sections.map((s) => s.body ?? ""), c.conclusion ?? ""]),
   ].join(" ");
 
   const counts = new Map<string, number>();
@@ -685,19 +679,7 @@ Return ONLY valid JSON — no markdown fences:
 const AuditRequestSchema = z.object({ manifest: EbookManifestSchema });
 
 export async function POST(req: NextRequest) {
-  let body: unknown;
-  try {
-    body = await req.json();
-  } catch (err) {
-    return NextResponse.json(
-      {
-        route: "ebook/audit",
-        error: err instanceof Error ? err.message : "Invalid JSON payload",
-      },
-      { status: 400 }
-    );
-  }
-
+  const body = await req.json() as unknown;
   let input;
   try {
     input = AuditRequestSchema.parse(body);

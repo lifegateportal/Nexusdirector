@@ -186,16 +186,7 @@ function applySiteConfigPatch(
 export async function POST(req: NextRequest) {
   const encoder = new TextEncoder();
 
-  type AssistantRequestInput = {
-    academy: AcademyPackage;
-    instruction: string;
-    siteConfig?: SiteConfig;
-    dryRun?: boolean;
-    academyVersion?: string;
-    history?: Array<{ role: "user" | "assistant"; content: string }>;
-  };
-
-  let parsedInput: AssistantRequestInput | undefined;
+  let parsedInput: { academy: AcademyPackage; instruction: string; siteConfig?: SiteConfig } | undefined;
   try {
     const body = await req.json() as unknown;
     parsedInput = RequestSchema.parse(body);

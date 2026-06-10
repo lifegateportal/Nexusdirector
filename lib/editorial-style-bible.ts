@@ -412,7 +412,7 @@ type HarmonizeManifestInput = {
 		number: number;
 		title: string;
 		intro: string;
-		conclusion?: string;
+		conclusion: string;
 		keyTakeaways: string[];
 		reflectionQuestions: string[];
 		totalWordCount: number;
@@ -454,7 +454,7 @@ export function harmonizeBookManifest<T extends HarmonizeManifestInput>(manifest
 		return {
 			...chapter,
 			intro,
-			...(typeof chapter.conclusion === "string" ? { conclusion } : {}),
+			conclusion,
 			sections,
 			keyTakeaways,
 			reflectionQuestions,

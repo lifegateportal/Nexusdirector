@@ -472,14 +472,6 @@ export const POST = async (req: NextRequest): Promise<Response> => {
   // a concept later in the transcript, that was intentional pedagogical reinforcement.
   // ONLY delete sections that are clearly copy-paste errors (>98% verbatim duplication).
 
-  function tokenizeContent(text: string): string[] {
-    return text
-      .toLowerCase()
-      .replace(/[^a-z0-9\s]/g, " ")
-      .split(/\s+/)
-      .filter((token) => token.length > 3);
-  }
-
   function calculateTextSimilarity(text1: string, text2: string): number {
     const words1 = new Set(tokenizeContent(text1));
     const words2 = new Set(tokenizeContent(text2));

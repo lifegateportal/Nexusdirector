@@ -8,19 +8,7 @@ export const runtime = "nodejs";
 export const maxDuration = 90;
 
 export async function POST(req: NextRequest) {
-  let body: unknown;
-  try {
-    body = await req.json();
-  } catch (err) {
-    return NextResponse.json(
-      {
-        route: "ebook/assign-segments",
-        error: err instanceof Error ? err.message : "Invalid JSON payload",
-      },
-      { status: 400 }
-    );
-  }
-
+  const body = await req.json() as unknown;
   let input;
   try {
     input = AssignSegmentsRequestSchema.parse(body);
@@ -124,6 +112,7 @@ export async function POST(req: NextRequest) {
   } catch (err) {
     console.error("[assign-segments] Fatal error:", err);
     const message = err instanceof Error ? err.message : "Segment assignment failed";
-    return NextResponse.json({ error: message }, { status: 500 });
+    const stack = err instanceof Error ? err.stack : undefined;
+    return NextResponse.json({ error: message, stack }, { status: 500 });
   }
 }
