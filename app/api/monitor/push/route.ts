@@ -1,113 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
-import {
-  setMonitorDisplay,
-  clearMonitorDisplay,
-  setStreamDisplay,
-  clearStreamDisplay,
-  enqueueForOperator,
-  operatorGo,
-  operatorSkip,
-  setQueueMode,
-  setDisplayPrefs,
-  setStreamDisplayPrefs,
-  getMonitorState,
-} from "@/lib/monitor-state";
-import { z } from "zod";
+import { setMonitorDisplay, clearMonitorDisplay } from "@/lib/monitor-state";
 
 export const runtime = "nodejs";
 
-type PushBody =
-  | { ref: string; text: string; source?: "app" | "media"; clear?: never; operatorGo?: never; operatorSkip?: never; setQueueMode?: never }
-  | { clear: true; source?: "app" | "media"; ref?: never; text?: never }
-  | { operatorGo: true; ref?: never; text?: never }
-  | { operatorSkip: true; ref?: never; text?: never }
-  | { setQueueMode: boolean; ref?: never; text?: never }
-  | {
-      setDisplayPrefs: {
-        layout?: "center" | "lower-third";
-        background?: "black" | "midnight" | "sunrise" | "ocean" | "charcoal" | "transparent";
-        fontStyle?: "serif" | "sans" | "display";
-        lowerThirdBackground?: "solid" | "glass" | "transparent";
-        centerRefSize?: number;
-        centerVerseSize?: number;
-        lowerRefSize?: number;
-        lowerVerseSize?: number;
-        lowerThirdSize?: "compact" | "standard" | "large";
-      };
-      source?: "app" | "media";
-      ref?: never;
-      text?: never;
-    };
-
-const prefsSchema = z.object({
-  layout: z.enum(["center", "lower-third"]).optional(),
-  background: z.enum(["black", "midnight", "sunrise", "ocean", "charcoal", "transparent"]).optional(),
-  fontStyle: z.enum(["serif", "sans", "display"]).optional(),
-  lowerThirdBackground: z.enum(["solid", "glass", "transparent"]).optional(),
-  centerRefSize: z.number().int().min(16).max(90).optional(),
-  centerVerseSize: z.number().int().min(28).max(140).optional(),
-  lowerRefSize: z.number().int().min(12).max(56).optional(),
-  lowerVerseSize: z.number().int().min(20).max(96).optional(),
-  lowerThirdSize: z.enum(["compact", "standard", "large"]).optional(),
-}).strict();
-
 export async function POST(req: NextRequest) {
-  let body: Record<string, unknown>;
+  let body: { ref?: string; text?: string; clear?: boolean };
   try {
-    body = await req.json() as Record<string, unknown>;
+    body = await req.json() as { ref?: string; text?: string; clear?: boolean };
   } catch {
     return NextResponse.json({ error: "Bad request" }, { status: 400 });
   }
 
-  if (body.clear === true) {
+  if (body.clear) {
     clearMonitorDisplay();
-    if (body.source === "app") clearStreamDisplay();
-    return NextResponse.json({ ok: true });
+  } else if (body.ref && body.text) {
+    setMonitorDisplay(body.ref, body.text);
+  } else {
+    return NextResponse.json({ error: "Missing ref or text" }, { status: 400 });
   }
 
-  if (body.operatorGo === true) {
-    operatorGo();
-    return NextResponse.json({ ok: true, state: getMonitorState() });
-  }
-
-  if (body.operatorSkip === true) {
-    operatorSkip();
-    return NextResponse.json({ ok: true, state: getMonitorState() });
-  }
-
-  if (typeof body.setQueueMode === "boolean") {
-    setQueueMode(body.setQueueMode);
-    return NextResponse.json({ ok: true });
-  }
-
-  if (typeof body.setDisplayPrefs === "object" && body.setDisplayPrefs !== null) {
-    const parsed = prefsSchema.safeParse(body.setDisplayPrefs);
-    if (!parsed.success) {
-      return NextResponse.json({ error: "Invalid display preferences" }, { status: 400 });
-    }
-    const source = body.source === "app" ? "app" : "media";
-    if (source === "app") {
-      setDisplayPrefs(parsed.data);
-      setStreamDisplayPrefs(parsed.data);
-    } else {
-      setDisplayPrefs(parsed.data);
-    }
-    return NextResponse.json({ ok: true, state: getMonitorState() });
-  }
-
-  if (typeof body.ref === "string" && typeof body.text === "string") {
-    const source = body.source === "app" ? "app" : "media";
-    const state = getMonitorState();
-    if (state.queueMode && source !== "app") {
-      enqueueForOperator(body.ref, body.text);
-    } else {
-      setMonitorDisplay(body.ref, body.text);
-    }
-    if (source === "app") {
-      setStreamDisplay(body.ref, body.text);
-    }
-    return NextResponse.json({ ok: true });
-  }
-
-  return NextResponse.json({ error: "Missing ref or text" }, { status: 400 });
+  return NextResponse.json({ ok: true });
 }
