@@ -1,12 +1,16 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+
+type VerseQueueItem = { ref: string; text: string };
 
 type MonitorState = {
   ref: string;
   text: string;
   updatedAt: number;
   cleared: boolean;
+  operatorQueue: VerseQueueItem[];
+  queueMode: boolean;
 };
 
 export default function MonitorPage() {
@@ -14,60 +18,17 @@ export default function MonitorPage() {
   const [password, setPassword] = useState("");
   const [loginError, setLoginError] = useState("");
   const [logging, setLogging] = useState(false);
-  const [display, setDisplay] = useState<MonitorState | null>(null);
+
+  const [state, setState] = useState<MonitorState | null>(null);
+  const [lowerThirds, setLowerThirds] = useState(false);
+  const [showControls, setShowControls] = useState(false);
+  const [showQueue, setShowQueue] = useState(false);
+
   const lastUpdatedAt = useRef(0);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const controlsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const pollState = async () => {
-    try {
-      const res = await fetch("/api/monitor/state");
-      if (res.status === 401) {
-        setAuthed(false);
-        if (intervalRef.current) clearInterval(intervalRef.current);
-        return;
-      }
-      if (!res.ok) return;
-      const data = await res.json() as MonitorState;
-      if (data.updatedAt !== lastUpdatedAt.current) {
-        lastUpdatedAt.current = data.updatedAt;
-        setDisplay(data);
-      }
-    } catch {
-      // network blip — continue
-    }
-  };
-
-  useEffect(() => {
-    void pollState().then(() => {
-      setAuthed((a) => a === null ? false : a);
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const startPolling = () => {
-    if (intervalRef.current) clearInterval(intervalRef.current);
-    intervalRef.current = setInterval(() => void pollState(), 2000);
-  };
-
-  useEffect(() => {
-    void (async () => {
-      const res = await fetch("/api/monitor/state");
-      if (res.ok) {
-        const data = await res.json() as MonitorState;
-        lastUpdatedAt.current = data.updatedAt;
-        setDisplay(data);
-        setAuthed(true);
-        startPolling();
-      } else {
-        setAuthed(false);
-      }
-    })();
-    return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
+  // ─── Auth ────────────────────────────────────────────────────────────────
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoginError("");
@@ -78,20 +39,89 @@ export default function MonitorPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ password }),
       });
-      if (!res.ok) {
-        setLoginError("Incorrect password. Try again.");
-        return;
-      }
+      if (!res.ok) { setLoginError("Incorrect password."); return; }
       setAuthed(true);
       startPolling();
-      void pollState();
-    } catch {
-      setLoginError("Connection error. Please retry.");
-    } finally {
-      setLogging(false);
-    }
+    } catch { setLoginError("Connection error. Retry."); }
+    finally { setLogging(false); }
   };
 
+  // ─── Polling ─────────────────────────────────────────────────────────────
+  const poll = useCallback(async () => {
+    try {
+      const res = await fetch("/api/monitor/state");
+      if (res.status === 401) { setAuthed(false); stopPolling(); return; }
+      if (!res.ok) return;
+      const data = await res.json() as MonitorState;
+      if (data.updatedAt !== lastUpdatedAt.current) {
+        lastUpdatedAt.current = data.updatedAt;
+        setState(data);
+        if (data.queueMode && data.operatorQueue.length > 0) setShowQueue(true);
+      }
+    } catch { /* network blip */ }
+  }, []);
+
+  const stopPolling = () => {
+    if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
+  };
+
+  const startPolling = useCallback(() => {
+    stopPolling();
+    intervalRef.current = setInterval(() => void poll(), 2000);
+  }, [poll]);
+
+  useEffect(() => {
+    void (async () => {
+      const res = await fetch("/api/monitor/state");
+      if (res.ok) {
+        const data = await res.json() as MonitorState;
+        lastUpdatedAt.current = data.updatedAt;
+        setState(data);
+        setAuthed(true);
+        startPolling();
+      } else {
+        setAuthed(false);
+      }
+    })();
+    return stopPolling;
+  }, [startPolling]);
+
+  // ─── Operator actions ─────────────────────────────────────────────────────
+  const operatorGo = async () => {
+    await fetch("/api/monitor/push", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ operatorGo: true }),
+    });
+    void poll();
+  };
+
+  const operatorSkip = async () => {
+    await fetch("/api/monitor/push", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ operatorSkip: true }),
+    });
+    void poll();
+  };
+
+  const toggleQueueMode = async (enabled: boolean) => {
+    await fetch("/api/monitor/push", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ setQueueMode: enabled }),
+    });
+    void poll();
+  };
+
+  // ─── Controls auto-hide ───────────────────────────────────────────────────
+  const revealControls = () => {
+    setShowControls(true);
+    if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current);
+    controlsTimerRef.current = setTimeout(() => setShowControls(false), 4000);
+  };
+
+  // ─── Login screen ─────────────────────────────────────────────────────────
   if (authed === null) {
     return (
       <div className="flex h-screen items-center justify-center bg-black">
@@ -102,10 +132,10 @@ export default function MonitorPage() {
 
   if (!authed) {
     return (
-      <div className="flex h-screen flex-col items-center justify-center bg-[#0a0a0a]">
-        <div className="w-full max-w-sm rounded-2xl border border-white/10 bg-black/70 p-8 shadow-2xl">
+      <div className="flex h-screen flex-col items-center justify-center bg-[#080808]">
+        <div className="w-full max-w-sm rounded-2xl border border-white/10 bg-black/80 p-8 shadow-2xl">
           <div className="mb-8 text-center">
-            <p className="text-xs font-bold uppercase tracking-[0.3em] text-yellow-400">Nexus Director</p>
+            <p className="text-[10px] font-bold uppercase tracking-[0.35em] text-yellow-400">Nexus Director</p>
             <h1 className="mt-2 text-2xl font-bold text-white">Scripture Monitor</h1>
             <p className="mt-1 text-sm text-white/40">Enter the access password to connect</p>
           </div>
@@ -116,13 +146,13 @@ export default function MonitorPage() {
               onChange={(e) => setPassword(e.target.value)}
               placeholder="Password"
               autoFocus
-              className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white placeholder-white/30 outline-none focus:border-yellow-400/60 focus:ring-1 focus:ring-yellow-400/30"
+              className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white placeholder-white/25 outline-none focus:border-yellow-400/60 focus:ring-1 focus:ring-yellow-400/20"
             />
             {loginError && <p className="text-xs text-red-400">{loginError}</p>}
             <button
               type="submit"
               disabled={logging || !password}
-              className="w-full rounded-xl bg-yellow-400 py-3 text-sm font-bold text-black transition hover:bg-yellow-300 disabled:opacity-50"
+              className="w-full rounded-xl bg-yellow-400 py-3 text-sm font-bold text-black transition hover:bg-yellow-300 disabled:opacity-40"
             >
               {logging ? "Connecting…" : "Connect"}
             </button>
@@ -132,41 +162,189 @@ export default function MonitorPage() {
     );
   }
 
-  const isLive = display && !display.cleared && display.ref;
+  // ─── Display screen ────────────────────────────────────────────────────────
+  const isLive = state && !state.cleared && state.ref;
+  const hasQueue = state?.queueMode && (state.operatorQueue?.length ?? 0) > 0;
 
   return (
-    <div className="flex h-screen flex-col items-center justify-center overflow-hidden bg-black text-white">
-      {isLive ? (
-        <div
-          key={display.updatedAt}
-          className="animate-fadein w-full max-w-5xl px-12 text-center"
-        >
-          <p
-            className="mb-8 text-2xl font-bold uppercase tracking-[0.3em] text-yellow-400"
-            style={{ textShadow: "0 0 40px rgba(250,204,21,0.5)" }}
-          >
-            {display.ref}
-          </p>
-          <p
-            className="font-serif text-5xl leading-snug text-white md:text-6xl"
-            style={{ textShadow: "0 2px 20px rgba(255,255,255,0.15)" }}
-          >
-            &ldquo;{display.text}&rdquo;
-          </p>
-        </div>
-      ) : (
-        <div className="text-center">
-          <p className="text-xs font-bold uppercase tracking-[0.4em] text-white/20">Nexus Director</p>
-          <p className="mt-3 text-sm text-white/10">Waiting for scripture…</p>
+    <div
+      className="relative h-screen w-screen overflow-hidden bg-black text-white select-none"
+      onMouseMove={revealControls}
+      onTouchStart={revealControls}
+    >
+
+      {/* ── Center layout ─────────────────────────────────────────────── */}
+      {!lowerThirds && (
+        <div className="flex h-full items-center justify-center">
+          {isLive ? (
+            <div
+              key={`${state.ref}-${state.updatedAt}`}
+              className="w-full max-w-5xl px-12 text-center"
+              style={{ animation: "fadeUp 0.5s ease both" }}
+            >
+              <p
+                className="mb-8 text-2xl font-bold uppercase tracking-[0.3em] text-yellow-400"
+                style={{ textShadow: "0 0 40px rgba(250,204,21,0.4)" }}
+              >
+                {state.ref}
+              </p>
+              <p
+                className="font-serif text-5xl leading-snug text-white md:text-6xl"
+                style={{ textShadow: "0 2px 30px rgba(255,255,255,0.1)" }}
+              >
+                &ldquo;{state.text}&rdquo;
+              </p>
+            </div>
+          ) : (
+            <div className="text-center">
+              <p className="text-[10px] font-bold uppercase tracking-[0.4em] text-white/15">Nexus Director</p>
+              {state?.queueMode && (
+                <p className="mt-2 text-xs text-white/20">Queue mode — operator hold active</p>
+              )}
+            </div>
+          )}
         </div>
       )}
 
+      {/* ── Lower-thirds layout ───────────────────────────────────────── */}
+      {lowerThirds && (
+        <>
+          {/* idle watermark */}
+          {!isLive && (
+            <div className="absolute inset-0 flex items-center justify-center">
+              <p className="text-[10px] font-bold uppercase tracking-[0.4em] text-white/10">Nexus Director</p>
+            </div>
+          )}
+
+          {/* lower-thirds bar */}
+          {isLive && (
+            <div
+              key={`${state.ref}-${state.updatedAt}`}
+              className="absolute bottom-0 left-0 right-0"
+              style={{ animation: "slideUp 0.45s ease both" }}
+            >
+              {/* gradient fade */}
+              <div className="h-16 bg-gradient-to-t from-black/80 to-transparent" />
+              <div className="border-t border-yellow-400/30 bg-black/85 px-10 py-5 backdrop-blur-sm">
+                <p className="mb-2 text-sm font-bold uppercase tracking-[0.28em] text-yellow-400">
+                  {state.ref}
+                </p>
+                <p className="font-serif text-2xl leading-snug text-white md:text-3xl">
+                  &ldquo;{state.text}&rdquo;
+                </p>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* ── Operator queue panel ──────────────────────────────────────── */}
+      {state?.queueMode && showQueue && (
+        <div className="absolute right-4 top-4 w-80 rounded-2xl border border-white/10 bg-black/90 shadow-2xl backdrop-blur">
+          <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
+            <p className="text-xs font-bold uppercase tracking-wider text-yellow-400">
+              Operator Queue ({state.operatorQueue?.length ?? 0})
+            </p>
+            <button onClick={() => setShowQueue(false)} className="text-white/40 hover:text-white text-sm">✕</button>
+          </div>
+          {(state.operatorQueue?.length ?? 0) === 0 ? (
+            <p className="px-4 py-3 text-xs text-white/30">No items queued</p>
+          ) : (
+            <div className="max-h-80 overflow-y-auto">
+              {(state.operatorQueue ?? []).map((item, i) => (
+                <div key={i} className={`border-b border-white/5 px-4 py-3 ${i === 0 ? "bg-yellow-400/5" : ""}`}>
+                  <p className="text-xs font-bold text-yellow-300">{item.ref}</p>
+                  <p className="mt-0.5 line-clamp-2 text-xs text-white/50">{item.text}</p>
+                  {i === 0 && (
+                    <div className="mt-2 flex gap-2">
+                      <button
+                        onClick={() => void operatorGo()}
+                        className="rounded-lg bg-green-500/80 px-4 py-1.5 text-xs font-bold text-white hover:bg-green-500"
+                      >
+                        GO
+                      </button>
+                      <button
+                        onClick={() => void operatorSkip()}
+                        className="rounded-lg bg-white/10 px-4 py-1.5 text-xs font-bold text-white/70 hover:bg-white/20"
+                      >
+                        Skip
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Control bar (auto-hide) ───────────────────────────────────── */}
+      <div
+        className={`absolute bottom-0 left-0 right-0 flex items-center justify-between gap-4 border-t border-white/5 bg-black/70 px-6 py-3 backdrop-blur transition-all duration-300 ${showControls ? "opacity-100 translate-y-0" : "opacity-0 translate-y-full pointer-events-none"}`}
+        style={{ bottom: lowerThirds && isLive ? "auto" : 0, top: lowerThirds && isLive ? 0 : "auto" }}
+      >
+        <div className="flex items-center gap-4">
+          {/* Layout toggle */}
+          <button
+            onClick={() => setLowerThirds(!lowerThirds)}
+            className="flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-bold text-white/70 hover:bg-white/15 transition"
+          >
+            {lowerThirds ? (
+              <>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3 w-3"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="12" x2="21" y2="12"/></svg>
+                Center
+              </>
+            ) : (
+              <>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3 w-3"><rect x="3" y="3" width="18" height="18" rx="2"/><rect x="3" y="15" width="18" height="6" rx="1" fill="currentColor"/></svg>
+                Lower-Thirds
+              </>
+            )}
+          </button>
+
+          {/* Queue mode toggle */}
+          <button
+            onClick={() => void toggleQueueMode(!(state?.queueMode ?? false))}
+            className={`flex items-center gap-2 rounded-lg border px-3 py-1.5 text-xs font-bold transition ${state?.queueMode ? "border-yellow-500/60 bg-yellow-500/15 text-yellow-300" : "border-white/10 bg-white/5 text-white/70 hover:bg-white/15"}`}
+          >
+            <span className={`inline-block h-2 w-2 rounded-full ${state?.queueMode ? "bg-yellow-400 animate-pulse" : "bg-white/30"}`} />
+            {state?.queueMode ? "Queue Mode ON" : "Queue Mode OFF"}
+          </button>
+        </div>
+
+        <div className="flex items-center gap-3">
+          {/* Queue indicator */}
+          {state?.queueMode && (state.operatorQueue?.length ?? 0) > 0 && (
+            <button
+              onClick={() => setShowQueue(true)}
+              className="rounded-lg bg-yellow-400/20 px-3 py-1.5 text-xs font-bold text-yellow-300 hover:bg-yellow-400/30"
+            >
+              Queue: {state.operatorQueue.length} waiting
+            </button>
+          )}
+
+          {/* Quick Go button (when queue has items) */}
+          {state?.queueMode && (state.operatorQueue?.length ?? 0) > 0 && (
+            <button
+              onClick={() => void operatorGo()}
+              className="rounded-lg bg-green-500/80 px-4 py-1.5 text-xs font-bold text-white hover:bg-green-500"
+            >
+              GO ▶
+            </button>
+          )}
+        </div>
+      </div>
+
       <style>{`
-        @keyframes fadein {
-          from { opacity: 0; transform: translateY(12px); }
+        @keyframes fadeUp {
+          from { opacity: 0; transform: translateY(16px); }
           to   { opacity: 1; transform: translateY(0); }
         }
-        .animate-fadein { animation: fadein 0.5s ease both; }
+        @keyframes slideUp {
+          from { opacity: 0; transform: translateY(100%); }
+          to   { opacity: 1; transform: translateY(0); }
+        }
+        * { -webkit-font-smoothing: antialiased; }
       `}</style>
     </div>
   );

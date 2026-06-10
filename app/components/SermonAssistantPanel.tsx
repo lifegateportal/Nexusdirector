@@ -149,6 +149,10 @@ const SCRIPTURE_REF_REGEX = /\b(?:[1-3]\s+)?[A-Za-z]+(?:\s+[A-Za-z]+)?\s+\d{1,3}
 
 const BIBLE_REF_REGEX = /\b(?:[1-3]\s+)?(?:[A-Z][a-z]+(?:\s+[A-Za-z]+){0,2})\s+\d{1,3}:\d{1,3}(?:-\d{1,3})?\b/g;
 
+const READING_INTENT_REGEX = /\b(?:i(?:'m| am) (?:now )?reading|(?:let(?:'s| us)) (?:read|open to|turn to)|(?:our|today(?:'s)?|this) (?:text|scripture|passage) (?:is|comes from)|(?:open|turn) (?:your )?(?:bibles? )?to|reading (?:from|with me)|follow(?:ing)? along)\b/i;
+const NEXT_VERSE_REGEX = /\bnext verse\b/i;
+const VERSE_NUMBER_REGEX = /\bverse\s+(\d+)\b/i;
+
 const THEOLOGY_HINTS = [
   "god", "lord", "jesus", "christ", "holy spirit", "holy ghost",
   "scripture", "bible", "verse", "gospel", "word of god",
@@ -421,6 +425,9 @@ export function SermonAssistantPanel() {
   const [speechLanguage, setSpeechLanguage] = useState<SpeechLanguage>("auto");
   const [autoPushDisplay, setAutoPushDisplay] = useState(false);
   const [liveMode, setLiveMode] = useState(false);
+  const [readingQueue, setReadingQueue] = useState<Array<{ ref: string; text: string }>>([]);
+  const [readingQueueIndex, setReadingQueueIndex] = useState(0);
+  const [bibleTranslation, setBibleTranslation] = useState<"web" | "kjv" | "asv" | "ylt">("web");
 
   const [volumeLevel, setVolumeLevel] = useState(0);
   const [currentWpm, setCurrentWpm] = useState(0);
@@ -459,6 +466,10 @@ export function SermonAssistantPanel() {
 
   const presentationWindowRef = useRef<Window | null>(null);
   const pulpitTouchStartXRef = useRef<number | null>(null);
+  const readingQueueRef = useRef<Array<{ ref: string; text: string }>>([]);
+  const readingQueueIndexRef = useRef(0);
+  const liveModeRef = useRef(false);
+  const bibleTranslationRef = useRef<"web" | "kjv" | "asv" | "ylt">("web");
   const tabOrder = isCompactLayout
     ? (["organized", "raw", "assistant"] as TabId[])
     : (["raw", "organized", "assistant"] as TabId[]);
@@ -508,9 +519,11 @@ export function SermonAssistantPanel() {
     setActiveTab((current) => (current === "raw" ? "organized" : current));
   }, [isCompactLayout, organizedMarkdown]);
 
-  useEffect(() => {
-    scriptureCardsRef.current = scriptureCards;
-  }, [scriptureCards]);
+  useEffect(() => { scriptureCardsRef.current = scriptureCards; }, [scriptureCards]);
+  useEffect(() => { readingQueueRef.current = readingQueue; }, [readingQueue]);
+  useEffect(() => { readingQueueIndexRef.current = readingQueueIndex; }, [readingQueueIndex]);
+  useEffect(() => { liveModeRef.current = liveMode; }, [liveMode]);
+  useEffect(() => { bibleTranslationRef.current = bibleTranslation; }, [bibleTranslation]);
 
   useEffect(() => {
     const refs = extractScriptureRefs(`${rawTranscript}\n${organizedMarkdown}`);
@@ -778,7 +791,7 @@ export function SermonAssistantPanel() {
       const res = await fetch("/api/bible-verse", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ reference }),
+        body: JSON.stringify({ reference, translation: bibleTranslationRef.current }),
       });
       if (!res.ok) return;
       const data = await res.json() as { reference?: string; text?: string; error?: string };
@@ -803,6 +816,78 @@ export function SermonAssistantPanel() {
       // bible-api fetch should fail silently
     }
   }, [autoPushDisplay, mergeScriptureCards, pushToMonitor]);
+
+  const fetchReadingRange = useCallback(async (reference: string) => {
+    try {
+      const res = await fetch("/api/bible-verse", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          reference,
+          translation: bibleTranslationRef.current,
+          returnVerses: true,
+        }),
+      });
+      if (!res.ok) return;
+      const data = await res.json() as {
+        reference?: string;
+        verses?: Array<{ ref: string; text: string }>;
+      };
+      if (!data.verses || data.verses.length === 0) return;
+
+      setReadingQueue(data.verses);
+      setReadingQueueIndex(0);
+      readingQueueRef.current = data.verses;
+      readingQueueIndexRef.current = 0;
+
+      const first = data.verses[0];
+      pushToMonitor(first.ref, first.text);
+
+      const cards: ScriptureCard[] = data.verses.map((v) => ({
+        id: `${v.ref}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        ref: v.ref,
+        text: v.text,
+        source: "detected",
+        confidence: 1,
+      }));
+      mergeScriptureCards(cards);
+    } catch {
+      // fail silently
+    }
+  }, [mergeScriptureCards, pushToMonitor]);
+
+  const detectReadingIntent = useCallback((chunk: string) => {
+    if (!READING_INTENT_REGEX.test(chunk)) return;
+    const refs = extractScriptureRefs(chunk);
+    if (refs.length === 0) return;
+    void fetchReadingRange(refs[0]);
+  }, [fetchReadingRange]);
+
+  const advanceReadingQueue = useCallback((targetIndex?: number) => {
+    const queue = readingQueueRef.current;
+    if (queue.length === 0) return;
+    const nextIdx = targetIndex !== undefined ? targetIndex : readingQueueIndexRef.current + 1;
+    if (nextIdx < 0 || nextIdx >= queue.length) return;
+    setReadingQueueIndex(nextIdx);
+    readingQueueIndexRef.current = nextIdx;
+    pushToMonitor(queue[nextIdx].ref, queue[nextIdx].text);
+  }, [pushToMonitor]);
+
+  const detectNextVerse = useCallback((chunk: string) => {
+    if (readingQueueRef.current.length === 0) return;
+    if (NEXT_VERSE_REGEX.test(chunk)) {
+      advanceReadingQueue();
+      return;
+    }
+    const numMatch = VERSE_NUMBER_REGEX.exec(chunk);
+    if (numMatch) {
+      const verseNum = parseInt(numMatch[1]);
+      const idx = readingQueueRef.current.findIndex((v) =>
+        new RegExp(`:\\s*${verseNum}$`).test(v.ref),
+      );
+      if (idx >= 0) advanceReadingQueue(idx);
+    }
+  }, [advanceReadingQueue]);
 
   const detectScripture = useCallback((chunk: string) => {
     const normalized = normalizeForTriggers(chunk);
@@ -860,13 +945,19 @@ export function SermonAssistantPanel() {
           reason: item.reason,
         }));
         mergeScriptureCards(cards);
+
+        // In live mode, auto-cast the top high-confidence match (quoted without reference)
+        if (liveModeRef.current) {
+          const top = (data.suggestions ?? []).find((s) => (s.confidence ?? 0) >= 0.85);
+          if (top) pushToMonitor(top.ref, top.text);
+        }
       } catch {
         // background suggestion should fail silently
       } finally {
         semanticInFlightRef.current = false;
       }
     }, 1200);
-  }, [mergeScriptureCards]);
+  }, [mergeScriptureCards, pushToMonitor]);
 
   const appendTranscript = useCallback((text: string) => {
     setRawTranscript((prev) => {
@@ -1034,6 +1125,8 @@ export function SermonAssistantPanel() {
           if (payload.is_final) {
             setInterimText("");
             detectScripture(transcript);
+            detectReadingIntent(transcript);
+            detectNextVerse(transcript);
             const liveRefs = transcript.match(BIBLE_REF_REGEX);
             if (liveRefs) {
               for (const r of [...new Set(liveRefs)]) {
@@ -1102,7 +1195,7 @@ export function SermonAssistantPanel() {
       pushToast("Microphone access denied.", "error");
       stopRecording();
     }
-  }, [appendTranscript, detectScripture, fetchAndInjectScripture, isRecording, pushToast, refreshAudioDownload, speechLanguage, startVolumeTelemetry, stopRecording]);
+  }, [appendTranscript, detectNextVerse, detectReadingIntent, detectScripture, fetchAndInjectScripture, isRecording, pushToast, refreshAudioDownload, speechLanguage, startVolumeTelemetry, stopRecording]);
 
   const generateOutline = useCallback(async () => {
     if (!rawTranscript.trim()) {
@@ -1204,6 +1297,64 @@ export function SermonAssistantPanel() {
     pushToast("Transcript uploaded.", "success");
     event.target.value = "";
   }, [pushToast, scheduleSemanticSuggest]);
+
+  const exportReferenceReport = useCallback(async () => {
+    if (scriptureCards.length === 0) {
+      pushToast("No scripture references to export.", "error");
+      return;
+    }
+    const detected = scriptureCards.filter((c) => c.source === "detected");
+    const suggested = scriptureCards.filter((c) => c.source === "suggested");
+    const title = deriveProjectName();
+
+    const heading = (text: string, level: typeof HeadingLevel[keyof typeof HeadingLevel]) =>
+      new Paragraph({ text, heading: level, spacing: { after: 120 } });
+
+    const refParagraph = (card: ScriptureCard) => [
+      new Paragraph({
+        children: [new TextRun({ text: card.ref, bold: true, size: 24 })],
+        spacing: { before: 160, after: 40 },
+      }),
+      new Paragraph({
+        children: [new TextRun({ text: `"${card.text}"`, italics: true, size: 22 })],
+        spacing: { after: 80 },
+        alignment: AlignmentType.LEFT,
+      }),
+      ...(card.reason ? [new Paragraph({
+        children: [new TextRun({ text: card.reason, size: 18, color: "777777" })],
+        spacing: { after: 40 },
+      })] : []),
+    ];
+
+    const doc = new Document({
+      sections: [{
+        children: [
+          heading(`Scripture References — ${title}`, HeadingLevel.HEADING_1),
+          new Paragraph({ children: [new TextRun({ text: new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" }), size: 20, color: "555555" })], spacing: { after: 300 } }),
+
+          ...(detected.length > 0 ? [
+            heading("Quoted / Detected", HeadingLevel.HEADING_2),
+            ...detected.flatMap(refParagraph),
+          ] : []),
+
+          ...(suggested.length > 0 ? [
+            new Paragraph({ spacing: { before: 300 } }),
+            heading("AI Suggestions", HeadingLevel.HEADING_2),
+            ...suggested.flatMap(refParagraph),
+          ] : []),
+        ],
+      }],
+    });
+
+    const blob = await Packer.toBlob(doc);
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${title.toLowerCase().replace(/\s+/g, "-")}-scripture-refs.docx`;
+    anchor.click();
+    setTimeout(() => URL.revokeObjectURL(url), 30_000);
+    pushToast("Reference report downloaded.", "success");
+  }, [deriveProjectName, pushToast, scriptureCards]);
 
   const saveToCloud = useCallback(async (mode: "update" | "new" = "update") => {
     if (!rawTranscript.trim() && !organizedMarkdown.trim()) {
@@ -1949,7 +2100,7 @@ export function SermonAssistantPanel() {
           </div>
 
           <aside className={`hidden min-h-0 flex-col overflow-hidden rounded-xl border bg-slate-950/55 lg:col-span-3 lg:flex ${liveMode ? "border-rose-500/40" : "border-cyan-500/20"}`}>
-            {/* Header */}
+            {/* Header row 1 — title + toggles */}
             <div className={`border-b px-4 py-3 ${liveMode ? "border-rose-500/30 bg-rose-950/30" : "border-cyan-500/20"}`}>
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
@@ -1959,8 +2110,13 @@ export function SermonAssistantPanel() {
                   <p className={`text-xs font-bold uppercase tracking-wider ${liveMode ? "text-rose-300" : "text-slate-400"}`}>
                     {liveMode ? "Live — Quoted Only" : "References"}
                   </p>
+                  {readingQueue.length > 0 && (
+                    <span className="rounded-full bg-cyan-500/20 px-2 py-0.5 text-[10px] font-bold text-cyan-300">
+                      {readingQueueIndex + 1}/{readingQueue.length}
+                    </span>
+                  )}
                 </div>
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-2">
                   {/* Share monitor link */}
                   <button
                     type="button"
@@ -1973,6 +2129,16 @@ export function SermonAssistantPanel() {
                   >
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3 w-3"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
                     Share
+                  </button>
+                  {/* Export report */}
+                  <button
+                    type="button"
+                    title="Download scripture reference report (.docx)"
+                    onClick={() => void exportReferenceReport()}
+                    className="focus-ring flex h-6 items-center gap-1 rounded-md border border-slate-600/60 bg-slate-800/50 px-2 text-[10px] font-bold uppercase tracking-wider text-slate-400 transition hover:bg-slate-700/70 hover:text-slate-200"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3 w-3"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                    Report
                   </button>
                   {/* Live mode toggle */}
                   <label className="flex cursor-pointer items-center gap-1.5" title="Live Mode — show only quoted references">
@@ -1991,6 +2157,50 @@ export function SermonAssistantPanel() {
                     </span>
                   </label>
                 </div>
+              </div>
+
+              {/* Header row 2 — translation + reading queue nav */}
+              <div className="mt-2 flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-600">Version</span>
+                  <select
+                    value={bibleTranslation}
+                    onChange={(e) => setBibleTranslation(e.target.value as typeof bibleTranslation)}
+                    className="rounded-md border border-slate-700/60 bg-slate-900/80 px-2 py-0.5 text-[11px] font-bold text-slate-300 outline-none focus:border-cyan-500/60"
+                  >
+                    <option value="web">WEB (Modern)</option>
+                    <option value="kjv">KJV</option>
+                    <option value="asv">ASV</option>
+                    <option value="ylt">YLT</option>
+                    <option value="basicenglish">Basic English</option>
+                  </select>
+                </div>
+
+                {readingQueue.length > 0 && (
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => advanceReadingQueue(readingQueueIndex - 1)}
+                      disabled={readingQueueIndex === 0}
+                      className="flex h-6 w-6 items-center justify-center rounded-md border border-slate-600/60 bg-slate-800/50 text-slate-400 hover:bg-slate-700 disabled:opacity-30"
+                      title="Previous verse"
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3 w-3"><polyline points="15 18 9 12 15 6"/></svg>
+                    </button>
+                    <span className="text-[10px] text-slate-500">
+                      {readingQueue[readingQueueIndex]?.ref ?? "—"}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => advanceReadingQueue()}
+                      disabled={readingQueueIndex >= readingQueue.length - 1}
+                      className="flex h-6 w-6 items-center justify-center rounded-md border border-slate-600/60 bg-slate-800/50 text-slate-400 hover:bg-slate-700 disabled:opacity-30"
+                      title="Next verse"
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3 w-3"><polyline points="9 18 15 12 9 6"/></svg>
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
 
