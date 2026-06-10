@@ -420,6 +420,7 @@ export function SermonAssistantPanel() {
   const [mobileOrganizedView, setMobileOrganizedView] = useState<"outline" | "manual">("outline");
   const [speechLanguage, setSpeechLanguage] = useState<SpeechLanguage>("auto");
   const [autoPushDisplay, setAutoPushDisplay] = useState(false);
+  const [liveMode, setLiveMode] = useState(false);
 
   const [volumeLevel, setVolumeLevel] = useState(0);
   const [currentWpm, setCurrentWpm] = useState(0);
@@ -753,6 +754,11 @@ export function SermonAssistantPanel() {
         presentationWindowRef.current?.postMessage({ type: "update", ref, text }, "*");
       }, 800);
     }
+    void fetch("/api/monitor/push", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ref, text }),
+    });
   }, [launchDisplay]);
 
   const clearMonitor = useCallback(() => {
@@ -760,6 +766,11 @@ export function SermonAssistantPanel() {
     if (win && !win.closed) {
       win.postMessage({ type: "clear" }, "*");
     }
+    void fetch("/api/monitor/push", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ clear: true }),
+    });
   }, []);
 
   const fetchAndInjectScripture = useCallback(async (reference: string) => {
@@ -1937,55 +1948,124 @@ export function SermonAssistantPanel() {
             )}
           </div>
 
-          <aside className="hidden min-h-0 flex-col overflow-hidden rounded-xl border border-cyan-500/20 bg-slate-950/55 lg:col-span-3 lg:flex">
-            <div className="border-b border-cyan-500/20 px-4 py-3">
+          <aside className={`hidden min-h-0 flex-col overflow-hidden rounded-xl border bg-slate-950/55 lg:col-span-3 lg:flex ${liveMode ? "border-rose-500/40" : "border-cyan-500/20"}`}>
+            {/* Header */}
+            <div className={`border-b px-4 py-3 ${liveMode ? "border-rose-500/30 bg-rose-950/30" : "border-cyan-500/20"}`}>
               <div className="flex items-center justify-between gap-2">
-                <p className="text-xs font-bold uppercase tracking-wider text-slate-400">References</p>
-                <label className="flex cursor-pointer items-center gap-2" title="Auto-push detected scriptures to monitor">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Auto-Push</span>
-                  <span className={`relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 transition-colors ${autoPushDisplay ? "border-violet-400 bg-violet-500/60" : "border-slate-600 bg-slate-800"}`}>
-                    <input
-                      id="autoPushDisplay"
-                      type="checkbox"
-                      checked={autoPushDisplay}
-                      onChange={(e) => setAutoPushDisplay(e.target.checked)}
-                      className="sr-only"
-                    />
-                    <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${autoPushDisplay ? "translate-x-4" : "translate-x-0"}`} />
-                  </span>
-                </label>
+                <div className="flex items-center gap-2">
+                  {liveMode && (
+                    <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-rose-400" />
+                  )}
+                  <p className={`text-xs font-bold uppercase tracking-wider ${liveMode ? "text-rose-300" : "text-slate-400"}`}>
+                    {liveMode ? "Live — Quoted Only" : "References"}
+                  </p>
+                </div>
+                <div className="flex items-center gap-3">
+                  {/* Share monitor link */}
+                  <button
+                    type="button"
+                    title="Copy monitor link for media team"
+                    onClick={() => {
+                      const url = `${window.location.origin}/monitor`;
+                      void navigator.clipboard.writeText(url).then(() => pushToast("Monitor link copied!", "success"));
+                    }}
+                    className="focus-ring flex h-6 items-center gap-1 rounded-md border border-cyan-500/40 bg-cyan-500/10 px-2 text-[10px] font-bold uppercase tracking-wider text-cyan-400 transition hover:bg-cyan-500/20"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3 w-3"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+                    Share
+                  </button>
+                  {/* Live mode toggle */}
+                  <label className="flex cursor-pointer items-center gap-1.5" title="Live Mode — show only quoted references">
+                    <span className={`text-[10px] font-bold uppercase tracking-wider ${liveMode ? "text-rose-400" : "text-slate-500"}`}>Live</span>
+                    <span className={`relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 transition-colors ${liveMode ? "border-rose-500 bg-rose-500/60" : "border-slate-600 bg-slate-800"}`}>
+                      <input type="checkbox" checked={liveMode} onChange={(e) => setLiveMode(e.target.checked)} className="sr-only" />
+                      <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${liveMode ? "translate-x-4" : "translate-x-0"}`} />
+                    </span>
+                  </label>
+                  {/* Auto-push toggle */}
+                  <label className="flex cursor-pointer items-center gap-1.5" title="Auto-push detected scriptures to monitor">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Auto</span>
+                    <span className={`relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 transition-colors ${autoPushDisplay ? "border-violet-400 bg-violet-500/60" : "border-slate-600 bg-slate-800"}`}>
+                      <input type="checkbox" checked={autoPushDisplay} onChange={(e) => setAutoPushDisplay(e.target.checked)} className="sr-only" />
+                      <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${autoPushDisplay ? "translate-x-4" : "translate-x-0"}`} />
+                    </span>
+                  </label>
+                </div>
               </div>
             </div>
-            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
-              {scriptureCards.length === 0 ? (
-                <div className="flex h-full items-center justify-center text-center text-sm text-slate-500">
-                  <p>Detected and suggested scriptures will appear here.</p>
-                </div>
-              ) : (
-                scriptureCards.map((card) => (
-                  <article key={card.id} className="rounded-xl border-l-4 border-cyan-400 bg-slate-900/80 px-4 py-3">
+
+            {/* Card list */}
+            <div className="min-h-0 flex-1 overflow-y-auto p-4">
+              {(() => {
+                const detected = scriptureCards.filter((c) => c.source === "detected");
+                const suggested = scriptureCards.filter((c) => c.source === "suggested");
+                const visibleDetected = detected;
+                const showSuggested = !liveMode && suggested.length > 0;
+
+                if (scriptureCards.length === 0) {
+                  return (
+                    <div className="flex h-full items-center justify-center text-center text-sm text-slate-500">
+                      <p>{liveMode ? "Quoted scriptures will appear here during the sermon." : "Detected and suggested scriptures will appear here."}</p>
+                    </div>
+                  );
+                }
+
+                if (liveMode && detected.length === 0) {
+                  return (
+                    <div className="flex h-full items-center justify-center text-center text-sm text-slate-500">
+                      <p>No quoted scriptures yet. Speak or read a verse.</p>
+                    </div>
+                  );
+                }
+
+                const renderCard = (card: typeof scriptureCards[0], live: boolean) => (
+                  <article
+                    key={card.id}
+                    className={`rounded-xl px-4 py-3 ${live ? "border-l-4 border-rose-400 bg-rose-950/40" : card.source === "suggested" ? "border-l-4 border-amber-400/60 bg-slate-900/60" : "border-l-4 border-cyan-400 bg-slate-900/80"}`}
+                  >
                     <div className="flex items-center justify-between gap-2">
-                      <h3 className="text-sm font-bold text-cyan-300">{card.ref}</h3>
-                      <div className="flex items-center gap-1.5">
-                        <span className={`rounded-md px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${card.source === "suggested" ? "bg-amber-500/20 text-amber-300" : "bg-cyan-500/20 text-cyan-200"}`}>
-                          {card.source === "suggested" ? "Suggested" : "Detected"}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => pushToMonitor(card.ref, card.text)}
-                          title="Cast to scripture monitor"
-                          className="focus-ring flex h-6 items-center gap-1 rounded-md border border-violet-500/50 bg-violet-500/15 px-2 text-[10px] font-bold uppercase tracking-wider text-violet-300 transition hover:bg-violet-500/30"
-                        >
-                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3 w-3"><path d="M2 8V6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6"/><path d="M2 12a9 9 0 0 1 8 8"/><path d="M2 16a5 5 0 0 1 4 4"/><circle cx="3" cy="20" r="1"/></svg>
-                          Cast
-                        </button>
-                      </div>
+                      <h3 className={`text-sm font-bold ${live ? "text-rose-200" : card.source === "suggested" ? "text-amber-300" : "text-cyan-300"}`}>{card.ref}</h3>
+                      <button
+                        type="button"
+                        onClick={() => pushToMonitor(card.ref, card.text)}
+                        title="Cast to scripture monitor"
+                        className="focus-ring flex h-6 items-center gap-1 rounded-md border border-violet-500/50 bg-violet-500/15 px-2 text-[10px] font-bold uppercase tracking-wider text-violet-300 transition hover:bg-violet-500/30"
+                      >
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3 w-3"><path d="M2 8V6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6"/><path d="M2 12a9 9 0 0 1 8 8"/><path d="M2 16a5 5 0 0 1 4 4"/><circle cx="3" cy="20" r="1"/></svg>
+                        Cast
+                      </button>
                     </div>
                     <p className="mt-1 text-sm italic text-slate-300">&quot;{card.text}&quot;</p>
-                    {card.reason && <p className="mt-1 text-xs text-slate-500">{card.reason}</p>}
+                    {!live && card.reason && <p className="mt-1 text-xs text-slate-500">{card.reason}</p>}
                   </article>
-                ))
-              )}
+                );
+
+                return (
+                  <div className="space-y-3">
+                    {/* Quoted / Detected section */}
+                    {visibleDetected.length > 0 && (
+                      <>
+                        {!liveMode && (
+                          <p className="px-1 text-[10px] font-bold uppercase tracking-widest text-cyan-500/70">Quoted</p>
+                        )}
+                        {visibleDetected.map((card) => renderCard(card, liveMode))}
+                      </>
+                    )}
+
+                    {/* Divider + AI Suggestions section */}
+                    {showSuggested && (
+                      <>
+                        <div className="flex items-center gap-2 py-1">
+                          <div className="h-px flex-1 bg-slate-700/60" />
+                          <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500/60">AI Suggestions</p>
+                          <div className="h-px flex-1 bg-slate-700/60" />
+                        </div>
+                        {suggested.map((card) => renderCard(card, false))}
+                      </>
+                    )}
+                  </div>
+                );
+              })()}
             </div>
           </aside>
         </div>

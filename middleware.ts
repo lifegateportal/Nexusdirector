@@ -26,11 +26,15 @@ export async function middleware(request: NextRequest) {
   // Auth is opt-in — if env vars are absent, allow all traffic (useful for local dev)
   if (!authPassword || !cookieSecret) return NextResponse.next();
 
-  // Always allow the login page, auth API routes, and the public reading library
+  // Always allow the login page, auth API routes, the public reading library,
+  // and the scripture monitor (which has its own auth)
   if (
     pathname.startsWith("/login") ||
     pathname.startsWith("/api/auth/") ||
-    pathname.startsWith("/library")
+    pathname.startsWith("/library") ||
+    pathname.startsWith("/monitor") ||
+    pathname.startsWith("/api/monitor/auth") ||
+    pathname.startsWith("/api/monitor/state")
   ) {
     return NextResponse.next();
   }
