@@ -764,7 +764,11 @@ export function SermonAssistantPanel() {
 
   const fetchAndInjectScripture = useCallback(async (reference: string) => {
     try {
-      const res = await fetch(`https://bible-api.com/${encodeURIComponent(reference)}`);
+      const res = await fetch("/api/bible-verse", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reference }),
+      });
       if (!res.ok) return;
       const data = await res.json() as { reference?: string; text?: string; error?: string };
       if (data.error || !data.text) return;
