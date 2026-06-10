@@ -5,7 +5,7 @@ const nextConfig: NextConfig = {
   experimental: {
     serverActions: { bodySizeLimit: "30mb" },
   },
-  allowedDevOrigins: ["*"],
+  allowedDevOrigins: ["*.replit.dev", "*.replit.app", "*.riker.replit.dev"],
   outputFileTracingIncludes: {
     "/api/ebook/export": ["./node_modules/pdfkit/js/data/**/*"],
   },
