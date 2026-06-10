@@ -1,0 +1,139 @@
+import { NextRequest, NextResponse } from "next/server";
+import {
+  S3Client,
+  PutObjectCommand,
+  GetObjectCommand,
+  DeleteObjectCommand,
+  ListObjectsV2Command,
+} from "@aws-sdk/client-s3";
+import { env } from "@/lib/env";
+import { z } from "zod";
+
+export const runtime    = "nodejs";
+export const maxDuration = 30;
+
+function makeS3(accountId: string, accessKey: string, secretKey: string) {
+  return new S3Client({
+    region: "auto",
+    endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
+    credentials: { accessKeyId: accessKey, secretAccessKey: secretKey },
+  });
+}
+
+function r2Ready() {
+  const { R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME } = env;
+  if (!R2_ACCOUNT_ID || !R2_ACCESS_KEY_ID || !R2_SECRET_ACCESS_KEY || !R2_BUCKET_NAME) return null;
+  return {
+    s3:     makeS3(R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY),
+    bucket: R2_BUCKET_NAME,
+  };
+}
+
+// ── GET /api/projects — return all saved ProjectSnapshots from R2 ─────────────
+
+export async function GET() {
+  const r2 = r2Ready();
+  if (!r2) return NextResponse.json({ projects: [] });
+
+  try {
+    // List all objects under projects/
+    const list = await r2.s3.send(
+      new ListObjectsV2Command({ Bucket: r2.bucket, Prefix: "projects/" }),
+    );
+    const keys = (list.Contents ?? [])
+      .map((o) => o.Key)
+      .filter((k): k is string => !!k && k.endsWith(".json"));
+
+    if (keys.length === 0) return NextResponse.json({ projects: [] });
+
+    // Fetch all in parallel
+    const settled = await Promise.allSettled(
+      keys.map(async (key) => {
+        const res = await r2.s3.send(new GetObjectCommand({ Bucket: r2.bucket, Key: key }));
+        const raw = await res.Body?.transformToString();
+        if (!raw) return null;
+        return JSON.parse(raw) as unknown;
+      }),
+    );
+
+    const projects = settled
+      .filter((r): r is PromiseFulfilledResult<unknown> => r.status === "fulfilled" && r.value !== null)
+      .map((r) => r.value);
+
+    return NextResponse.json({ projects });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Failed to load projects";
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
+}
+
+// ── POST /api/projects — upsert a single ProjectSnapshot ─────────────────────
+
+const UpsertSchema = z.object({
+  project: z.object({ id: z.string().min(1) }).passthrough(),
+});
+
+export async function POST(req: NextRequest) {
+  const r2 = r2Ready();
+  if (!r2) return NextResponse.json({ ok: true }); // no-op when R2 not configured
+
+  let input;
+  try {
+    input = UpsertSchema.parse(await req.json() as unknown);
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : "Invalid input" },
+      { status: 400 },
+    );
+  }
+
+  const { project } = input;
+  try {
+    await r2.s3.send(
+      new PutObjectCommand({
+        Bucket:       r2.bucket,
+        Key:          `projects/${project.id}.json`,
+        Body:         JSON.stringify(project),
+        ContentType:  "application/json",
+        CacheControl: "private, no-cache",
+      }),
+    );
+    return NextResponse.json({ ok: true });
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : "Save failed" },
+      { status: 500 },
+    );
+  }
+}
+
+// ── DELETE /api/projects — remove a project from R2 ──────────────────────────
+
+const DeleteSchema = z.object({ id: z.string().min(1) });
+
+export async function DELETE(req: NextRequest) {
+  const r2 = r2Ready();
+  if (!r2) return NextResponse.json({ ok: true });
+
+  let input;
+  try {
+    input = DeleteSchema.parse(await req.json() as unknown);
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : "Invalid input" },
+      { status: 400 },
+    );
+  }
+
+  try {
+    await r2.s3.send(
+      new DeleteObjectCommand({ Bucket: r2.bucket, Key: `projects/${input.id}.json` }),
+    );
+    return NextResponse.json({ ok: true });
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : "Delete failed" },
+      { status: 500 },
+    );
+  }
+}

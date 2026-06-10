@@ -1,0 +1,33 @@
+.git
+.github
+.next
+node_modules
+tsconfig.tsbuildinfo
+.env.local
+.env
+ERROR
+transferring
+
+# Next app source is not needed for the voice worker image.
+app
+lib
+/\[auth\]
+/\[internal\]
+
+# Keep only the voice worker assets that the Dockerfile copies.
+scripts
+!scripts/voice-server/
+!scripts/voice-server/handler.py
+
+# Root files not required by this image.
+README.md
+middleware.ts
+next-env.d.ts
+next.config.ts
+package-lock.json
+package.json
+postcss.config.js
+server.mjs
+tailwind.config.js
+tsconfig.json
+.cursorrules
