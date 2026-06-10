@@ -135,6 +135,8 @@ const SCRIPTURE_DB = [
 
 const SCRIPTURE_REF_REGEX = /\b(?:[1-3]\s+)?[A-Za-z]+(?:\s+[A-Za-z]+)?\s+\d{1,3}:\d{1,3}(?:-\d{1,3})?\b/g;
 
+const BIBLE_REF_REGEX = /\b(?:[1-3]\s+)?(?:[A-Z][a-z]+(?:\s+[A-Za-z]+){0,2})\s+\d{1,3}:\d{1,3}(?:-\d{1,3})?\b/g;
+
 const THEOLOGY_HINTS = [
   "prophet",
   "gospel",
@@ -410,6 +412,7 @@ export function SermonAssistantPanel() {
   const [desktopTelemetryOpen, setDesktopTelemetryOpen] = useState(false);
   const [mobileOrganizedView, setMobileOrganizedView] = useState<"outline" | "manual">("outline");
   const [speechLanguage, setSpeechLanguage] = useState<SpeechLanguage>("auto");
+  const [autoPushDisplay, setAutoPushDisplay] = useState(false);
 
   const [volumeLevel, setVolumeLevel] = useState(0);
   const [currentWpm, setCurrentWpm] = useState(0);
@@ -446,6 +449,7 @@ export function SermonAssistantPanel() {
   const semanticInFlightRef = useRef(false);
   const scriptureCardsRef = useRef<ScriptureCard[]>([]);
 
+  const presentationWindowRef = useRef<Window | null>(null);
   const pulpitTouchStartXRef = useRef<number | null>(null);
   const tabOrder = isCompactLayout
     ? (["organized", "raw", "assistant"] as TabId[])
@@ -617,6 +621,9 @@ export function SermonAssistantPanel() {
       if (audioContextRef.current) void audioContextRef.current.close();
       if (semanticTimerRef.current) window.clearTimeout(semanticTimerRef.current);
       if (audioDownloadUrl) URL.revokeObjectURL(audioDownloadUrl);
+      if (presentationWindowRef.current && !presentationWindowRef.current.closed) {
+        presentationWindowRef.current.close();
+      }
     };
   }, [audioDownloadUrl]);
 
@@ -680,6 +687,100 @@ export function SermonAssistantPanel() {
     setStatusText("Paused");
     refreshAudioDownload();
   }, [closeAudioNodes, refreshAudioDownload]);
+
+  const launchDisplay = useCallback(() => {
+    const win = window.open("", "NexusScriptureDisplay", "width=1280,height=720,menubar=no,toolbar=no,location=no,status=no");
+    if (!win) {
+      pushToast("Pop-up blocked. Allow pop-ups for this site.", "error");
+      return;
+    }
+    presentationWindowRef.current = win;
+    win.document.write([
+      '<!DOCTYPE html><html lang="en"><head>',
+      '<meta charset="UTF-8"/>',
+      '<meta name="viewport" content="width=device-width,initial-scale=1"/>',
+      '<title>Scripture Display</title>',
+      '<script src="https://cdn.tailwindcss.com"><' + '/script>',
+      '<style>',
+      'body{margin:0;background:#000;display:flex;align-items:center;justify-content:center;height:100vh;overflow:hidden;}',
+      '#ref,#verse{transition:opacity 0.5s ease;}',
+      '</style>',
+      '</head>',
+      '<body class="bg-black text-white">',
+      '<div id="display" class="text-center px-16 max-w-5xl w-full">',
+      '<p id="ref" class="text-3xl font-bold tracking-widest uppercase mb-8 text-yellow-300" style="opacity:0"></p>',
+      '<p id="verse" class="text-6xl font-serif leading-tight text-white" style="opacity:0"></p>',
+      '<p id="idle" class="text-slate-600 text-2xl tracking-widest uppercase">NEXUS DIRECTOR</p>',
+      '</div>',
+      '<script>',
+      'window.addEventListener("message",function(e){',
+      '  var ref=document.getElementById("ref");',
+      '  var verse=document.getElementById("verse");',
+      '  var idle=document.getElementById("idle");',
+      '  if(e.data.type==="update"){',
+      '    idle.style.opacity="0";',
+      '    ref.textContent=e.data.ref;',
+      '    verse.textContent=e.data.text;',
+      '    ref.style.opacity="1";',
+      '    verse.style.opacity="1";',
+      '  } else if(e.data.type==="clear"){',
+      '    ref.style.opacity="0";',
+      '    verse.style.opacity="0";',
+      '    setTimeout(function(){ref.textContent="";verse.textContent="";idle.style.opacity="1";},600);',
+      '  }',
+      '});',
+      '<' + '/script>',
+      '</body></html>',
+    ].join(""));
+    win.document.close();
+    pushToast("Scripture display launched.", "success");
+  }, [pushToast]);
+
+  const pushToMonitor = useCallback((ref: string, text: string) => {
+    const win = presentationWindowRef.current;
+    if (win && !win.closed) {
+      win.postMessage({ type: "update", ref, text }, "*");
+    } else {
+      launchDisplay();
+      window.setTimeout(() => {
+        presentationWindowRef.current?.postMessage({ type: "update", ref, text }, "*");
+      }, 800);
+    }
+  }, [launchDisplay]);
+
+  const clearMonitor = useCallback(() => {
+    const win = presentationWindowRef.current;
+    if (win && !win.closed) {
+      win.postMessage({ type: "clear" }, "*");
+    }
+  }, []);
+
+  const fetchAndInjectScripture = useCallback(async (reference: string) => {
+    try {
+      const res = await fetch(`https://bible-api.com/${encodeURIComponent(reference)}`);
+      if (!res.ok) return;
+      const data = await res.json() as { reference?: string; text?: string; error?: string };
+      if (data.error || !data.text) return;
+
+      const ref = data.reference ?? reference;
+      const text = data.text.replace(/\n/g, " ").trim();
+
+      const card: ScriptureCard = {
+        id: `${ref}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        ref,
+        text,
+        source: "detected",
+        confidence: 1,
+      };
+      mergeScriptureCards([card]);
+
+      if (autoPushDisplay) {
+        pushToMonitor(ref, text);
+      }
+    } catch {
+      // bible-api fetch should fail silently
+    }
+  }, [autoPushDisplay, mergeScriptureCards, pushToMonitor]);
 
   const detectScripture = useCallback((chunk: string) => {
     const normalized = normalizeForTriggers(chunk);
@@ -911,6 +1012,12 @@ export function SermonAssistantPanel() {
           if (payload.is_final) {
             setInterimText("");
             detectScripture(transcript);
+            const liveRefs = transcript.match(BIBLE_REF_REGEX);
+            if (liveRefs) {
+              for (const r of [...new Set(liveRefs)]) {
+                void fetchAndInjectScripture(r.trim());
+              }
+            }
 
             const now = performance.now();
             const previous = lastFinalAtRef.current ?? now;
@@ -973,7 +1080,7 @@ export function SermonAssistantPanel() {
       pushToast("Microphone access denied.", "error");
       stopRecording();
     }
-  }, [appendTranscript, detectScripture, isRecording, pushToast, refreshAudioDownload, speechLanguage, startVolumeTelemetry, stopRecording]);
+  }, [appendTranscript, detectScripture, fetchAndInjectScripture, isRecording, pushToast, refreshAudioDownload, speechLanguage, startVolumeTelemetry, stopRecording]);
 
   const generateOutline = useCallback(async () => {
     if (!rawTranscript.trim()) {
@@ -1366,6 +1473,23 @@ export function SermonAssistantPanel() {
             </div>
 
             <div className="hidden items-center gap-2 sm:flex">
+              <button
+                type="button"
+                onClick={launchDisplay}
+                title="Launch scripture monitor"
+                className="focus-ring flex h-10 items-center gap-1.5 rounded-xl border border-violet-500/50 bg-violet-500/15 px-3 text-xs font-bold text-violet-300 transition hover:bg-violet-500/25"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} className="h-4 w-4"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg>
+                Monitor
+              </button>
+              <button
+                type="button"
+                onClick={clearMonitor}
+                title="Clear scripture monitor"
+                className="focus-ring flex h-10 w-10 items-center justify-center rounded-xl border border-slate-700/80 text-slate-400 transition hover:border-rose-500/50 hover:text-rose-300"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} className="h-4 w-4"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+              </button>
               <button
                 type="button"
                 onClick={() => fileRef.current?.click()}
@@ -1804,7 +1928,22 @@ export function SermonAssistantPanel() {
 
           <aside className="hidden min-h-0 flex-col overflow-hidden rounded-xl border border-cyan-500/20 bg-slate-950/55 lg:col-span-3 lg:flex">
             <div className="border-b border-cyan-500/20 px-4 py-3">
-              <p className="text-xs font-bold uppercase tracking-wider text-slate-400">References</p>
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs font-bold uppercase tracking-wider text-slate-400">References</p>
+                <label className="flex cursor-pointer items-center gap-2" title="Auto-push detected scriptures to monitor">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Auto-Push</span>
+                  <span className={`relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 transition-colors ${autoPushDisplay ? "border-violet-400 bg-violet-500/60" : "border-slate-600 bg-slate-800"}`}>
+                    <input
+                      id="autoPushDisplay"
+                      type="checkbox"
+                      checked={autoPushDisplay}
+                      onChange={(e) => setAutoPushDisplay(e.target.checked)}
+                      className="sr-only"
+                    />
+                    <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${autoPushDisplay ? "translate-x-4" : "translate-x-0"}`} />
+                  </span>
+                </label>
+              </div>
             </div>
             <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
               {scriptureCards.length === 0 ? (
@@ -1816,9 +1955,20 @@ export function SermonAssistantPanel() {
                   <article key={card.id} className="rounded-xl border-l-4 border-cyan-400 bg-slate-900/80 px-4 py-3">
                     <div className="flex items-center justify-between gap-2">
                       <h3 className="text-sm font-bold text-cyan-300">{card.ref}</h3>
-                      <span className={`rounded-md px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${card.source === "suggested" ? "bg-amber-500/20 text-amber-300" : "bg-cyan-500/20 text-cyan-200"}`}>
-                        {card.source === "suggested" ? "Suggested" : "Detected"}
-                      </span>
+                      <div className="flex items-center gap-1.5">
+                        <span className={`rounded-md px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${card.source === "suggested" ? "bg-amber-500/20 text-amber-300" : "bg-cyan-500/20 text-cyan-200"}`}>
+                          {card.source === "suggested" ? "Suggested" : "Detected"}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => pushToMonitor(card.ref, card.text)}
+                          title="Cast to scripture monitor"
+                          className="focus-ring flex h-6 items-center gap-1 rounded-md border border-violet-500/50 bg-violet-500/15 px-2 text-[10px] font-bold uppercase tracking-wider text-violet-300 transition hover:bg-violet-500/30"
+                        >
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3 w-3"><path d="M2 8V6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6"/><path d="M2 12a9 9 0 0 1 8 8"/><path d="M2 16a5 5 0 0 1 4 4"/><circle cx="3" cy="20" r="1"/></svg>
+                          Cast
+                        </button>
+                      </div>
                     </div>
                     <p className="mt-1 text-sm italic text-slate-300">&quot;{card.text}&quot;</p>
                     {card.reason && <p className="mt-1 text-xs text-slate-500">{card.reason}</p>}

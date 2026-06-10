@@ -1,0 +1,37 @@
+Copilot, I need to add a "Live Scripture Display Pipeline" (similar to ProPresenter's dual-screen architecture) to my existing sermon assistant web app. 
+
+Please act as a senior frontend architect and implement this as a standalone module. Do not alter my existing Deepgram or DeepSeek logic. Provide the code in modular steps.
+
+Here are the requirements for the pipeline:
+
+### 1. State & Regex (JavaScript)
+* Create a global variable `let presentationWindow = null;` to track the secondary monitor window.
+* Create a robust Regular Expression (`bibleRegex`) capable of detecting standard Bible references in a continuous text stream (e.g., "John 3:16", "1 Timothy 6:12", "Song of Solomon 2:1").
+
+### 2. The Window Manager & UI Injection (JavaScript)
+* Create a function `launchDisplay()`. 
+* This function should open a new window: `presentationWindow = window.open("", "Display", "width=1280,height=720,menubar=no,toolbar=no");`
+* Use `presentationWindow.document.write()` to inject a full HTML document into this new window.
+* The injected HTML must include Tailwind CSS via CDN and a dark, minimalist, high-contrast UI optimized for a church projector screen (large text centered on the screen).
+* **CRITICAL:** Inside the injected HTML, add a `window.addEventListener('message', ...)` that listens for `postMessage` events from the parent window to update the DOM elements (Reference and Verse Text) or clear the screen. 
+* *Note: When injecting the Tailwind script tag via `document.write()`, ensure you concatenate the closing tag (e.g., `'<' + '/script>'`) so it doesn't break the parent HTML parser.*
+
+### 3. The Communication Pipeline (JavaScript)
+* Create a `pushToMonitor(ref, text)` function. It should check if `presentationWindow` exists and is not closed. If valid, use `presentationWindow.postMessage({ type: 'update', ref: ref, text: text }, '*');` to send the verse. If the window isn't open, call `launchDisplay()` first, wait 800ms, then push.
+* Create a `clearMonitor()` function that sends a `{ type: 'clear' }` message to blank the screen.
+
+### 4. The API Fetcher (JavaScript)
+* Create an `async function fetchAndInjectScripture(reference)`.
+* It should fetch the verse text from `https://bible-api.com/${encodeURIComponent(reference)}`.
+* Once fetched, it should do two things:
+  1. Add it to my existing Sidebar UI.
+  2. Check the state of an HTML checkbox (`id="autoPushDisplay"`). If checked, immediately call `pushToMonitor(ref, text)`.
+
+### 5. UI Controls (HTML additions)
+Please generate the HTML snippets for:
+* A "Launch Monitor" button and a "Clear Monitor" button to put in my main header.
+* An "Auto-Push" toggle switch to put at the top of my references sidebar.
+* An update to my sidebar scripture card HTML to include a small "Cast to Screen" manual push button next to the reference name.
+
+### 6. Hooking it up
+* Show me exactly where to place the `text.match(bibleRegex)` check inside my existing transcription WebSocket `onmessage` event to trigger the pipeline dynamically.
