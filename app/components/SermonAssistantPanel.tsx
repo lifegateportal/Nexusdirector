@@ -128,9 +128,21 @@ const STORAGE_KEYS = {
 } as const;
 
 const SCRIPTURE_DB = [
-  { triggers: ["john 3 16", "john 316"], ref: "John 3:16", text: "For God so loved the world, that he gave his only Son..." },
-  { triggers: ["ephesians 6", "armor of god"], ref: "Ephesians 6:11", text: "Put on the whole armor of God..." },
-  { triggers: ["psalm 23", "lord is my shepherd"], ref: "Psalm 23:1", text: "The Lord is my shepherd; I shall not want." },
+  { triggers: ["john 3 16", "john 316", "john three sixteen", "so loved the world", "gave his only son", "gave his only begotten son"], ref: "John 3:16", text: "For God so loved the world, that he gave his only Son, that whoever believes in him should not perish but have eternal life." },
+  { triggers: ["ephesians 6", "armor of god", "armour of god", "whole armor", "put on the full armor"], ref: "Ephesians 6:11", text: "Put on the whole armor of God, that you may be able to stand against the schemes of the devil." },
+  { triggers: ["psalm 23", "lord is my shepherd", "i shall not want", "he leadeth me"], ref: "Psalm 23:1", text: "The Lord is my shepherd; I shall not want." },
+  { triggers: ["john 1 1", "in the beginning was the word", "word was god", "word was with god", "the word was god"], ref: "John 1:1", text: "In the beginning was the Word, and the Word was with God, and the Word was God." },
+  { triggers: ["genesis chapter one", "genesis 1", "genesis one", "in the beginning god created", "in the beginning god", "god created the heavens", "created the heavens and the earth"], ref: "Genesis 1:1", text: "In the beginning, God created the heavens and the earth." },
+  { triggers: ["romans 8 28", "all things work together", "all things work together for good", "work together for those who love god"], ref: "Romans 8:28", text: "And we know that for those who love God all things work together for good, for those who are called according to his purpose." },
+  { triggers: ["philippians 4 13", "i can do all things", "all things through christ", "through christ who strengthens me"], ref: "Philippians 4:13", text: "I can do all things through him who strengthens me." },
+  { triggers: ["jeremiah 29 11", "plans i have for you", "plans to prosper you", "plans for welfare and not evil"], ref: "Jeremiah 29:11", text: "For I know the plans I have for you, declares the Lord, plans for welfare and not for evil, to give you a future and a hope." },
+  { triggers: ["joshua 1 9", "be strong and courageous", "be strong and of good courage", "do not be afraid or dismayed"], ref: "Joshua 1:9", text: "Be strong and courageous. Do not be frightened, and do not be dismayed, for the Lord your God is with you wherever you go." },
+  { triggers: ["proverbs 3 5", "trust in the lord with all your heart", "lean not on your own understanding", "lean not unto thine own understanding"], ref: "Proverbs 3:5", text: "Trust in the Lord with all your heart, and do not lean on your own understanding." },
+  { triggers: ["isaiah 40 31", "those who wait upon the lord", "they shall renew their strength", "mount up with wings as eagles", "wings like eagles"], ref: "Isaiah 40:31", text: "But they who wait for the Lord shall renew their strength; they shall mount up with wings like eagles; they shall run and not be weary." },
+  { triggers: ["john 14 6", "i am the way the truth and the life", "the way the truth and the life", "i am the way"], ref: "John 14:6", text: "Jesus said to him, 'I am the way, and the truth, and the life. No one comes to the Father except through me.'" },
+  { triggers: ["matthew 6 33", "seek first the kingdom", "seek ye first the kingdom", "seek first his kingdom and his righteousness"], ref: "Matthew 6:33", text: "But seek first the kingdom of God and his righteousness, and all these things will be added to you." },
+  { triggers: ["2 chronicles 7 14", "second chronicles 7 14", "if my people who are called by my name", "humble themselves and pray", "turn from their wicked ways"], ref: "2 Chronicles 7:14", text: "If my people who are called by my name humble themselves, and pray and seek my face and turn from their wicked ways, then I will hear from heaven and will forgive their sin and heal their land." },
+  { triggers: ["revelation 3 20", "behold i stand at the door and knock", "i stand at the door", "knock and i will open"], ref: "Revelation 3:20", text: "Behold, I stand at the door and knock. If anyone hears my voice and opens the door, I will come in to him and eat with him, and he with me." },
 ] as const;
 
 const SCRIPTURE_REF_REGEX = /\b(?:[1-3]\s+)?[A-Za-z]+(?:\s+[A-Za-z]+)?\s+\d{1,3}:\d{1,3}(?:-\d{1,3})?\b/g;
@@ -138,24 +150,19 @@ const SCRIPTURE_REF_REGEX = /\b(?:[1-3]\s+)?[A-Za-z]+(?:\s+[A-Za-z]+)?\s+\d{1,3}
 const BIBLE_REF_REGEX = /\b(?:[1-3]\s+)?(?:[A-Z][a-z]+(?:\s+[A-Za-z]+){0,2})\s+\d{1,3}:\d{1,3}(?:-\d{1,3})?\b/g;
 
 const THEOLOGY_HINTS = [
-  "prophet",
-  "gospel",
-  "covenant",
-  "dry bones",
-  "cross",
-  "resurrection",
-  "shepherd",
-  "wilderness",
-  "promise",
-  "kingdom",
-  "grace",
-  "mercy",
-  "faith",
-  "israel",
-  "paul",
-  "moses",
-  "david",
-  "ezekiel",
+  "god", "lord", "jesus", "christ", "holy spirit", "holy ghost",
+  "scripture", "bible", "verse", "gospel", "word of god",
+  "genesis", "exodus", "leviticus", "numbers", "deuteronomy",
+  "joshua", "judges", "samuel", "kings", "chronicles", "psalms", "psalm",
+  "proverbs", "isaiah", "jeremiah", "ezekiel", "daniel",
+  "matthew", "mark", "luke", "john", "acts", "romans",
+  "corinthians", "galatians", "ephesians", "philippians",
+  "colossians", "thessalonians", "timothy", "revelation",
+  "prophet", "covenant", "dry bones", "cross", "resurrection",
+  "shepherd", "wilderness", "promise", "kingdom", "grace",
+  "mercy", "faith", "israel", "paul", "moses", "david",
+  "heaven", "salvation", "sin", "forgiveness", "prayer",
+  "church", "spirit", "amen", "blessed", "glory",
 ] as const;
 
 
