@@ -150,8 +150,50 @@ const SCRIPTURE_REF_REGEX = /\b(?:[1-3]\s+)?[A-Za-z]+(?:\s+[A-Za-z]+)?\s+\d{1,3}
 const BIBLE_REF_REGEX = /\b(?:[1-3]\s+)?(?:[A-Z][a-z]+(?:\s+[A-Za-z]+){0,2})\s+\d{1,3}:\d{1,3}(?:-\d{1,3})?\b/g;
 
 const READING_INTENT_REGEX = /\b(?:i(?:'m| am) (?:now )?reading|(?:let(?:'s| us)) (?:read|open to|turn to)|(?:our|today(?:'s)?|this) (?:text|scripture|passage) (?:is|comes from)|(?:open|turn) (?:your )?(?:bibles? )?to|reading (?:from|with me)|follow(?:ing)? along)\b/i;
-const NEXT_VERSE_REGEX = /\bnext verse\b/i;
+const NEXT_VERSE_REGEX = /\b(?:next verse|go(?:ing)? to (?:the )?next|(?:move|moving) (?:on|to)(?: the)? next|verse next|read(?:ing)? (?:the )?next verse|continue(?: reading)?)\b/i;
 const VERSE_NUMBER_REGEX = /\bverse\s+(\d+)\b/i;
+
+const NUM_WORDS: Record<string, number> = {
+  one:1,two:2,three:3,four:4,five:5,six:6,seven:7,eight:8,nine:9,
+  ten:10,eleven:11,twelve:12,thirteen:13,fourteen:14,fifteen:15,
+  sixteen:16,seventeen:17,eighteen:18,nineteen:19,
+  twenty:20,thirty:30,forty:40,fifty:50,sixty:60,seventy:70,eighty:80,ninety:90,
+};
+
+function wordsToDigits(s: string): string {
+  return s
+    .replace(/\b(twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)[\s-]?(one|two|three|four|five|six|seven|eight|nine)\b/gi,
+      (_, t: string, o: string) => String((NUM_WORDS[t.toLowerCase()] ?? 0) + (NUM_WORDS[o.toLowerCase()] ?? 0)))
+    .replace(/\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)\b/gi,
+      (w) => String(NUM_WORDS[w.toLowerCase()] ?? w));
+}
+
+function extractSpokenRefs(raw: string): string[] {
+  let s = raw;
+  s = s.replace(/\bfirst\s+([A-Z])/g, "1 $1").replace(/\bsecond\s+([A-Z])/g, "2 $1").replace(/\bthird\s+([A-Z])/g, "3 $1");
+  s = wordsToDigits(s);
+  s = s.replace(/\bchapter\s+(\d+)[,\s]+(?:and\s+)?verse\s+(\d+)/gi, "$1:$2");
+  s = s.replace(/\b(\d+)\s+verse\s+(\d+)/gi, "$1:$2");
+  const spaceRefs = s.match(/\b(?:[1-3]\s+)?[A-Z][a-z]+(?:\s+[A-Za-z]+)?\s+(\d{1,3})\s+(\d{1,3})\b/g) ?? [];
+  const spaceFixed = spaceRefs.map((r) => r.replace(/(\d+)\s+(\d+)$/, "$1:$2"));
+  const standard = s.match(/\b(?:[1-3]\s+)?[A-Z][a-z]+(?:\s+[A-Za-z]+)?\s+\d{1,3}:\d{1,3}(?:-\d{1,3})?\b/g) ?? [];
+  return [...new Set([...standard, ...spaceFixed])];
+}
+
+function verseOverlap(verseText: string, spokenText: string): number {
+  if (!verseText || !spokenText) return 0;
+  const words = verseText.toLowerCase().split(/\s+/).filter((w) => w.length > 3);
+  if (words.length === 0) return 0;
+  const spoken = spokenText.toLowerCase();
+  const matched = words.filter((w) => spoken.includes(w));
+  return matched.length / words.length;
+}
+
+function nextSequentialRef(ref: string): string | null {
+  const m = ref.match(/^((?:[1-3]\s+)?[A-Za-z]+(?:\s+[A-Za-z]+)?)\s+(\d+):(\d+)$/);
+  if (!m) return null;
+  return `${m[1]} ${m[2]}:${parseInt(m[3]) + 1}`;
+}
 
 const THEOLOGY_HINTS = [
   "god", "lord", "jesus", "christ", "holy spirit", "holy ghost",
@@ -427,7 +469,7 @@ export function SermonAssistantPanel() {
   const [liveMode, setLiveMode] = useState(false);
   const [readingQueue, setReadingQueue] = useState<Array<{ ref: string; text: string }>>([]);
   const [readingQueueIndex, setReadingQueueIndex] = useState(0);
-  const [bibleTranslation, setBibleTranslation] = useState<"web" | "kjv" | "asv" | "ylt">("web");
+  const [bibleTranslation, setBibleTranslation] = useState<"web" | "kjv" | "asv" | "ylt" | "niv" | "nlt" | "nkjv" | "amp" | "msg">("kjv");
 
   const [volumeLevel, setVolumeLevel] = useState(0);
   const [currentWpm, setCurrentWpm] = useState(0);
@@ -469,7 +511,9 @@ export function SermonAssistantPanel() {
   const readingQueueRef = useRef<Array<{ ref: string; text: string }>>([]);
   const readingQueueIndexRef = useRef(0);
   const liveModeRef = useRef(false);
-  const bibleTranslationRef = useRef<"web" | "kjv" | "asv" | "ylt">("web");
+  const bibleTranslationRef = useRef<"web" | "kjv" | "asv" | "ylt" | "niv" | "nlt" | "nkjv" | "amp" | "msg">("kjv");
+  const lastMonitorRefRef = useRef<string>("");
+  const wordsSpokenForVerseRef = useRef<string>("");
   const tabOrder = isCompactLayout
     ? (["organized", "raw", "assistant"] as TabId[])
     : (["raw", "organized", "assistant"] as TabId[]);
@@ -758,6 +802,7 @@ export function SermonAssistantPanel() {
   }, [pushToast]);
 
   const pushToMonitor = useCallback((ref: string, text: string) => {
+    lastMonitorRefRef.current = ref;
     const win = presentationWindowRef.current;
     if (win && !win.closed) {
       win.postMessage({ type: "update", ref, text }, "*");
@@ -809,7 +854,7 @@ export function SermonAssistantPanel() {
       };
       mergeScriptureCards([card]);
 
-      if (autoPushDisplay) {
+      if (autoPushDisplay || liveModeRef.current) {
         pushToMonitor(ref, text);
       }
     } catch {
@@ -870,22 +915,35 @@ export function SermonAssistantPanel() {
     if (nextIdx < 0 || nextIdx >= queue.length) return;
     setReadingQueueIndex(nextIdx);
     readingQueueIndexRef.current = nextIdx;
+    wordsSpokenForVerseRef.current = "";
     pushToMonitor(queue[nextIdx].ref, queue[nextIdx].text);
   }, [pushToMonitor]);
 
-  const detectNextVerse = useCallback((chunk: string) => {
-    if (readingQueueRef.current.length === 0) return;
-    if (NEXT_VERSE_REGEX.test(chunk)) {
-      advanceReadingQueue();
+  const detectNextVerse = useCallback((chunk: string, fetchAndInject: (r: string) => void) => {
+    const hasQueue = readingQueueRef.current.length > 0;
+    const normalized = wordsToDigits(chunk);
+
+    if (NEXT_VERSE_REGEX.test(normalized)) {
+      if (hasQueue) {
+        advanceReadingQueue();
+      } else {
+        const next = nextSequentialRef(lastMonitorRefRef.current);
+        if (next) fetchAndInject(next);
+      }
       return;
     }
-    const numMatch = VERSE_NUMBER_REGEX.exec(chunk);
+    const numMatch = VERSE_NUMBER_REGEX.exec(normalized);
     if (numMatch) {
       const verseNum = parseInt(numMatch[1]);
-      const idx = readingQueueRef.current.findIndex((v) =>
-        new RegExp(`:\\s*${verseNum}$`).test(v.ref),
-      );
-      if (idx >= 0) advanceReadingQueue(idx);
+      if (hasQueue) {
+        const idx = readingQueueRef.current.findIndex((v) =>
+          new RegExp(`:\\s*${verseNum}$`).test(v.ref),
+        );
+        if (idx >= 0) advanceReadingQueue(idx);
+      } else if (lastMonitorRefRef.current) {
+        const m = lastMonitorRefRef.current.match(/^((?:[1-3]\s+)?[A-Za-z]+(?:\s+[A-Za-z]+)?)\s+(\d+):/);
+        if (m) fetchAndInject(`${m[1]} ${m[2]}:${verseNum}`);
+      }
     }
   }, [advanceReadingQueue]);
 
@@ -1126,11 +1184,26 @@ export function SermonAssistantPanel() {
             setInterimText("");
             detectScripture(transcript);
             detectReadingIntent(transcript);
-            detectNextVerse(transcript);
-            const liveRefs = transcript.match(BIBLE_REF_REGEX);
-            if (liveRefs) {
-              for (const r of [...new Set(liveRefs)]) {
+            detectNextVerse(transcript, (ref) => void fetchAndInjectScripture(ref));
+
+            // Spoken-ref detection: catches "Luke 4 2", "chapter 4 verse 2", word numbers, etc.
+            const spokenRefs = extractSpokenRefs(transcript);
+            for (const r of spokenRefs) {
+              const isRange = /-\d+/.test(r);
+              if (isRange) {
+                void fetchReadingRange(r);
+              } else {
                 void fetchAndInjectScripture(r.trim());
+              }
+            }
+
+            // Auto-advance reading queue when enough of the current verse has been spoken
+            if (readingQueueRef.current.length > 0) {
+              wordsSpokenForVerseRef.current += " " + transcript;
+              const currentVerse = readingQueueRef.current[readingQueueIndexRef.current];
+              if (currentVerse && verseOverlap(currentVerse.text, wordsSpokenForVerseRef.current) >= 0.55) {
+                wordsSpokenForVerseRef.current = "";
+                advanceReadingQueue();
               }
             }
 
@@ -2100,108 +2173,105 @@ export function SermonAssistantPanel() {
           </div>
 
           <aside className={`hidden min-h-0 flex-col overflow-hidden rounded-xl border bg-slate-950/55 lg:col-span-3 lg:flex ${liveMode ? "border-rose-500/40" : "border-cyan-500/20"}`}>
-            {/* Header row 1 — title + toggles */}
-            <div className={`border-b px-4 py-3 ${liveMode ? "border-rose-500/30 bg-rose-950/30" : "border-cyan-500/20"}`}>
+            {/* Panel header */}
+            <div className={`shrink-0 border-b px-3 py-2 ${liveMode ? "border-rose-500/30 bg-rose-950/30" : "border-cyan-500/20"}`}>
+
+              {/* Row 1: title badge + Live + Auto toggles */}
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
-                  {liveMode && (
-                    <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-rose-400" />
-                  )}
-                  <p className={`text-xs font-bold uppercase tracking-wider ${liveMode ? "text-rose-300" : "text-slate-400"}`}>
-                    {liveMode ? "Live — Quoted Only" : "References"}
+                  {liveMode && <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-rose-400" />}
+                  <p className={`text-[11px] font-bold uppercase tracking-wider ${liveMode ? "text-rose-300" : "text-slate-400"}`}>
+                    {liveMode ? "Live" : "References"}
                   </p>
                   {readingQueue.length > 0 && (
-                    <span className="rounded-full bg-cyan-500/20 px-2 py-0.5 text-[10px] font-bold text-cyan-300">
+                    <span className="rounded-full bg-cyan-500/20 px-1.5 py-0.5 text-[10px] font-bold text-cyan-300">
                       {readingQueueIndex + 1}/{readingQueue.length}
                     </span>
                   )}
                 </div>
-                <div className="flex items-center gap-2">
-                  {/* Share monitor link */}
-                  <button
-                    type="button"
-                    title="Copy monitor link for media team"
-                    onClick={() => {
-                      const url = `${window.location.origin}/monitor`;
-                      void navigator.clipboard.writeText(url).then(() => pushToast("Monitor link copied!", "success"));
-                    }}
-                    className="focus-ring flex h-6 items-center gap-1 rounded-md border border-cyan-500/40 bg-cyan-500/10 px-2 text-[10px] font-bold uppercase tracking-wider text-cyan-400 transition hover:bg-cyan-500/20"
-                  >
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3 w-3"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
-                    Share
-                  </button>
-                  {/* Export report */}
-                  <button
-                    type="button"
-                    title="Download scripture reference report (.docx)"
-                    onClick={() => void exportReferenceReport()}
-                    className="focus-ring flex h-6 items-center gap-1 rounded-md border border-slate-600/60 bg-slate-800/50 px-2 text-[10px] font-bold uppercase tracking-wider text-slate-400 transition hover:bg-slate-700/70 hover:text-slate-200"
-                  >
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3 w-3"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                    Report
-                  </button>
-                  {/* Live mode toggle */}
-                  <label className="flex cursor-pointer items-center gap-1.5" title="Live Mode — show only quoted references">
-                    <span className={`text-[10px] font-bold uppercase tracking-wider ${liveMode ? "text-rose-400" : "text-slate-500"}`}>Live</span>
-                    <span className={`relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 transition-colors ${liveMode ? "border-rose-500 bg-rose-500/60" : "border-slate-600 bg-slate-800"}`}>
+                <div className="flex items-center gap-3">
+                  <label className="flex cursor-pointer items-center gap-1" title="Live mode — auto-push quoted refs to monitor">
+                    <span className={`text-[10px] font-bold uppercase ${liveMode ? "text-rose-400" : "text-slate-500"}`}>Live</span>
+                    <span className={`relative inline-flex h-4 w-8 shrink-0 rounded-full border transition-colors ${liveMode ? "border-rose-500 bg-rose-500/60" : "border-slate-600 bg-slate-800"}`}>
                       <input type="checkbox" checked={liveMode} onChange={(e) => setLiveMode(e.target.checked)} className="sr-only" />
-                      <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${liveMode ? "translate-x-4" : "translate-x-0"}`} />
+                      <span className={`inline-block h-3 w-3 transform rounded-full bg-white shadow transition-transform ${liveMode ? "translate-x-4" : "translate-x-0"}`} />
                     </span>
                   </label>
-                  {/* Auto-push toggle */}
-                  <label className="flex cursor-pointer items-center gap-1.5" title="Auto-push detected scriptures to monitor">
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Auto</span>
-                    <span className={`relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 transition-colors ${autoPushDisplay ? "border-violet-400 bg-violet-500/60" : "border-slate-600 bg-slate-800"}`}>
+                  <label className="flex cursor-pointer items-center gap-1" title="Auto-push every detected scripture to monitor">
+                    <span className="text-[10px] font-bold uppercase text-slate-500">Auto</span>
+                    <span className={`relative inline-flex h-4 w-8 shrink-0 rounded-full border transition-colors ${autoPushDisplay ? "border-violet-400 bg-violet-500/60" : "border-slate-600 bg-slate-800"}`}>
                       <input type="checkbox" checked={autoPushDisplay} onChange={(e) => setAutoPushDisplay(e.target.checked)} className="sr-only" />
-                      <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${autoPushDisplay ? "translate-x-4" : "translate-x-0"}`} />
+                      <span className={`inline-block h-3 w-3 transform rounded-full bg-white shadow transition-transform ${autoPushDisplay ? "translate-x-4" : "translate-x-0"}`} />
                     </span>
                   </label>
                 </div>
               </div>
 
-              {/* Header row 2 — translation + reading queue nav */}
-              <div className="mt-2 flex items-center justify-between gap-2">
-                <div className="flex items-center gap-1.5">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-600">Version</span>
-                  <select
-                    value={bibleTranslation}
-                    onChange={(e) => setBibleTranslation(e.target.value as typeof bibleTranslation)}
-                    className="rounded-md border border-slate-700/60 bg-slate-900/80 px-2 py-0.5 text-[11px] font-bold text-slate-300 outline-none focus:border-cyan-500/60"
-                  >
-                    <option value="web">WEB (Modern)</option>
-                    <option value="kjv">KJV</option>
-                    <option value="asv">ASV</option>
-                    <option value="ylt">YLT</option>
-                    <option value="basicenglish">Basic English</option>
-                  </select>
-                </div>
-
-                {readingQueue.length > 0 && (
-                  <div className="flex items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={() => advanceReadingQueue(readingQueueIndex - 1)}
-                      disabled={readingQueueIndex === 0}
-                      className="flex h-6 w-6 items-center justify-center rounded-md border border-slate-600/60 bg-slate-800/50 text-slate-400 hover:bg-slate-700 disabled:opacity-30"
-                      title="Previous verse"
-                    >
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3 w-3"><polyline points="15 18 9 12 15 6"/></svg>
-                    </button>
-                    <span className="text-[10px] text-slate-500">
-                      {readingQueue[readingQueueIndex]?.ref ?? "—"}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => advanceReadingQueue()}
-                      disabled={readingQueueIndex >= readingQueue.length - 1}
-                      className="flex h-6 w-6 items-center justify-center rounded-md border border-slate-600/60 bg-slate-800/50 text-slate-400 hover:bg-slate-700 disabled:opacity-30"
-                      title="Next verse"
-                    >
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3 w-3"><polyline points="9 18 15 12 9 6"/></svg>
-                    </button>
-                  </div>
-                )}
+              {/* Row 2: translation selector + Share + Report */}
+              <div className="mt-2 flex items-center gap-2">
+                <select
+                  value={bibleTranslation}
+                  onChange={(e) => setBibleTranslation(e.target.value as typeof bibleTranslation)}
+                  className="flex-1 rounded-md border border-slate-700/60 bg-slate-900/80 px-2 py-1 text-[11px] font-bold text-slate-300 outline-none focus:border-cyan-500/60"
+                >
+                  <option value="amp">Amplified (AMP)</option>
+                  <option value="niv">NIV</option>
+                  <option value="nlt">NLT</option>
+                  <option value="kjv">KJV</option>
+                  <option value="asv">ASV</option>
+                  <option value="nkjv">NKJV</option>
+                  <option value="msg">The Message</option>
+                  <option value="web">WEB (Modern)</option>
+                </select>
+                <button
+                  type="button"
+                  title="Copy monitor link for media team"
+                  onClick={() => {
+                    const url = `${window.location.origin}/monitor`;
+                    void navigator.clipboard.writeText(url).then(() => pushToast("Monitor link copied!", "success"));
+                  }}
+                  className="focus-ring flex h-7 items-center gap-1 rounded-md border border-cyan-500/40 bg-cyan-500/10 px-2 text-[10px] font-bold uppercase tracking-wider text-cyan-400 transition hover:bg-cyan-500/20"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3 w-3"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+                  Share
+                </button>
+                <button
+                  type="button"
+                  title="Download scripture reference report (.docx)"
+                  onClick={() => void exportReferenceReport()}
+                  className="focus-ring flex h-7 items-center gap-1 rounded-md border border-slate-600/60 bg-slate-800/50 px-2 text-[10px] font-bold uppercase tracking-wider text-slate-400 transition hover:bg-slate-700/70 hover:text-slate-200"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3 w-3"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                  Report
+                </button>
               </div>
+
+              {/* Row 3 (conditional): reading queue nav */}
+              {readingQueue.length > 0 && (
+                <div className="mt-2 flex items-center gap-1 rounded-lg border border-cyan-500/20 bg-cyan-500/5 px-2 py-1">
+                  <button
+                    type="button"
+                    onClick={() => advanceReadingQueue(readingQueueIndex - 1)}
+                    disabled={readingQueueIndex === 0}
+                    className="flex h-6 w-6 items-center justify-center rounded-md text-slate-400 hover:bg-slate-700 disabled:opacity-30"
+                    title="Previous verse"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3.5 w-3.5"><polyline points="15 18 9 12 15 6"/></svg>
+                  </button>
+                  <span className="flex-1 text-center text-[11px] font-semibold text-cyan-300">
+                    {readingQueue[readingQueueIndex]?.ref ?? "—"}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => advanceReadingQueue()}
+                    disabled={readingQueueIndex >= readingQueue.length - 1}
+                    className="flex h-6 w-6 items-center justify-center rounded-md text-slate-400 hover:bg-slate-700 disabled:opacity-30"
+                    title="Next verse"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3.5 w-3.5"><polyline points="9 18 15 12 9 6"/></svg>
+                  </button>
+                </div>
+              )}
             </div>
 
             {/* Card list */}
