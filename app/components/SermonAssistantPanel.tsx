@@ -2253,7 +2253,7 @@ export function SermonAssistantPanel() {
           </div>
 
           <aside
-            className={`hidden min-h-0 flex-col overflow-hidden rounded-xl border bg-slate-950/55 lg:flex lg:shrink-0 m-2 ml-0 lg:m-3 lg:ml-0 ${liveMode ? "border-rose-500/40" : "border-cyan-500/20"}`}
+            className={`hidden min-h-0 flex-col overflow-hidden rounded-xl border bg-slate-950/55 lg:flex lg:shrink-0 lg:mt-3 lg:mb-3 lg:ml-0 lg:mr-0 ${liveMode ? "border-rose-500/40" : "border-cyan-500/20"}`}
             style={{ width: refsPanelWidth }}
           >
             {/* Panel header */}

@@ -960,7 +960,7 @@ export default function HomePage() {
               {/* Primary panel — full width on mobile, sermon uses full desktop width */}
               <div
                 key={activeNav}
-                className={isSermonView ? "flex h-full flex-col" : isBookView ? "flex min-h-[65dvh] flex-col animate-fade-up lg:flex-1 lg:min-h-0" : `min-h-[65dvh] animate-fade-up lg:min-h-0 ${showActivityPanel ? "lg:col-span-4" : "lg:col-span-5"}`}
+                className={isSermonView ? "flex h-full min-w-0 flex-1 flex-col" : isBookView ? "flex min-h-[65dvh] flex-col animate-fade-up lg:flex-1 lg:min-h-0" : `min-h-[65dvh] animate-fade-up lg:min-h-0 ${showActivityPanel ? "lg:col-span-4" : "lg:col-span-5"}`}
               >
                 {activeNav === "projects" ? (
                   <ProjectsPanel
