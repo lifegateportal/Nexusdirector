@@ -150,7 +150,7 @@ const SCRIPTURE_REF_REGEX = /\b(?:[1-3]\s+)?[A-Za-z]+(?:\s+[A-Za-z]+)?\s+\d{1,3}
 const BIBLE_REF_REGEX = /\b(?:[1-3]\s+)?(?:[A-Z][a-z]+(?:\s+[A-Za-z]+){0,2})\s+\d{1,3}:\d{1,3}(?:-\d{1,3})?\b/g;
 
 const READING_INTENT_REGEX = /\b(?:i(?:'m| am) (?:now )?reading|(?:let(?:'s| us)) (?:read|open to|turn to)|(?:our|today(?:'s)?|this) (?:text|scripture|passage) (?:is|comes from)|(?:open|turn) (?:your )?(?:bibles? )?to|reading (?:from|with me)|follow(?:ing)? along)\b/i;
-const NEXT_VERSE_REGEX = /\b(?:next verse|go(?:ing)? to (?:the )?next|(?:move|moving) (?:on|to)(?: the)? next|verse next|read(?:ing)? (?:the )?next verse|continue(?: reading)?)\b/i;
+const NEXT_VERSE_REGEX = /\bnext verse\b/i;
 const VERSE_NUMBER_REGEX = /\bverse\s+(\d+)\b/i;
 
 const NUM_WORDS: Record<string, number> = {
@@ -471,6 +471,12 @@ export function SermonAssistantPanel() {
   const [readingQueueIndex, setReadingQueueIndex] = useState(0);
   const [bibleTranslation, setBibleTranslation] = useState<"web" | "kjv" | "asv" | "ylt" | "niv" | "nlt" | "nkjv" | "amp" | "msg">("kjv");
 
+  const [refsPanelWidth, setRefsPanelWidth] = useState(300);
+  const [isDraggingResize, setIsDraggingResize] = useState(false);
+  const isDraggingResizeRef = useRef(false);
+  const dragStartDataRef = useRef({ startX: 0, startWidth: 300 });
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
   const [volumeLevel, setVolumeLevel] = useState(0);
   const [currentWpm, setCurrentWpm] = useState(0);
   const [avgWpm, setAvgWpm] = useState(0);
@@ -528,7 +534,7 @@ export function SermonAssistantPanel() {
     setScriptureCards((prev) => {
       const existingRefs = new Set(prev.map((card) => card.ref.toLowerCase()));
       const additions = incoming.filter((card) => !existingRefs.has(card.ref.toLowerCase()));
-      return additions.length === 0 ? prev : [...prev, ...additions];
+      return additions.length === 0 ? prev : [...additions, ...prev];
     });
   }, []);
 
@@ -568,6 +574,26 @@ export function SermonAssistantPanel() {
   useEffect(() => { readingQueueIndexRef.current = readingQueueIndex; }, [readingQueueIndex]);
   useEffect(() => { liveModeRef.current = liveMode; }, [liveMode]);
   useEffect(() => { bibleTranslationRef.current = bibleTranslation; }, [bibleTranslation]);
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!isDraggingResizeRef.current) return;
+      const dx = dragStartDataRef.current.startX - e.clientX;
+      const newW = Math.max(220, Math.min(620, dragStartDataRef.current.startWidth + dx));
+      setRefsPanelWidth(newW);
+    };
+    const onUp = () => {
+      if (!isDraggingResizeRef.current) return;
+      isDraggingResizeRef.current = false;
+      setIsDraggingResize(false);
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+    return () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+  }, []);
 
   useEffect(() => {
     const refs = extractScriptureRefs(`${rawTranscript}\n${organizedMarkdown}`);
@@ -803,6 +829,14 @@ export function SermonAssistantPanel() {
 
   const pushToMonitor = useCallback((ref: string, text: string) => {
     lastMonitorRefRef.current = ref;
+    // Always show cast verse in the reference panel
+    mergeScriptureCards([{
+      id: `${ref}-cast-${Date.now()}`,
+      ref,
+      text,
+      source: "detected",
+      confidence: 1,
+    }]);
     const win = presentationWindowRef.current;
     if (win && !win.closed) {
       win.postMessage({ type: "update", ref, text }, "*");
@@ -817,7 +851,7 @@ export function SermonAssistantPanel() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ref, text }),
     });
-  }, [launchDisplay]);
+  }, [launchDisplay, mergeScriptureCards]);
 
   const clearMonitor = useCallback(() => {
     const win = presentationWindowRef.current;
@@ -921,7 +955,7 @@ export function SermonAssistantPanel() {
 
   const detectNextVerse = useCallback((chunk: string, fetchAndInject: (r: string) => void) => {
     const hasQueue = readingQueueRef.current.length > 0;
-    const normalized = wordsToDigits(chunk);
+    const normalized = wordsToDigits(chunk.trim());
 
     if (NEXT_VERSE_REGEX.test(normalized)) {
       if (hasQueue) {
@@ -932,7 +966,11 @@ export function SermonAssistantPanel() {
       }
       return;
     }
-    const numMatch = VERSE_NUMBER_REGEX.exec(normalized);
+
+    // When reading a queue: "verse N" or short isolated number (e.g. saying "two" as you move to verse 2)
+    const numMatchExplicit = VERSE_NUMBER_REGEX.exec(normalized);
+    const numMatchBare = hasQueue ? /^(\d{1,2})\.?$/.exec(normalized) : null;
+    const numMatch = numMatchExplicit ?? numMatchBare;
     if (numMatch) {
       const verseNum = parseInt(numMatch[1]);
       if (hasQueue) {
@@ -1868,8 +1906,12 @@ export function SermonAssistantPanel() {
           <input ref={fileRef} type="file" accept=".txt" className="hidden" onChange={onUploadTranscript} />
         </header>
 
-        <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden p-2 lg:grid lg:grid-cols-12 lg:gap-3 lg:p-3">
-          <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-cyan-500/20 bg-slate-950/55 lg:col-span-9">
+        <div
+          ref={containerRef}
+          className="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden p-2 lg:flex lg:flex-row lg:gap-0 lg:p-3"
+          style={isDraggingResize ? { userSelect: "none", cursor: "col-resize" } : undefined}
+        >
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-cyan-500/20 bg-slate-950/55 lg:min-w-0">
             <div className="flex shrink-0 gap-2 overflow-x-auto border-b border-cyan-500/20 px-2 py-2 lg:gap-0 lg:px-0 lg:py-0">
               {tabOrder.map((tab) => (
                 <button
@@ -2172,7 +2214,23 @@ export function SermonAssistantPanel() {
             )}
           </div>
 
-          <aside className={`hidden min-h-0 flex-col overflow-hidden rounded-xl border bg-slate-950/55 lg:col-span-3 lg:flex ${liveMode ? "border-rose-500/40" : "border-cyan-500/20"}`}>
+          {/* Resize handle — desktop only */}
+          <div
+            className="group mx-1 hidden shrink-0 cursor-col-resize items-center justify-center lg:flex"
+            onMouseDown={(e) => {
+              isDraggingResizeRef.current = true;
+              setIsDraggingResize(true);
+              dragStartDataRef.current = { startX: e.clientX, startWidth: refsPanelWidth };
+              e.preventDefault();
+            }}
+          >
+            <div className={`h-full w-0.5 rounded-full transition-colors ${isDraggingResize ? "bg-cyan-400" : "bg-slate-700/60 group-hover:bg-cyan-500/70"}`} />
+          </div>
+
+          <aside
+            className={`hidden min-h-0 flex-col overflow-hidden rounded-xl border bg-slate-950/55 lg:flex lg:shrink-0 ${liveMode ? "border-rose-500/40" : "border-cyan-500/20"}`}
+            style={{ width: refsPanelWidth }}
+          >
             {/* Panel header */}
             <div className={`shrink-0 border-b px-3 py-2 ${liveMode ? "border-rose-500/30 bg-rose-950/30" : "border-cyan-500/20"}`}>
 
@@ -2248,29 +2306,41 @@ export function SermonAssistantPanel() {
 
               {/* Row 3 (conditional): reading queue nav */}
               {readingQueue.length > 0 && (
-                <div className="mt-2 flex items-center gap-1 rounded-lg border border-cyan-500/20 bg-cyan-500/5 px-2 py-1">
-                  <button
-                    type="button"
-                    onClick={() => advanceReadingQueue(readingQueueIndex - 1)}
-                    disabled={readingQueueIndex === 0}
-                    className="flex h-6 w-6 items-center justify-center rounded-md text-slate-400 hover:bg-slate-700 disabled:opacity-30"
-                    title="Previous verse"
-                  >
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3.5 w-3.5"><polyline points="15 18 9 12 15 6"/></svg>
-                  </button>
-                  <span className="flex-1 text-center text-[11px] font-semibold text-cyan-300">
-                    {readingQueue[readingQueueIndex]?.ref ?? "—"}
-                  </span>
+                <>
+                  <div className="mt-2 flex items-center gap-1 rounded-lg border border-cyan-500/20 bg-cyan-500/5 px-2 py-1">
+                    <button
+                      type="button"
+                      onClick={() => advanceReadingQueue(readingQueueIndex - 1)}
+                      disabled={readingQueueIndex === 0}
+                      className="flex h-6 w-6 items-center justify-center rounded-md text-slate-400 hover:bg-slate-700 disabled:opacity-30"
+                      title="Previous verse"
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3.5 w-3.5"><polyline points="15 18 9 12 15 6"/></svg>
+                    </button>
+                    <span className="flex-1 text-center text-[11px] font-semibold text-cyan-300">
+                      {readingQueue[readingQueueIndex]?.ref ?? "—"}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => advanceReadingQueue()}
+                      disabled={readingQueueIndex >= readingQueue.length - 1}
+                      className="flex h-6 w-6 items-center justify-center rounded-md text-slate-400 hover:bg-slate-700 disabled:opacity-30"
+                      title="Next verse"
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3.5 w-3.5"><polyline points="9 18 15 12 9 6"/></svg>
+                    </button>
+                  </div>
+                  {/* Prominent manual "Next Verse" tab */}
                   <button
                     type="button"
                     onClick={() => advanceReadingQueue()}
                     disabled={readingQueueIndex >= readingQueue.length - 1}
-                    className="flex h-6 w-6 items-center justify-center rounded-md text-slate-400 hover:bg-slate-700 disabled:opacity-30"
-                    title="Next verse"
+                    className="mt-1.5 flex w-full items-center justify-center gap-2 rounded-lg border border-cyan-500/50 bg-cyan-500/15 py-2 text-xs font-bold uppercase tracking-wider text-cyan-300 transition hover:bg-cyan-500/25 active:scale-95 disabled:opacity-30 disabled:cursor-not-allowed"
                   >
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3.5 w-3.5"><polyline points="9 18 15 12 9 6"/></svg>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} className="h-3.5 w-3.5"><polyline points="9 18 15 12 9 6"/></svg>
+                    Next Verse
                   </button>
-                </div>
+                </>
               )}
             </div>
 
@@ -2286,14 +2356,6 @@ export function SermonAssistantPanel() {
                   return (
                     <div className="flex h-full items-center justify-center text-center text-sm text-slate-500">
                       <p>{liveMode ? "Quoted scriptures will appear here during the sermon." : "Detected and suggested scriptures will appear here."}</p>
-                    </div>
-                  );
-                }
-
-                if (liveMode && detected.length === 0) {
-                  return (
-                    <div className="flex h-full items-center justify-center text-center text-sm text-slate-500">
-                      <p>No quoted scriptures yet. Speak or read a verse.</p>
                     </div>
                   );
                 }
