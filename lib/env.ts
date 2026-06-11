@@ -26,7 +26,20 @@ const EnvironmentSchema = z.object({
   EBOOK_STRICT_ARCHITECT_OVERLAP_GATE: z.enum(["true", "false"]).optional().transform((value) => value !== "false"),
 });
 
-const parsed = EnvironmentSchema.safeParse(process.env);
+const isBuildPhase =
+  process.env.NEXT_PHASE === "phase-production-build" ||
+  process.env.NEXT_PHASE === "phase-export";
+
+const parsed = EnvironmentSchema.safeParse(
+  isBuildPhase
+    ? {
+        ...process.env,
+        GOOGLE_GENERATIVE_AI_API_KEY: process.env.GOOGLE_GENERATIVE_AI_API_KEY ?? "build-placeholder",
+        DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY ?? "build-placeholder",
+        ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ?? "build-placeholder",
+      }
+    : process.env
+);
 
 if (!parsed.success) {
   const issues = parsed.error.issues
