@@ -221,9 +221,11 @@ export function NexusNav({ active, onSelect }: NexusNavProps) {
         {/* Logo tap — goes to overview */}
         <button
           type="button"
+          onPointerDown={(e) => { e.preventDefault(); onSelect("overview"); }}
           onClick={() => onSelect("overview")}
           aria-label="Overview"
           className="flex min-h-[52px] min-w-[48px] touch-manipulation flex-col items-center justify-center gap-0.5 px-1 pt-2 active:bg-slate-800/40"
+          style={{ touchAction: "manipulation" }}
         >
           <LogoMark />
         </button>
@@ -231,9 +233,10 @@ export function NexusNav({ active, onSelect }: NexusNavProps) {
         {/* Logout — far right of mobile bar */}
         <button
           type="button"
-          onClick={() => void handleLogout()}
+          onPointerDown={(e) => { e.preventDefault(); void handleLogout(); }}
           aria-label="Log out"
-          className="relative flex min-h-[52px] min-w-[48px] touch-manipulation flex-col items-center justify-center gap-0.5 px-1 pt-2 text-slate-600 hover:text-rose-400 transition-colors active:bg-slate-800/40"
+          className="relative flex min-h-[52px] min-w-[48px] touch-manipulation flex-col items-center justify-center gap-0.5 px-1 pt-2 text-slate-600 hover:text-rose-400 active:bg-slate-800/40"
+          style={{ touchAction: "manipulation" }}
         >
           <IconLogout />
           <span className="text-[9px] font-medium">Logout</span>
@@ -250,15 +253,15 @@ export function NexusNav({ active, onSelect }: NexusNavProps) {
               : active === item.id;
           const inner = (
             <>
-              <span className={`transition-colors duration-150 ${isActive ? "text-cyan-400" : "text-slate-500"}`}>
+              <span className={`${isActive ? "text-cyan-400" : "text-slate-500"}`}>
                 <Icon />
               </span>
-              <span className={`text-[9px] font-medium transition-colors duration-150 ${isActive ? "text-cyan-400" : "text-slate-600"}`}>
+              <span className={`text-[9px] font-medium ${isActive ? "text-cyan-400" : "text-slate-600"}`}>
                 {item.label}
               </span>
               <span
-                className={`absolute top-0 h-0.5 w-10 rounded-full bg-cyan-400 transition-all duration-200 ${
-                  isActive ? "opacity-100 scale-x-100" : "opacity-0 scale-x-0"
+                className={`absolute top-0 h-0.5 w-10 rounded-full bg-cyan-400 ${
+                  isActive ? "opacity-100" : "opacity-0"
                 }`}
                 style={{ boxShadow: isActive ? "0 0 6px rgba(6,182,212,0.80)" : undefined }}
               />
@@ -268,16 +271,21 @@ export function NexusNav({ active, onSelect }: NexusNavProps) {
             <button
               key={item.id}
               type="button"
-              onClick={() => {
-                if (item.href) {
-                  navigateTo(item.href);
-                  return;
+              onPointerDown={(e) => {
+                if (e.pointerType === "touch") {
+                  e.preventDefault();
+                  if (item.href) navigateTo(item.href);
+                  else onSelect(item.id);
                 }
-                onSelect(item.id);
+              }}
+              onClick={() => {
+                if (item.href) navigateTo(item.href);
+                else onSelect(item.id);
               }}
               aria-label={item.label}
               aria-current={isActive ? "page" : undefined}
-              className="relative flex min-h-[52px] min-w-[48px] touch-manipulation flex-col items-center justify-center gap-0.5 px-1 pt-2 transition-colors active:bg-slate-800/40"
+              className="relative flex min-h-[52px] min-w-[48px] touch-manipulation flex-col items-center justify-center gap-0.5 px-1 pt-2 active:bg-slate-800/40"
+              style={{ touchAction: "manipulation" }}
             >
               {inner}
             </button>

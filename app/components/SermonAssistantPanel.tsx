@@ -461,6 +461,7 @@ export function SermonAssistantPanel() {
   const [isEditingOrganized, setIsEditingOrganized] = useState(false);
   const [isCompactLayout, setIsCompactLayout] = useState(false);
   const [mobileToolsOpen, setMobileToolsOpen] = useState(false);
+  const [mobileRefsOpen, setMobileRefsOpen] = useState(false);
   const [mobileTelemetryOpen, setMobileTelemetryOpen] = useState(false);
   const [desktopTelemetryOpen, setDesktopTelemetryOpen] = useState(false);
   const [mobileOrganizedView, setMobileOrganizedView] = useState<"outline" | "manual">("outline");
@@ -1935,8 +1936,12 @@ export function SermonAssistantPanel() {
                 <button
                   key={tab}
                   type="button"
+                  onPointerDown={(e) => {
+                    if (e.pointerType === "touch") { e.preventDefault(); setActiveTab(tab); }
+                  }}
                   onClick={() => setActiveTab(tab)}
-                  className={`focus-ring min-h-10 shrink-0 whitespace-nowrap rounded-lg border px-3 text-xs font-bold uppercase tracking-[0.18em] transition lg:min-h-12 lg:flex-1 lg:rounded-none lg:border-x-0 lg:border-t-0 lg:border-b-2 lg:px-2 lg:text-sm lg:tracking-wide ${
+                  style={{ touchAction: "manipulation" }}
+                  className={`focus-ring min-h-10 shrink-0 touch-manipulation whitespace-nowrap rounded-lg border px-3 text-xs font-bold uppercase tracking-[0.18em] lg:min-h-12 lg:flex-1 lg:rounded-none lg:border-x-0 lg:border-t-0 lg:border-b-2 lg:px-2 lg:text-sm lg:tracking-wide ${
                     activeTab === tab
                       ? "border-cyan-400/70 bg-cyan-500/10 text-cyan-300 lg:border-cyan-400"
                       : "border-slate-800 text-slate-400 hover:bg-slate-900/80 hover:text-slate-200 lg:border-transparent"
@@ -1946,6 +1951,26 @@ export function SermonAssistantPanel() {
                   <span className="hidden sm:inline">{tab === "raw" ? "Raw Transcript" : tab === "organized" ? "Organized Notes" : "Nexus Agent"}</span>
                 </button>
               ))}
+              {/* Mobile-only: open references bottom sheet */}
+              <button
+                type="button"
+                onPointerDown={(e) => { if (e.pointerType === "touch") { e.preventDefault(); setMobileRefsOpen(true); } }}
+                onClick={() => setMobileRefsOpen(true)}
+                style={{ touchAction: "manipulation" }}
+                className={`focus-ring min-h-10 shrink-0 touch-manipulation whitespace-nowrap rounded-lg border px-3 text-xs font-bold uppercase tracking-[0.18em] lg:hidden ${
+                  scriptureCards.length > 0
+                    ? "border-cyan-400/70 bg-cyan-500/10 text-cyan-300"
+                    : "border-slate-800 text-slate-400"
+                }`}
+              >
+                <span className="flex items-center gap-1.5">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3.5 w-3.5 shrink-0">
+                    <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" strokeLinecap="round" strokeLinejoin="round"/>
+                    <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                  Refs{scriptureCards.length > 0 ? ` (${scriptureCards.length})` : ""}
+                </span>
+              </button>
             </div>
 
             {activeTab === "raw" && (
@@ -2439,6 +2464,179 @@ export function SermonAssistantPanel() {
             </div>
           </aside>
         </div>
+
+        {/* ── Mobile References Bottom Sheet ─────────────────────── */}
+        <div
+          className={`fixed inset-x-0 bottom-0 z-[60] flex flex-col rounded-t-2xl border-t border-cyan-500/20 bg-slate-950 lg:hidden transition-transform duration-300 ease-out ${mobileRefsOpen ? "translate-y-0" : "translate-y-full"}`}
+          style={{ maxHeight: "88dvh", paddingBottom: "max(env(safe-area-inset-bottom), 12px)" }}
+          aria-hidden={!mobileRefsOpen}
+        >
+          {/* Pull handle + close */}
+          <div className="flex shrink-0 items-center justify-between px-4 pt-3 pb-2">
+            <div className="h-1 w-10 rounded-full bg-slate-600 mx-auto" />
+          </div>
+
+          {/* Header row */}
+          <div className={`shrink-0 border-b px-4 pb-3 ${liveMode ? "border-rose-500/30 bg-rose-950/30" : "border-cyan-500/20"}`}>
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                {liveMode && <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-rose-400" />}
+                <p className={`text-sm font-bold uppercase tracking-wider ${liveMode ? "text-rose-300" : "text-slate-200"}`}>
+                  References{scriptureCards.length > 0 ? ` · ${scriptureCards.length}` : ""}
+                </p>
+              </div>
+              <div className="flex items-center gap-3">
+                <label className="flex cursor-pointer items-center gap-1">
+                  <span className={`text-[10px] font-bold uppercase ${liveMode ? "text-rose-400" : "text-slate-500"}`}>Live</span>
+                  <span className={`relative inline-flex h-4 w-8 shrink-0 rounded-full border transition-colors ${liveMode ? "border-rose-500 bg-rose-500/60" : "border-slate-600 bg-slate-800"}`}>
+                    <input type="checkbox" checked={liveMode} onChange={(e) => setLiveMode(e.target.checked)} className="sr-only" />
+                    <span className={`inline-block h-3 w-3 transform rounded-full bg-white shadow transition-transform ${liveMode ? "translate-x-4" : "translate-x-0"}`} />
+                  </span>
+                </label>
+                <label className="flex cursor-pointer items-center gap-1">
+                  <span className="text-[10px] font-bold uppercase text-slate-500">Auto</span>
+                  <span className={`relative inline-flex h-4 w-8 shrink-0 rounded-full border transition-colors ${autoPushDisplay ? "border-violet-400 bg-violet-500/60" : "border-slate-600 bg-slate-800"}`}>
+                    <input type="checkbox" checked={autoPushDisplay} onChange={(e) => setAutoPushDisplay(e.target.checked)} className="sr-only" />
+                    <span className={`inline-block h-3 w-3 transform rounded-full bg-white shadow transition-transform ${autoPushDisplay ? "translate-x-4" : "translate-x-0"}`} />
+                  </span>
+                </label>
+                <button
+                  type="button"
+                  onPointerDown={(e) => { e.preventDefault(); setMobileRefsOpen(false); }}
+                  onClick={() => setMobileRefsOpen(false)}
+                  style={{ touchAction: "manipulation" }}
+                  className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 active:bg-slate-800"
+                  aria-label="Close references"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} className="h-4 w-4">
+                    <path d="M18 6 6 18M6 6l12 12" strokeLinecap="round"/>
+                  </svg>
+                </button>
+              </div>
+            </div>
+
+            {/* Translation + Share */}
+            <div className="mt-2 flex items-center gap-2">
+              <select
+                value={bibleTranslation}
+                onChange={(e) => setBibleTranslation(e.target.value as typeof bibleTranslation)}
+                className="flex-1 rounded-md border border-slate-700/60 bg-slate-900/80 px-2 py-1.5 text-sm font-bold text-slate-300 outline-none focus:border-cyan-500/60"
+              >
+                <option value="amp">Amplified (AMP)</option>
+                <option value="niv">NIV</option>
+                <option value="nlt">NLT</option>
+                <option value="kjv">KJV</option>
+                <option value="asv">ASV</option>
+                <option value="nkjv">NKJV</option>
+                <option value="msg">The Message</option>
+                <option value="web">WEB (Modern)</option>
+              </select>
+              <button
+                type="button"
+                onClick={() => {
+                  const url = `${window.location.origin}/monitor`;
+                  void navigator.clipboard.writeText(url).then(() => pushToast("Monitor link copied!", "success"));
+                }}
+                className="flex h-9 items-center gap-1 rounded-md border border-cyan-500/40 bg-cyan-500/10 px-3 text-xs font-bold uppercase tracking-wider text-cyan-400"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3.5 w-3.5"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+                Share
+              </button>
+            </div>
+
+            {/* Reading queue nav */}
+            {readingQueue.length > 0 && (
+              <div className="mt-2 flex items-center gap-1 rounded-lg border border-cyan-500/20 bg-cyan-500/5 px-2 py-1">
+                <button type="button" onClick={() => advanceReadingQueue(readingQueueIndex - 1)} disabled={readingQueueIndex === 0} className="flex h-7 w-7 items-center justify-center rounded-md text-slate-400 hover:bg-slate-700 disabled:opacity-30">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-4 w-4"><polyline points="15 18 9 12 15 6"/></svg>
+                </button>
+                <span className="flex-1 text-center text-xs font-semibold text-cyan-300">{readingQueue[readingQueueIndex]?.ref ?? "—"}</span>
+                <button type="button" onClick={() => advanceReadingQueue()} disabled={readingQueueIndex >= readingQueue.length - 1} className="flex h-7 w-7 items-center justify-center rounded-md text-slate-400 hover:bg-slate-700 disabled:opacity-30">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-4 w-4"><polyline points="9 18 15 12 9 6"/></svg>
+                </button>
+              </div>
+            )}
+
+            {/* Next Verse */}
+            <button
+              type="button"
+              onClick={handleNextVerse}
+              disabled={!lastDisplayRef && readingQueue.length === 0}
+              className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg border border-cyan-500/50 bg-cyan-500/15 py-2.5 text-sm font-bold uppercase tracking-wider text-cyan-300 active:bg-cyan-500/25 disabled:pointer-events-none disabled:opacity-25"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} className="h-4 w-4"><polyline points="9 18 15 12 9 6"/></svg>
+              {readingQueue.length > 0 && readingQueueIndex < readingQueue.length - 1
+                ? `Next — ${readingQueue[readingQueueIndex + 1]?.ref ?? "Verse"}`
+                : lastDisplayRef
+                  ? `Next — ${nextSequentialRef(lastDisplayRef) ?? "Verse"}`
+                  : "Next Verse"}
+            </button>
+          </div>
+
+          {/* Scripture cards */}
+          <div className="min-h-0 flex-1 overflow-y-auto p-4">
+            {scriptureCards.length === 0 ? (
+              <div className="flex h-full items-center justify-center text-center text-sm text-slate-500">
+                <p>{liveMode ? "Quoted scriptures will appear here during the sermon." : "Detected and suggested scriptures will appear here."}</p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {(() => {
+                  const detected = scriptureCards.filter((c) => c.source === "detected");
+                  const suggested = scriptureCards.filter((c) => c.source === "suggested");
+                  const renderCard = (card: typeof scriptureCards[0], live: boolean) => (
+                    <article
+                      key={card.id}
+                      className={`rounded-xl px-4 py-3 ${live ? "border-l-4 border-rose-400 bg-rose-950/40" : card.source === "suggested" ? "border-l-4 border-amber-400/60 bg-slate-900/60" : "border-l-4 border-cyan-400 bg-slate-900/80"}`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <h3 className={`text-sm font-bold ${live ? "text-rose-200" : card.source === "suggested" ? "text-amber-300" : "text-cyan-300"}`}>{card.ref}</h3>
+                        <button
+                          type="button"
+                          onClick={() => { pushToMonitor(card.ref, card.text); setMobileRefsOpen(false); }}
+                          className="flex h-7 items-center gap-1 rounded-md border border-violet-500/50 bg-violet-500/15 px-2 text-[10px] font-bold uppercase tracking-wider text-violet-300 active:bg-violet-500/30"
+                        >
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3 w-3"><path d="M2 8V6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6"/><path d="M2 12a9 9 0 0 1 8 8"/><path d="M2 16a5 5 0 0 1 4 4"/><circle cx="3" cy="20" r="1"/></svg>
+                          Cast
+                        </button>
+                      </div>
+                      <p className="mt-1.5 text-sm italic text-slate-300">&quot;{card.text}&quot;</p>
+                      {!live && card.reason && <p className="mt-1 text-xs text-slate-500">{card.reason}</p>}
+                    </article>
+                  );
+                  return (
+                    <>
+                      {detected.length > 0 && (
+                        <>
+                          {!liveMode && <p className="px-1 text-[10px] font-bold uppercase tracking-widest text-cyan-500/70">Quoted</p>}
+                          {detected.map((c) => renderCard(c, liveMode))}
+                        </>
+                      )}
+                      {suggested.length > 0 && (
+                        <>
+                          <div className="flex items-center gap-2 py-1">
+                            <div className="h-px flex-1 bg-slate-700/60" />
+                            <p className="text-[10px] font-bold uppercase tracking-widest text-amber-500/60">AI Suggestions</p>
+                            <div className="h-px flex-1 bg-slate-700/60" />
+                          </div>
+                          {suggested.map((c) => renderCard(c, false))}
+                        </>
+                      )}
+                    </>
+                  );
+                })()}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Backdrop for mobile refs sheet */}
+        <div
+          className={`fixed inset-0 z-[59] lg:hidden transition-opacity duration-300 ${mobileRefsOpen ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none"}`}
+          style={{ background: "rgba(0,0,0,0.65)" }}
+          onPointerDown={() => setMobileRefsOpen(false)}
+          aria-hidden
+        />
 
         {historyOpen && (
           <div className="absolute inset-0 z-20 flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm">
