@@ -470,6 +470,7 @@ export function SermonAssistantPanel() {
   const [readingQueue, setReadingQueue] = useState<Array<{ ref: string; text: string }>>([]);
   const [readingQueueIndex, setReadingQueueIndex] = useState(0);
   const [bibleTranslation, setBibleTranslation] = useState<"web" | "kjv" | "asv" | "ylt" | "niv" | "nlt" | "nkjv" | "amp" | "msg">("kjv");
+  const [lastDisplayRef, setLastDisplayRef] = useState("");
 
   const [refsPanelWidth, setRefsPanelWidth] = useState(300);
   const [isDraggingResize, setIsDraggingResize] = useState(false);
@@ -576,11 +577,15 @@ export function SermonAssistantPanel() {
   useEffect(() => { bibleTranslationRef.current = bibleTranslation; }, [bibleTranslation]);
 
   useEffect(() => {
-    const onMove = (e: MouseEvent) => {
+    const applyDrag = (clientX: number) => {
       if (!isDraggingResizeRef.current) return;
-      const dx = dragStartDataRef.current.startX - e.clientX;
+      const dx = dragStartDataRef.current.startX - clientX;
       const newW = Math.max(220, Math.min(620, dragStartDataRef.current.startWidth + dx));
       setRefsPanelWidth(newW);
+    };
+    const onMove = (e: MouseEvent) => applyDrag(e.clientX);
+    const onTouchMove = (e: TouchEvent) => {
+      if (e.touches[0]) applyDrag(e.touches[0].clientX);
     };
     const onUp = () => {
       if (!isDraggingResizeRef.current) return;
@@ -589,9 +594,13 @@ export function SermonAssistantPanel() {
     };
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
+    document.addEventListener("touchmove", onTouchMove, { passive: false });
+    document.addEventListener("touchend", onUp);
     return () => {
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup", onUp);
+      document.removeEventListener("touchmove", onTouchMove);
+      document.removeEventListener("touchend", onUp);
     };
   }, []);
 
@@ -829,6 +838,7 @@ export function SermonAssistantPanel() {
 
   const pushToMonitor = useCallback((ref: string, text: string) => {
     lastMonitorRefRef.current = ref;
+    setLastDisplayRef(ref);
     // Always show cast verse in the reference panel
     mergeScriptureCards([{
       id: `${ref}-cast-${Date.now()}`,
@@ -984,6 +994,15 @@ export function SermonAssistantPanel() {
       }
     }
   }, [advanceReadingQueue]);
+
+  const handleNextVerse = useCallback(() => {
+    if (readingQueueRef.current.length > 0 && readingQueueIndexRef.current < readingQueueRef.current.length - 1) {
+      advanceReadingQueue();
+    } else {
+      const next = nextSequentialRef(lastMonitorRefRef.current);
+      if (next) void fetchAndInjectScripture(next);
+    }
+  }, [advanceReadingQueue, fetchAndInjectScripture]);
 
   const detectScripture = useCallback((chunk: string) => {
     const normalized = normalizeForTriggers(chunk);
@@ -1908,10 +1927,9 @@ export function SermonAssistantPanel() {
 
         <div
           ref={containerRef}
-          className="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden p-2 lg:flex lg:flex-row lg:gap-0 lg:p-3"
-          style={isDraggingResize ? { userSelect: "none", cursor: "col-resize" } : undefined}
+          className={`flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row${isDraggingResize ? " cursor-col-resize select-none" : ""}`}
         >
-          <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-cyan-500/20 bg-slate-950/55 lg:min-w-0">
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-cyan-500/20 bg-slate-950/55 m-2 lg:m-3 lg:mr-0 lg:min-w-0">
             <div className="flex shrink-0 gap-2 overflow-x-auto border-b border-cyan-500/20 px-2 py-2 lg:gap-0 lg:px-0 lg:py-0">
               {tabOrder.map((tab) => (
                 <button
@@ -2214,21 +2232,28 @@ export function SermonAssistantPanel() {
             )}
           </div>
 
-          {/* Resize handle — desktop only */}
+          {/* Resize handle — desktop only, touch-friendly 12px grab zone */}
           <div
-            className="group mx-1 hidden shrink-0 cursor-col-resize items-center justify-center lg:flex"
+            className="group hidden shrink-0 cursor-col-resize items-center justify-center lg:flex"
+            style={{ width: 12 }}
             onMouseDown={(e) => {
               isDraggingResizeRef.current = true;
               setIsDraggingResize(true);
               dragStartDataRef.current = { startX: e.clientX, startWidth: refsPanelWidth };
               e.preventDefault();
             }}
+            onTouchStart={(e) => {
+              if (!e.touches[0]) return;
+              isDraggingResizeRef.current = true;
+              setIsDraggingResize(true);
+              dragStartDataRef.current = { startX: e.touches[0].clientX, startWidth: refsPanelWidth };
+            }}
           >
             <div className={`h-full w-0.5 rounded-full transition-colors ${isDraggingResize ? "bg-cyan-400" : "bg-slate-700/60 group-hover:bg-cyan-500/70"}`} />
           </div>
 
           <aside
-            className={`hidden min-h-0 flex-col overflow-hidden rounded-xl border bg-slate-950/55 lg:flex lg:shrink-0 ${liveMode ? "border-rose-500/40" : "border-cyan-500/20"}`}
+            className={`hidden min-h-0 flex-col overflow-hidden rounded-xl border bg-slate-950/55 lg:flex lg:shrink-0 m-2 ml-0 lg:m-3 lg:ml-0 ${liveMode ? "border-rose-500/40" : "border-cyan-500/20"}`}
             style={{ width: refsPanelWidth }}
           >
             {/* Panel header */}
@@ -2306,42 +2331,45 @@ export function SermonAssistantPanel() {
 
               {/* Row 3 (conditional): reading queue nav */}
               {readingQueue.length > 0 && (
-                <>
-                  <div className="mt-2 flex items-center gap-1 rounded-lg border border-cyan-500/20 bg-cyan-500/5 px-2 py-1">
-                    <button
-                      type="button"
-                      onClick={() => advanceReadingQueue(readingQueueIndex - 1)}
-                      disabled={readingQueueIndex === 0}
-                      className="flex h-6 w-6 items-center justify-center rounded-md text-slate-400 hover:bg-slate-700 disabled:opacity-30"
-                      title="Previous verse"
-                    >
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3.5 w-3.5"><polyline points="15 18 9 12 15 6"/></svg>
-                    </button>
-                    <span className="flex-1 text-center text-[11px] font-semibold text-cyan-300">
-                      {readingQueue[readingQueueIndex]?.ref ?? "—"}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => advanceReadingQueue()}
-                      disabled={readingQueueIndex >= readingQueue.length - 1}
-                      className="flex h-6 w-6 items-center justify-center rounded-md text-slate-400 hover:bg-slate-700 disabled:opacity-30"
-                      title="Next verse"
-                    >
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3.5 w-3.5"><polyline points="9 18 15 12 9 6"/></svg>
-                    </button>
-                  </div>
-                  {/* Prominent manual "Next Verse" tab */}
+                <div className="mt-2 flex items-center gap-1 rounded-lg border border-cyan-500/20 bg-cyan-500/5 px-2 py-1">
+                  <button
+                    type="button"
+                    onClick={() => advanceReadingQueue(readingQueueIndex - 1)}
+                    disabled={readingQueueIndex === 0}
+                    className="flex h-6 w-6 items-center justify-center rounded-md text-slate-400 hover:bg-slate-700 disabled:opacity-30"
+                    title="Previous verse"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3.5 w-3.5"><polyline points="15 18 9 12 15 6"/></svg>
+                  </button>
+                  <span className="flex-1 text-center text-[11px] font-semibold text-cyan-300">
+                    {readingQueue[readingQueueIndex]?.ref ?? "—"}
+                  </span>
                   <button
                     type="button"
                     onClick={() => advanceReadingQueue()}
                     disabled={readingQueueIndex >= readingQueue.length - 1}
-                    className="mt-1.5 flex w-full items-center justify-center gap-2 rounded-lg border border-cyan-500/50 bg-cyan-500/15 py-2 text-xs font-bold uppercase tracking-wider text-cyan-300 transition hover:bg-cyan-500/25 active:scale-95 disabled:opacity-30 disabled:cursor-not-allowed"
+                    className="flex h-6 w-6 items-center justify-center rounded-md text-slate-400 hover:bg-slate-700 disabled:opacity-30"
+                    title="Next verse"
                   >
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} className="h-3.5 w-3.5"><polyline points="9 18 15 12 9 6"/></svg>
-                    Next Verse
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3.5 w-3.5"><polyline points="9 18 15 12 9 6"/></svg>
                   </button>
-                </>
+                </div>
               )}
+
+              {/* Always-visible Next Verse tab — sequential chapter navigation */}
+              <button
+                type="button"
+                onClick={handleNextVerse}
+                disabled={!lastDisplayRef && readingQueue.length === 0}
+                className="mt-1.5 flex w-full items-center justify-center gap-2 rounded-lg border border-cyan-500/50 bg-cyan-500/15 py-2 text-xs font-bold uppercase tracking-wider text-cyan-300 transition hover:bg-cyan-500/25 active:scale-95 disabled:pointer-events-none disabled:opacity-25"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} className="h-3.5 w-3.5"><polyline points="9 18 15 12 9 6"/></svg>
+                {readingQueue.length > 0 && readingQueueIndex < readingQueue.length - 1
+                  ? `Next — ${readingQueue[readingQueueIndex + 1]?.ref ?? "Verse"}`
+                  : lastDisplayRef
+                    ? `Next — ${nextSequentialRef(lastDisplayRef) ?? "Verse"}`
+                    : "Next Verse"}
+              </button>
             </div>
 
             {/* Card list */}
@@ -2350,7 +2378,7 @@ export function SermonAssistantPanel() {
                 const detected = scriptureCards.filter((c) => c.source === "detected");
                 const suggested = scriptureCards.filter((c) => c.source === "suggested");
                 const visibleDetected = detected;
-                const showSuggested = !liveMode && suggested.length > 0;
+                const showSuggested = suggested.length > 0;
 
                 if (scriptureCards.length === 0) {
                   return (
