@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 
 type VerseQueueItem = { ref: string; text: string };
@@ -58,7 +58,7 @@ type MonitorState = {
   displayPrefs: MonitorDisplayPrefs;
 };
 
-export default function MonitorPage() {
+function MonitorPageInner() {
   const searchParams = useSearchParams();
   const [authed, setAuthed] = useState<boolean | null>(null);
   const [password, setPassword] = useState("");
@@ -741,5 +741,13 @@ export default function MonitorPage() {
         * { -webkit-font-smoothing: antialiased; }
       `}</style>
     </div>
+  );
+}
+
+export default function MonitorPage() {
+  return (
+    <Suspense>
+      <MonitorPageInner />
+    </Suspense>
   );
 }
