@@ -58,6 +58,34 @@ type SermonApiResponse = {
   markdown: string;
 };
 
+type MonitorBackgroundId = "black" | "midnight" | "sunrise" | "ocean" | "charcoal" | "transparent";
+type MonitorFontStyle = "serif" | "sans" | "display";
+type LowerThirdSize = "compact" | "standard" | "large";
+
+type MonitorDisplayPrefs = {
+  layout: "center" | "lower-third";
+  background: MonitorBackgroundId;
+  fontStyle: MonitorFontStyle;
+  lowerThirdBackground: "solid" | "glass" | "transparent";
+  centerRefSize: number;
+  centerVerseSize: number;
+  lowerRefSize: number;
+  lowerVerseSize: number;
+  lowerThirdSize: LowerThirdSize;
+};
+
+const DEFAULT_MONITOR_DISPLAY_PREFS: MonitorDisplayPrefs = {
+  layout: "center",
+  background: "black",
+  fontStyle: "serif",
+  lowerThirdBackground: "solid",
+  centerRefSize: 34,
+  centerVerseSize: 72,
+  lowerRefSize: 18,
+  lowerVerseSize: 40,
+  lowerThirdSize: "standard",
+};
+
 function normalizeSermonProjectRecord(input: unknown): SermonProjectRecord | null {
   if (!input || typeof input !== "object") return null;
   const record = input as Record<string, unknown>;
@@ -468,6 +496,9 @@ export function SermonAssistantPanel() {
   const [speechLanguage, setSpeechLanguage] = useState<SpeechLanguage>("auto");
   const [autoPushDisplay, setAutoPushDisplay] = useState(false);
   const [liveMode, setLiveMode] = useState(false);
+  const [monitorDisplayPrefs, setMonitorDisplayPrefs] = useState<MonitorDisplayPrefs>(DEFAULT_MONITOR_DISPLAY_PREFS);
+  const [desktopDisplayStyleOpen, setDesktopDisplayStyleOpen] = useState(false);
+  const [mobileDisplayStyleOpen, setMobileDisplayStyleOpen] = useState(false);
   const [readingQueue, setReadingQueue] = useState<Array<{ ref: string; text: string }>>([]);
   const [readingQueueIndex, setReadingQueueIndex] = useState(0);
   const [bibleTranslation, setBibleTranslation] = useState<"web" | "kjv" | "asv" | "ylt" | "niv" | "nlt" | "nkjv" | "amp" | "msg">("kjv");
@@ -513,9 +544,15 @@ export function SermonAssistantPanel() {
   const semanticTimerRef = useRef<number | null>(null);
   const semanticInFlightRef = useRef(false);
   const scriptureCardsRef = useRef<ScriptureCard[]>([]);
+  const rangeCastTimersRef = useRef<number[]>([]);
 
   const presentationWindowRef = useRef<Window | null>(null);
+  const notesSlidesWindowRef = useRef<Window | null>(null);
   const pulpitTouchStartXRef = useRef<number | null>(null);
+  const rangePlaybackTimeoutRef = useRef<number | null>(null);
+  const pulpitRangeRefRef = useRef<string>("");
+  const pulpitRangeVersesRef = useRef<Array<{ ref: string; text: string }>>([]);
+  const pulpitRangeIndexRef = useRef(0);
   const readingQueueRef = useRef<Array<{ ref: string; text: string }>>([]);
   const readingQueueIndexRef = useRef(0);
   const liveModeRef = useRef(false);
@@ -576,6 +613,21 @@ export function SermonAssistantPanel() {
   useEffect(() => { readingQueueIndexRef.current = readingQueueIndex; }, [readingQueueIndex]);
   useEffect(() => { liveModeRef.current = liveMode; }, [liveMode]);
   useEffect(() => { bibleTranslationRef.current = bibleTranslation; }, [bibleTranslation]);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const res = await fetch("/api/monitor/state");
+        if (!res.ok) return;
+        const data = await res.json() as { displayPrefs?: Partial<MonitorDisplayPrefs> };
+        if (data.displayPrefs) {
+          setMonitorDisplayPrefs((prev) => ({ ...prev, ...data.displayPrefs }));
+        }
+      } catch {
+        // Ignore monitor settings fetch failures.
+      }
+    })();
+  }, []);
 
   useEffect(() => {
     const applyDrag = (clientX: number) => {
@@ -718,12 +770,22 @@ export function SermonAssistantPanel() {
 
   useEffect(() => {
     return () => {
+      for (const id of rangeCastTimersRef.current) {
+        window.clearTimeout(id);
+      }
+      rangeCastTimersRef.current = [];
       if (volumeFrameRef.current) window.cancelAnimationFrame(volumeFrameRef.current);
       if (audioContextRef.current) void audioContextRef.current.close();
       if (semanticTimerRef.current) window.clearTimeout(semanticTimerRef.current);
       if (audioDownloadUrl) URL.revokeObjectURL(audioDownloadUrl);
       if (presentationWindowRef.current && !presentationWindowRef.current.closed) {
         presentationWindowRef.current.close();
+      }
+      if (notesSlidesWindowRef.current && !notesSlidesWindowRef.current.closed) {
+        notesSlidesWindowRef.current.close();
+      }
+      if (rangePlaybackTimeoutRef.current !== null) {
+        window.clearTimeout(rangePlaybackTimeoutRef.current);
       }
     };
   }, [audioDownloadUrl]);
@@ -837,6 +899,149 @@ export function SermonAssistantPanel() {
     pushToast("Scripture display launched.", "success");
   }, [pushToast]);
 
+  const launchTeachingSlides = useCallback(() => {
+    if (!organizedMarkdown.trim()) {
+      pushToast("Generate organized notes before launching teaching slides.", "error");
+      return;
+    }
+
+    const splitForSlides = (text: string): string[] => {
+      const normalized = text.replace(/\s+/g, " ").trim();
+      if (!normalized) return [];
+
+      const sentenceParts = normalized.split(/(?<=[.!?;:])\s+/).filter(Boolean);
+      const words = normalized.split(/\s+/).filter(Boolean);
+      const targetChunkCount = words.length > 42 ? 2 : 1;
+
+      if (targetChunkCount === 1) {
+        return [normalized];
+      }
+
+      const midpoint = Math.ceil(sentenceParts.length / 2);
+      const firstHalf = sentenceParts.slice(0, midpoint).join(" ").trim();
+      const secondHalf = sentenceParts.slice(midpoint).join(" ").trim();
+
+      if (!firstHalf || !secondHalf) {
+        const splitIndex = Math.ceil(words.length / 2);
+        const first = words.slice(0, splitIndex).join(" ").trim();
+        const second = words.slice(splitIndex).join(" ").trim();
+        return second ? [first, second] : [normalized];
+      }
+
+      return [firstHalf, secondHalf];
+    };
+
+    const slideItems = pulpitSections.flatMap((section) => (
+      section.blocks
+        .map((block) => block.text.trim())
+        .filter(Boolean)
+        .map((rawText) => {
+          const cues: string[] = [];
+          let audienceText = rawText;
+
+          audienceText = audienceText.replace(/\[(?:cue|speaker|note|transition):\s*([^\]]+)\]/gi, (_, cue: string) => {
+            cues.push(cue.trim());
+            return "";
+          });
+          audienceText = audienceText.replace(/\((?:cue|speaker|note|transition):\s*([^\)]+)\)/gi, (_, cue: string) => {
+            cues.push(cue.trim());
+            return "";
+          });
+          audienceText = audienceText.replace(/\{(?:cue|speaker|note|transition):\s*([^\}]+)\}/gi, (_, cue: string) => {
+            cues.push(cue.trim());
+            return "";
+          });
+
+          if (/^(?:cue|note|transition)\s*:/i.test(audienceText)) {
+            cues.push(audienceText.replace(/^(?:cue|note|transition)\s*:/i, "").trim());
+            audienceText = "";
+          }
+
+          audienceText = audienceText.replace(/\s+/g, " ").trim();
+          const chunks = splitForSlides(audienceText);
+          return chunks.map((chunk, idx) => ({
+            section: chunks.length > 1 ? `${section.title} ${idx + 1}/${chunks.length}` : section.title,
+            audienceText: chunk,
+            speakerCues: idx === 0 ? cues : [],
+          }));
+        })
+        .flat()
+        .filter((slide) => slide.audienceText.length > 0)
+    ));
+
+    if (slideItems.length === 0) {
+      pushToast("No notes available for slide presentation.", "error");
+      return;
+    }
+
+    const win = window.open("", "NexusTeachingSlides", "width=1280,height=720,menubar=no,toolbar=no,location=no,status=no");
+    if (!win) {
+      pushToast("Pop-up blocked. Allow pop-ups for this site.", "error");
+      return;
+    }
+    notesSlidesWindowRef.current = win;
+
+    const payload = JSON.stringify(slideItems).replace(/</g, "\\u003c");
+    win.document.write([
+      "<!DOCTYPE html><html lang=\"en\"><head>",
+      "<meta charset=\"UTF-8\"/>",
+      "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1,viewport-fit=cover\"/>",
+      "<title>Teaching Slides</title>",
+      "<style>",
+      "*{margin:0;padding:0;box-sizing:border-box;}",
+      "html,body{height:100dvh;width:100vw;background:#050507;color:#fff;font-family:Georgia,serif;overflow:hidden;}",
+      "#app{height:100dvh;width:100vw;display:grid;grid-template-columns:1fr 340px;gap:1rem;padding:max(1.5rem,env(safe-area-inset-left)) max(1.5rem,env(safe-area-inset-right)) max(1.5rem,env(safe-area-inset-bottom)) max(1.5rem,env(safe-area-inset-top));box-sizing:border-box;background:radial-gradient(circle at 30% 20%, #12253b 0%, #07090e 55%, #000 100%);}",
+      "#stage{min-width:0;min-height:0;display:flex;flex-direction:column;border:1px solid rgba(56,189,248,.2);border-radius:12px;padding:2rem;background:rgba(2,6,23,.4);clip-path:inset(0 0 0 0);}",
+      "#section{font:700 .9rem/1.1 system-ui,sans-serif;letter-spacing:.18em;text-transform:uppercase;color:#fbbf24;margin-bottom:.5rem;}",
+      "#counter{font:600 .8rem/1.1 system-ui,sans-serif;color:#94a3b8;margin-bottom:.8rem;}",
+      "#point-wrap{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;overflow:hidden;}",
+      "#point{font:400 40px/1.14 Georgia,serif;text-align:center;color:#fff;opacity:0;transform:translateY(12px);text-shadow:0 2px 8px rgba(0,0,0,0.3);animation:slideIn 0.4s ease forwards;overflow:hidden;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:6;}",
+      "@keyframes slideIn{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}",
+      "#hint{font:600 .7rem/1.1 system-ui,sans-serif;color:#64748b;margin-top:1rem;letter-spacing:.1em;text-transform:uppercase;}",
+      "#presenter{display:flex;flex-direction:column;gap:1rem;border:1px solid rgba(148,163,184,.25);border-radius:12px;padding:1.2rem;background:rgba(2,6,23,.9);min-height:0;}",
+      "#presenter h3{margin:0;font-size:.75rem;letter-spacing:.15em;text-transform:uppercase;color:#93c5fd;}",
+      "#notes{flex:1;min-height:0;overflow-y:auto;border:1px solid rgba(148,163,184,.15);border-radius:8px;padding:0.8rem;background:rgba(15,23,42,.5);font-size:.85rem;line-height:1.4;color:#e2e8f0;}",
+      "#controls{display:grid;grid-template-columns:1fr 1fr;gap:.6rem;}",
+      "button{min-height:40px;padding:.6rem;border-radius:8px;border:1px solid rgba(148,163,184,.4);background:rgba(15,23,42,.8);color:#e2e8f0;font-weight:700;cursor:pointer;font-size:.85rem;transition:all 0.2s;}",
+      "button:hover{background:rgba(15,23,42,.95);}",
+      "button:active{transform:scale(0.98);}",
+      "#broadcast{grid-column:1 / -1;border-color:rgba(34,211,238,.4);}",
+      "#broadcast.on{background:rgba(6,182,212,.2);border-color:rgba(34,211,238,.6);color:#67e8f9;}",
+      "#monitor-status{font-size:.75rem;color:#94a3b8;line-height:1.2;}",
+      "@media (max-width:1100px){#app{grid-template-columns:1fr;gap:0.8rem;padding:max(0.8rem,env(safe-area-inset-left)) max(0.8rem,env(safe-area-inset-right)) max(0.8rem,env(safe-area-inset-bottom)) max(0.8rem,env(safe-area-inset-top));}#presenter{order:-1;max-height:30vh;}}@media (max-width:600px){#app{padding:max(0.6rem,env(safe-area-inset-left)) max(0.6rem,env(safe-area-inset-right)) max(2rem,env(safe-area-inset-bottom)) max(0.6rem,env(safe-area-inset-top));}#point{font-size:32px;}#stage{padding:1.2rem;}button{min-height:44px;font-size:.8rem;}}",
+      "</style></head><body>",
+      "<div id=\"app\">",
+      "<div id=\"stage\"><div id=\"section\"></div><div id=\"counter\"></div><div id=\"point-wrap\"><div id=\"point\"></div></div><div id=\"hint\">← → or Space to navigate • B to toggle broadcast</div></div>",
+      "<div id=\"presenter\"><h3>Cues & Notes</h3><div id=\"notes\">No notes.</div><div id=\"monitor-status\">Broadcast: Off</div><div id=\"controls\"><button id=\"prev\">← Prev</button><button id=\"next\">Next →</button><button id=\"broadcast\">📡 Broadcast: Off</button></div></div>",
+      "</div>",
+      "<script>",
+      `const slides=${payload};`,
+      "let i=0,broadcast=false;",
+      "const els={section:document.getElementById('section'),counter:document.getElementById('counter'),point:document.getElementById('point'),notes:document.getElementById('notes'),status:document.getElementById('monitor-status'),broadcast:document.getElementById('broadcast'),prev:document.getElementById('prev'),next:document.getElementById('next')};",
+      "async function broadcastSlide(){",
+      "  if(!broadcast||!slides[i]) return;",
+      "  try{await fetch('/api/monitor/push',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ref:slides[i].section,text:slides[i].audienceText})});els.status.textContent='Broadcast: On ('+(i+1)+'/'+slides.length+')';}",
+      "  catch{els.status.textContent='Broadcast: Failed';}",
+      "}",
+      "function render(){",
+      "  const s=slides[i];",
+      "  els.section.textContent=s.section;els.counter.textContent=(i+1)+' / '+slides.length;els.point.textContent=s.audienceText;els.notes.textContent=(s.speakerCues?.length)?s.speakerCues.join(' • '):'No notes.';",
+      "  els.point.style.animation='none';void els.point.offsetHeight;els.point.style.animation='slideIn 0.4s ease forwards';",
+      "  void broadcastSlide();",
+      "}",
+      "function next(){if(i<slides.length-1){i++;render();}}",
+      "function prev(){if(i>0){i--;render();}}",
+      "function toggleBroadcast(){broadcast=!broadcast;els.broadcast.classList.toggle('on',broadcast);els.broadcast.textContent='📡 Broadcast: '+(broadcast?'On':'Off');els.status.textContent=broadcast?'Broadcast: On':'Broadcast: Off';if(broadcast)void broadcastSlide();}",
+      "els.next.addEventListener('click',next);els.prev.addEventListener('click',prev);els.broadcast.addEventListener('click',toggleBroadcast);",
+      "document.addEventListener('keydown',(e)=>{if(e.key==='ArrowRight'||e.key===' ')e.preventDefault(),next();else if(e.key==='ArrowLeft')e.preventDefault(),prev();else if(e.key.toLowerCase()==='b')e.preventDefault(),toggleBroadcast();});",
+      "document.getElementById('point-wrap').addEventListener('click',next);",
+      "render();",
+      "</script></body></html>",
+    ].join(""));
+    win.document.close();
+    pushToast("Teaching slides launched.", "success");
+  }, [organizedMarkdown, pulpitSections, pushToast]);
+
   const pushToMonitor = useCallback((ref: string, text: string) => {
     lastMonitorRefRef.current = ref;
     setLastDisplayRef(ref);
@@ -876,7 +1081,24 @@ export function SermonAssistantPanel() {
     });
   }, []);
 
+  const stopRangePlayback = useCallback(() => {
+    if (rangePlaybackTimeoutRef.current !== null) {
+      window.clearTimeout(rangePlaybackTimeoutRef.current);
+      rangePlaybackTimeoutRef.current = null;
+    }
+  }, []);
+
+  const updateMonitorDisplayPrefs = useCallback((patch: Partial<MonitorDisplayPrefs>) => {
+    setMonitorDisplayPrefs((prev) => ({ ...prev, ...patch }));
+    void fetch("/api/monitor/push", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ setDisplayPrefs: patch }),
+    });
+  }, []);
+
   const fetchAndInjectScripture = useCallback(async (reference: string) => {
+    stopRangePlayback();
     try {
       const res = await fetch("/api/bible-verse", {
         method: "POST",
@@ -905,9 +1127,13 @@ export function SermonAssistantPanel() {
     } catch {
       // bible-api fetch should fail silently
     }
-  }, [autoPushDisplay, mergeScriptureCards, pushToMonitor]);
+  }, [autoPushDisplay, mergeScriptureCards, pushToMonitor, stopRangePlayback]);
 
-  const fetchReadingRange = useCallback(async (reference: string) => {
+  const fetchReadingRange = useCallback(async (
+    reference: string,
+    options?: { autoPlay?: boolean; intervalMs?: number },
+  ) => {
+    stopRangePlayback();
     try {
       const res = await fetch("/api/bible-verse", {
         method: "POST",
@@ -933,6 +1159,26 @@ export function SermonAssistantPanel() {
       const first = data.verses[0];
       pushToMonitor(first.ref, first.text);
 
+      if (options?.autoPlay && data.verses.length > 1) {
+        const intervalMs = Math.max(1800, options.intervalMs ?? 4500);
+        let nextIndex = 1;
+
+        const playNext = () => {
+          const next = data.verses?.[nextIndex];
+          if (!next) {
+            rangePlaybackTimeoutRef.current = null;
+            return;
+          }
+          setReadingQueueIndex(nextIndex);
+          readingQueueIndexRef.current = nextIndex;
+          pushToMonitor(next.ref, next.text);
+          nextIndex += 1;
+          rangePlaybackTimeoutRef.current = window.setTimeout(playNext, intervalMs);
+        };
+
+        rangePlaybackTimeoutRef.current = window.setTimeout(playNext, intervalMs);
+      }
+
       const cards: ScriptureCard[] = data.verses.map((v) => ({
         id: `${v.ref}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
         ref: v.ref,
@@ -944,7 +1190,93 @@ export function SermonAssistantPanel() {
     } catch {
       // fail silently
     }
-  }, [mergeScriptureCards, pushToMonitor]);
+  }, [mergeScriptureCards, pushToMonitor, stopRangePlayback]);
+
+  const castReferenceFromPulpit = useCallback(async (reference: string) => {
+    const isRange = /\b\d{1,3}:\d{1,3}\s*[-–—]\s*\d{1,3}\b/.test(reference);
+    if (!isRange) {
+      pulpitRangeRefRef.current = "";
+      pulpitRangeVersesRef.current = [];
+      pulpitRangeIndexRef.current = 0;
+      // Always push to monitor on explicit pulpit cast — do not gate on autoPushDisplay/liveMode
+      try {
+        const res = await fetch("/api/bible-verse", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reference, translation: bibleTranslationRef.current }),
+        });
+        if (res.ok) {
+          const data = await res.json() as { reference?: string; text?: string; error?: string };
+          if (!data.error && data.text) {
+            const ref = data.reference ?? reference;
+            const text = data.text.replace(/\n/g, " ").trim();
+            mergeScriptureCards([{ id: `${ref}-${Date.now()}`, ref, text, source: "detected", confidence: 1 }]);
+            pushToMonitor(ref, text);
+            return;
+          }
+        }
+      } catch { /* fall through */ }
+      void fetchAndInjectScripture(reference);
+      return;
+    }
+
+    const normalizedRef = reference.replace(/\s+/g, " ").trim();
+    if (pulpitRangeRefRef.current === normalizedRef && pulpitRangeVersesRef.current.length > 0) {
+      const nextIndex = (pulpitRangeIndexRef.current + 1) % pulpitRangeVersesRef.current.length;
+      pulpitRangeIndexRef.current = nextIndex;
+      const next = pulpitRangeVersesRef.current[nextIndex];
+      setReadingQueue(pulpitRangeVersesRef.current);
+      setReadingQueueIndex(nextIndex);
+      readingQueueRef.current = pulpitRangeVersesRef.current;
+      readingQueueIndexRef.current = nextIndex;
+      pushToMonitor(next.ref, next.text);
+      return;
+    }
+
+    stopRangePlayback();
+    try {
+      const res = await fetch("/api/bible-verse", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          reference: normalizedRef,
+          translation: bibleTranslationRef.current,
+          returnVerses: true,
+        }),
+      });
+      if (!res.ok) {
+        void fetchAndInjectScripture(normalizedRef);
+        return;
+      }
+      const data = await res.json() as { verses?: Array<{ ref: string; text: string }> };
+      const verses = (data.verses ?? []).filter((v) => v.ref && v.text);
+      if (verses.length === 0) {
+        void fetchAndInjectScripture(normalizedRef);
+        return;
+      }
+
+      pulpitRangeRefRef.current = normalizedRef;
+      pulpitRangeVersesRef.current = verses;
+      pulpitRangeIndexRef.current = 0;
+
+      setReadingQueue(verses);
+      setReadingQueueIndex(0);
+      readingQueueRef.current = verses;
+      readingQueueIndexRef.current = 0;
+
+      const cards: ScriptureCard[] = verses.map((v) => ({
+        id: `${v.ref}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        ref: v.ref,
+        text: v.text,
+        source: "detected",
+        confidence: 1,
+      }));
+      mergeScriptureCards(cards);
+      pushToMonitor(verses[0].ref, verses[0].text);
+    } catch {
+      void fetchAndInjectScripture(normalizedRef);
+    }
+  }, [fetchAndInjectScripture, mergeScriptureCards, pushToMonitor, stopRangePlayback]);
 
   const detectReadingIntent = useCallback((chunk: string) => {
     if (!READING_INTENT_REGEX.test(chunk)) return;
@@ -954,6 +1286,7 @@ export function SermonAssistantPanel() {
   }, [fetchReadingRange]);
 
   const advanceReadingQueue = useCallback((targetIndex?: number) => {
+    stopRangePlayback();
     const queue = readingQueueRef.current;
     if (queue.length === 0) return;
     const nextIdx = targetIndex !== undefined ? targetIndex : readingQueueIndexRef.current + 1;
@@ -962,7 +1295,7 @@ export function SermonAssistantPanel() {
     readingQueueIndexRef.current = nextIdx;
     wordsSpokenForVerseRef.current = "";
     pushToMonitor(queue[nextIdx].ref, queue[nextIdx].text);
-  }, [pushToMonitor]);
+  }, [pushToMonitor, stopRangePlayback]);
 
   const detectNextVerse = useCallback((chunk: string, fetchAndInject: (r: string) => void) => {
     const hasQueue = readingQueueRef.current.length > 0;
@@ -1756,6 +2089,153 @@ export function SermonAssistantPanel() {
     ? Math.round((pulpitIndex / (pulpitSections.length - 1)) * 100)
     : latestSection ? 100 : 0;
 
+  const monitorDisplayControls = (compact: boolean) => {
+    const isOpen = compact ? mobileDisplayStyleOpen : desktopDisplayStyleOpen;
+    const toggleOpen = () => {
+      if (compact) {
+        setMobileDisplayStyleOpen((prev) => !prev);
+      } else {
+        setDesktopDisplayStyleOpen((prev) => !prev);
+      }
+    };
+
+    return (
+    <div className={`mt-2 rounded-lg border border-cyan-500/20 bg-cyan-500/5 px-2 py-2 ${compact ? "" : ""}`}>
+      <button
+        type="button"
+        onClick={toggleOpen}
+        className="flex min-h-10 w-full items-center justify-between rounded-md border border-cyan-500/30 bg-cyan-500/10 px-2 text-left"
+        aria-expanded={isOpen}
+      >
+        <div>
+          <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-cyan-300">Display Style</p>
+          <p className="text-[11px] font-semibold text-slate-300">
+            {monitorDisplayPrefs.layout === "lower-third" ? "Lower Third" : "Center"} • {monitorDisplayPrefs.background} • {monitorDisplayPrefs.fontStyle}
+          </p>
+        </div>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} className={`h-4 w-4 text-cyan-300 transition-transform ${isOpen ? "rotate-180" : ""}`}>
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </button>
+
+      {isOpen && <>
+      <div className="mt-2 grid grid-cols-2 gap-1">
+        <button
+          type="button"
+          onClick={() => updateMonitorDisplayPrefs({ layout: "center" })}
+          className={`min-h-10 rounded-md border px-2 text-xs font-bold ${monitorDisplayPrefs.layout === "center" ? "border-cyan-400/70 bg-cyan-500/20 text-cyan-200" : "border-slate-700/80 text-slate-300"}`}
+        >
+          Center
+        </button>
+        <button
+          type="button"
+          onClick={() => updateMonitorDisplayPrefs({ layout: "lower-third" })}
+          className={`min-h-10 rounded-md border px-2 text-xs font-bold ${monitorDisplayPrefs.layout === "lower-third" ? "border-cyan-400/70 bg-cyan-500/20 text-cyan-200" : "border-slate-700/80 text-slate-300"}`}
+        >
+          Lower Third
+        </button>
+      </div>
+
+      <div className={`mt-2 grid gap-2 ${compact ? "grid-cols-1" : "grid-cols-2"}`}>
+        <select
+          value={monitorDisplayPrefs.background}
+          onChange={(e) => updateMonitorDisplayPrefs({ background: e.target.value as MonitorBackgroundId })}
+          className="min-h-10 rounded-md border border-slate-700/80 bg-slate-900/80 px-2 text-base font-semibold text-slate-200"
+          title="Monitor background"
+        >
+          <option value="black">Black</option>
+          <option value="midnight">Midnight</option>
+          <option value="sunrise">Sunrise</option>
+          <option value="ocean">Ocean</option>
+          <option value="charcoal">Charcoal</option>
+          <option value="transparent">Transparent</option>
+        </select>
+        <select
+          value={monitorDisplayPrefs.fontStyle}
+          onChange={(e) => updateMonitorDisplayPrefs({ fontStyle: e.target.value as MonitorFontStyle })}
+          className="min-h-10 rounded-md border border-slate-700/80 bg-slate-900/80 px-2 text-base font-semibold text-slate-200"
+          title="Monitor font style"
+        >
+          <option value="serif">Serif</option>
+          <option value="sans">Sans</option>
+          <option value="display">Display</option>
+        </select>
+        <select
+          value={monitorDisplayPrefs.lowerThirdBackground}
+          onChange={(e) => updateMonitorDisplayPrefs({ lowerThirdBackground: e.target.value as MonitorDisplayPrefs["lowerThirdBackground"] })}
+          className="min-h-10 rounded-md border border-slate-700/80 bg-slate-900/80 px-2 text-base font-semibold text-slate-200"
+          title="Lower-third background mode"
+        >
+          <option value="solid">Lower Third: Solid</option>
+          <option value="glass">Lower Third: Glass</option>
+          <option value="transparent">Lower Third: Transparent</option>
+        </select>
+      </div>
+
+      <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] font-semibold text-slate-300">
+        <label className="block">
+          C Ref {monitorDisplayPrefs.centerRefSize}px
+          <input
+            type="range"
+            min={16}
+            max={90}
+            value={monitorDisplayPrefs.centerRefSize}
+            onChange={(e) => updateMonitorDisplayPrefs({ centerRefSize: Number(e.target.value) })}
+            className="mt-1 w-full"
+          />
+        </label>
+        <label className="block">
+          C Verse {monitorDisplayPrefs.centerVerseSize}px
+          <input
+            type="range"
+            min={28}
+            max={140}
+            value={monitorDisplayPrefs.centerVerseSize}
+            onChange={(e) => updateMonitorDisplayPrefs({ centerVerseSize: Number(e.target.value) })}
+            className="mt-1 w-full"
+          />
+        </label>
+        <label className="block">
+          LT Ref {monitorDisplayPrefs.lowerRefSize}px
+          <input
+            type="range"
+            min={12}
+            max={56}
+            value={monitorDisplayPrefs.lowerRefSize}
+            onChange={(e) => updateMonitorDisplayPrefs({ lowerRefSize: Number(e.target.value) })}
+            className="mt-1 w-full"
+          />
+        </label>
+        <label className="block">
+          LT Verse {monitorDisplayPrefs.lowerVerseSize}px
+          <input
+            type="range"
+            min={20}
+            max={96}
+            value={monitorDisplayPrefs.lowerVerseSize}
+            onChange={(e) => updateMonitorDisplayPrefs({ lowerVerseSize: Number(e.target.value) })}
+            className="mt-1 w-full"
+          />
+        </label>
+      </div>
+
+      <div className="mt-2 flex items-center gap-1 rounded-md border border-slate-700/80 bg-slate-900/50 p-1">
+        {(["compact", "standard", "large"] as const).map((size) => (
+          <button
+            key={size}
+            type="button"
+            onClick={() => updateMonitorDisplayPrefs({ lowerThirdSize: size })}
+            className={`min-h-10 flex-1 rounded-md px-2 text-[11px] font-bold uppercase ${monitorDisplayPrefs.lowerThirdSize === size ? "bg-cyan-500/25 text-cyan-200" : "text-slate-400 hover:bg-slate-800"}`}
+          >
+            {size}
+          </button>
+        ))}
+      </div>
+      </>}
+    </div>
+    );
+  };
+
   return (
     <>
       <section className="relative flex h-full flex-col overflow-hidden rounded-2xl border border-cyan-500/20 glass">
@@ -2298,6 +2778,23 @@ export function SermonAssistantPanel() {
                   )}
                 </div>
                 <div className="flex items-center gap-3">
+                  {/* Mic / transcription toggle — independent of Live cast mode */}
+                  <button
+                    type="button"
+                    title={isRecording ? "Stop transcription (scriptures still cast)" : "Start transcription"}
+                    onClick={() => void toggleRecording()}
+                    className={`flex h-6 w-6 items-center justify-center rounded-full border transition ${
+                      isRecording
+                        ? "border-rose-400/70 bg-rose-500/20 text-rose-300"
+                        : "border-slate-600 bg-slate-800 text-slate-500 hover:text-slate-200"
+                    }`}
+                  >
+                    {isRecording ? (
+                      <svg viewBox="0 0 24 24" fill="currentColor" className="h-3 w-3"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
+                    ) : (
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3 w-3"><path d="M12 4a3 3 0 0 1 3 3v5a3 3 0 1 1-6 0V7a3 3 0 0 1 3-3Z"/><path d="M6 11a6 6 0 0 0 12 0"/><path d="M12 17v3"/></svg>
+                    )}
+                  </button>
                   <label className="flex cursor-pointer items-center gap-1" title="Live mode — auto-push quoted refs to monitor">
                     <span className={`text-[10px] font-bold uppercase ${liveMode ? "text-rose-400" : "text-slate-500"}`}>Live</span>
                     <span className={`relative inline-flex h-4 w-8 shrink-0 rounded-full border transition-colors ${liveMode ? "border-rose-500 bg-rose-500/60" : "border-slate-600 bg-slate-800"}`}>
@@ -2353,6 +2850,8 @@ export function SermonAssistantPanel() {
                   Report
                 </button>
               </div>
+
+              {monitorDisplayControls(false)}
 
               {/* Row 3 (conditional): reading queue nav */}
               {readingQueue.length > 0 && (
@@ -2486,6 +2985,23 @@ export function SermonAssistantPanel() {
                 </p>
               </div>
               <div className="flex items-center gap-3">
+                {/* Mic toggle */}
+                <button
+                  type="button"
+                  title={isRecording ? "Stop transcription" : "Start transcription"}
+                  onClick={() => void toggleRecording()}
+                  className={`flex h-8 w-8 items-center justify-center rounded-full border transition ${
+                    isRecording
+                      ? "border-rose-400/70 bg-rose-500/20 text-rose-300"
+                      : "border-slate-600 bg-slate-800 text-slate-500 hover:text-slate-200"
+                  }`}
+                >
+                  {isRecording ? (
+                    <svg viewBox="0 0 24 24" fill="currentColor" className="h-3.5 w-3.5"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
+                  ) : (
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3.5 w-3.5"><path d="M12 4a3 3 0 0 1 3 3v5a3 3 0 1 1-6 0V7a3 3 0 0 1 3-3Z"/><path d="M6 11a6 6 0 0 0 12 0"/><path d="M12 17v3"/></svg>
+                  )}
+                </button>
                 <label className="flex cursor-pointer items-center gap-1">
                   <span className={`text-[10px] font-bold uppercase ${liveMode ? "text-rose-400" : "text-slate-500"}`}>Live</span>
                   <span className={`relative inline-flex h-4 w-8 shrink-0 rounded-full border transition-colors ${liveMode ? "border-rose-500 bg-rose-500/60" : "border-slate-600 bg-slate-800"}`}>
@@ -2543,6 +3059,8 @@ export function SermonAssistantPanel() {
                 Share
               </button>
             </div>
+
+            {monitorDisplayControls(true)}
 
             {/* Reading queue nav */}
             {readingQueue.length > 0 && (
@@ -2710,13 +3228,22 @@ export function SermonAssistantPanel() {
                 <p className="animate-pulse text-3xl font-black text-cyan-200">{formatElapsed(elapsedPulpitSec)}</p>
               </div>
             </div>
-            <button
-              type="button"
-              onClick={closePulpitMode}
-              className="focus-ring min-h-12 rounded-xl border border-rose-400/40 px-4 text-sm font-bold text-rose-200 hover:bg-rose-500/20"
-            >
-              Exit
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={launchTeachingSlides}
+                className="focus-ring min-h-12 rounded-xl border border-cyan-400/40 px-4 text-sm font-bold text-cyan-200 hover:bg-cyan-500/20"
+              >
+                Teaching Slides
+              </button>
+              <button
+                type="button"
+                onClick={closePulpitMode}
+                className="focus-ring min-h-12 rounded-xl border border-rose-400/40 px-4 text-sm font-bold text-rose-200 hover:bg-rose-500/20"
+              >
+                Exit
+              </button>
+            </div>
           </div>
 
           <div className="border-b border-cyan-500/20 bg-slate-950/70 px-4 py-3">
@@ -2807,6 +3334,54 @@ export function SermonAssistantPanel() {
                 <p className="text-[10px] font-bold uppercase tracking-[0.22em] text-slate-500">Next Up</p>
                 <p className="mt-2 text-lg font-semibold text-slate-200">{nextSection?.title ?? "Final section"}</p>
               </div>
+
+              {/* ── Cast to Monitor panel ─────────────────────────────── */}
+              {(() => {
+                const sectionText = latestSection.blocks.map((b) => b.text).join(" ");
+                const refs = extractScriptureRefs(sectionText);
+                const quotes = latestSection.blocks.filter((b) => b.kind === "quote");
+                const hasCastable = refs.length > 0 || quotes.length > 0;
+                if (!hasCastable) return null;
+                return (
+                  <div className="rounded-2xl border border-violet-500/30 bg-violet-950/40 p-4">
+                    <p className="text-[10px] font-bold uppercase tracking-[0.22em] text-violet-300">Cast to Monitor</p>
+                    {refs.length > 0 && (
+                      <div className="mt-3 space-y-2">
+                        <p className="text-[10px] uppercase tracking-wider text-slate-500">Scripture References</p>
+                        {refs.map((ref) => (
+                          <button
+                            key={ref}
+                            type="button"
+                            onClick={() => castReferenceFromPulpit(ref)}
+                            style={{ touchAction: "manipulation" }}
+                            className="flex min-h-14 w-full items-center justify-between gap-3 rounded-xl border border-violet-500/50 bg-violet-500/15 px-4 py-3 text-left text-sm font-bold text-violet-200 active:bg-violet-500/30"
+                          >
+                            <span>{ref}</span>
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-4 w-4 shrink-0 text-violet-300"><path d="M2 8V6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6"/><path d="M2 12a9 9 0 0 1 8 8"/><path d="M2 16a5 5 0 0 1 4 4"/><circle cx="3" cy="20" r="1"/></svg>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    {quotes.length > 0 && (
+                      <div className="mt-3 space-y-2">
+                        <p className="text-[10px] uppercase tracking-wider text-slate-500">Quotes / Notes</p>
+                        {quotes.map((block, i) => (
+                          <button
+                            key={i}
+                            type="button"
+                            onClick={() => pushToMonitor(latestSection.title, block.text)}
+                            className="flex min-h-12 w-full items-start justify-between gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-left text-sm font-medium italic text-amber-100 active:bg-amber-500/20"
+                          >
+                            <span className="line-clamp-2 leading-snug">{block.text}</span>
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="mt-0.5 h-4 w-4 shrink-0 text-amber-300"><path d="M2 8V6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6"/><path d="M2 12a9 9 0 0 1 8 8"/><path d="M2 16a5 5 0 0 1 4 4"/><circle cx="3" cy="20" r="1"/></svg>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
               <div className="rounded-2xl border border-slate-700 bg-slate-950/80 p-4">
                 <p className="text-[10px] font-bold uppercase tracking-[0.22em] text-slate-500">Controls</p>
                 <div className="mt-3 space-y-2 text-sm text-slate-300">
@@ -2817,6 +3392,44 @@ export function SermonAssistantPanel() {
               </div>
             </aside>
           </div>
+
+          {/* ── Mobile: Cast to monitor strip (scriptures in current section) ─── */}
+          {(() => {
+            const sectionText = latestSection.blocks.map((b) => b.text).join(" ");
+            const refs = extractScriptureRefs(sectionText);
+            const quotes = latestSection.blocks.filter((b) => b.kind === "quote");
+            if (refs.length === 0 && quotes.length === 0) return null;
+            return (
+              <div className="shrink-0 border-t border-violet-500/20 bg-violet-950/30 px-4 py-2 lg:hidden">
+                <p className="mb-1.5 text-[10px] font-bold uppercase tracking-[0.18em] text-violet-300">Cast to Monitor</p>
+                <div className="flex gap-2 overflow-x-auto pb-1">
+                  {refs.map((ref) => (
+                    <button
+                      key={ref}
+                      type="button"
+                      onClick={() => castReferenceFromPulpit(ref)}
+                      style={{ touchAction: "manipulation" }}
+                      className="flex min-h-14 shrink-0 items-center gap-1.5 rounded-xl border border-violet-500/50 bg-violet-500/15 px-3 py-3 text-sm font-bold text-violet-200 active:bg-violet-500/30"
+                    >
+                      {ref}
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3.5 w-3.5 text-violet-300"><path d="M2 8V6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6"/><path d="M2 12a9 9 0 0 1 8 8"/><path d="M2 16a5 5 0 0 1 4 4"/><circle cx="3" cy="20" r="1"/></svg>
+                    </button>
+                  ))}
+                  {quotes.map((block, i) => (
+                    <button
+                      key={`q-${i}`}
+                      type="button"
+                      onClick={() => pushToMonitor(latestSection.title, block.text)}
+                      className="flex min-h-12 shrink-0 items-center gap-1.5 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 text-sm font-medium italic text-amber-100 active:bg-amber-500/20"
+                    >
+                      <span className="max-w-[160px] truncate">{block.text}</span>
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3.5 w-3.5 shrink-0 text-amber-300"><path d="M2 8V6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6"/><path d="M2 12a9 9 0 0 1 8 8"/><path d="M2 16a5 5 0 0 1 4 4"/><circle cx="3" cy="20" r="1"/></svg>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
 
           <div className="grid shrink-0 grid-cols-2 gap-3 border-t border-amber-400/30 p-4 pb-8 lg:pb-4">
             <button

@@ -15,10 +15,47 @@ export type MonitorState = {
   cleared: boolean;
   operatorQueue: VerseQueueItem[];
   queueMode: boolean;
+  displayPrefs: MonitorDisplayPrefs;
+};
+
+export type MonitorBackgroundId = "black" | "midnight" | "sunrise" | "ocean" | "charcoal" | "transparent";
+export type MonitorFontStyle = "serif" | "sans" | "display";
+export type LowerThirdSize = "compact" | "standard" | "large";
+
+export type MonitorDisplayPrefs = {
+  layout: "center" | "lower-third";
+  background: MonitorBackgroundId;
+  fontStyle: MonitorFontStyle;
+  lowerThirdBackground: "solid" | "glass" | "transparent";
+  centerRefSize: number;
+  centerVerseSize: number;
+  lowerRefSize: number;
+  lowerVerseSize: number;
+  lowerThirdSize: LowerThirdSize;
+};
+
+export const DEFAULT_MONITOR_DISPLAY_PREFS: MonitorDisplayPrefs = {
+  layout: "center",
+  background: "black",
+  fontStyle: "serif",
+  lowerThirdBackground: "solid",
+  centerRefSize: 34,
+  centerVerseSize: 72,
+  lowerRefSize: 18,
+  lowerVerseSize: 40,
+  lowerThirdSize: "standard",
 };
 
 function initial(): MonitorState {
-  return { ref: "", text: "", updatedAt: 0, cleared: true, operatorQueue: [], queueMode: false };
+  return {
+    ref: "",
+    text: "",
+    updatedAt: 0,
+    cleared: true,
+    operatorQueue: [],
+    queueMode: false,
+    displayPrefs: { ...DEFAULT_MONITOR_DISPLAY_PREFS },
+  };
 }
 
 export function getMonitorState(): MonitorState {
@@ -26,6 +63,9 @@ export function getMonitorState(): MonitorState {
   // Normalize: guard against old state that predates the operatorQueue field
   if (!Array.isArray(global.__monitorState.operatorQueue)) {
     global.__monitorState.operatorQueue = [];
+  }
+  if (!global.__monitorState.displayPrefs) {
+    global.__monitorState.displayPrefs = { ...DEFAULT_MONITOR_DISPLAY_PREFS };
   }
   return global.__monitorState;
 }
@@ -72,4 +112,17 @@ export function operatorSkip(): void {
 export function setQueueMode(enabled: boolean): void {
   const prev = getMonitorState();
   global.__monitorState = { ...prev, queueMode: enabled, updatedAt: Date.now() };
+}
+
+export function setDisplayPrefs(partial: Partial<MonitorDisplayPrefs>): void {
+  const prev = getMonitorState();
+  global.__monitorState = {
+    ...prev,
+    updatedAt: Date.now(),
+    displayPrefs: {
+      ...DEFAULT_MONITOR_DISPLAY_PREFS,
+      ...prev.displayPrefs,
+      ...partial,
+    },
+  };
 }
