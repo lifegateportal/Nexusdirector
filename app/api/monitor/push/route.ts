@@ -2,11 +2,14 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   setMonitorDisplay,
   clearMonitorDisplay,
+  setStreamDisplay,
+  clearStreamDisplay,
   enqueueForOperator,
   operatorGo,
   operatorSkip,
   setQueueMode,
   setDisplayPrefs,
+  setStreamDisplayPrefs,
   getMonitorState,
 } from "@/lib/monitor-state";
 import { z } from "zod";
@@ -14,8 +17,8 @@ import { z } from "zod";
 export const runtime = "nodejs";
 
 type PushBody =
-  | { ref: string; text: string; clear?: never; operatorGo?: never; operatorSkip?: never; setQueueMode?: never }
-  | { clear: true; ref?: never; text?: never }
+  | { ref: string; text: string; source?: "app" | "media"; clear?: never; operatorGo?: never; operatorSkip?: never; setQueueMode?: never }
+  | { clear: true; source?: "app" | "media"; ref?: never; text?: never }
   | { operatorGo: true; ref?: never; text?: never }
   | { operatorSkip: true; ref?: never; text?: never }
   | { setQueueMode: boolean; ref?: never; text?: never }
@@ -31,6 +34,7 @@ type PushBody =
         lowerVerseSize?: number;
         lowerThirdSize?: "compact" | "standard" | "large";
       };
+      source?: "app" | "media";
       ref?: never;
       text?: never;
     };
@@ -57,6 +61,7 @@ export async function POST(req: NextRequest) {
 
   if (body.clear === true) {
     clearMonitorDisplay();
+    if (body.source === "app") clearStreamDisplay();
     return NextResponse.json({ ok: true });
   }
 
@@ -80,16 +85,26 @@ export async function POST(req: NextRequest) {
     if (!parsed.success) {
       return NextResponse.json({ error: "Invalid display preferences" }, { status: 400 });
     }
-    setDisplayPrefs(parsed.data);
+    const source = body.source === "app" ? "app" : "media";
+    if (source === "app") {
+      setDisplayPrefs(parsed.data);
+      setStreamDisplayPrefs(parsed.data);
+    } else {
+      setDisplayPrefs(parsed.data);
+    }
     return NextResponse.json({ ok: true, state: getMonitorState() });
   }
 
   if (typeof body.ref === "string" && typeof body.text === "string") {
+    const source = body.source === "app" ? "app" : "media";
     const state = getMonitorState();
-    if (state.queueMode) {
+    if (state.queueMode && source !== "app") {
       enqueueForOperator(body.ref, body.text);
     } else {
       setMonitorDisplay(body.ref, body.text);
+    }
+    if (source === "app") {
+      setStreamDisplay(body.ref, body.text);
     }
     return NextResponse.json({ ok: true });
   }

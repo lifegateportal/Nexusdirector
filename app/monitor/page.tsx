@@ -54,9 +54,30 @@ type MonitorState = {
   text: string;
   updatedAt: number;
   cleared: boolean;
+  stream: {
+    ref: string;
+    text: string;
+    updatedAt: number;
+    cleared: boolean;
+  };
   operatorQueue: VerseQueueItem[];
   queueMode: boolean;
   displayPrefs: MonitorDisplayPrefs;
+  streamDisplayPrefs: MonitorDisplayPrefs;
+};
+
+type MonitorChannel = "primary" | "stream";
+
+const STREAM_DISPLAY_PREFS: MonitorDisplayPrefs = {
+  layout: "lower-third",
+  background: "black",
+  fontStyle: "serif",
+  lowerThirdBackground: "solid",
+  centerRefSize: DEFAULT_DISPLAY_PREFS.centerRefSize,
+  centerVerseSize: DEFAULT_DISPLAY_PREFS.centerVerseSize,
+  lowerRefSize: DEFAULT_DISPLAY_PREFS.lowerRefSize,
+  lowerVerseSize: DEFAULT_DISPLAY_PREFS.lowerVerseSize,
+  lowerThirdSize: "standard",
 };
 
 function stepSequentialRef(ref: string, delta: number): string | null {
@@ -151,9 +172,33 @@ function MonitorPageInner() {
   const lowerThirdVerseRef = useRef<HTMLParagraphElement | null>(null);
 
   const displayOnly = searchParams.get("displayOnly") === "1";
+  const monitorChannel: MonitorChannel = searchParams.get("channel") === "stream" ? "stream" : "primary";
+  const activeDisplay = useMemo(() => {
+    if (!state) return null;
+    if (monitorChannel === "stream") {
+      return {
+        ref: state.stream?.ref ?? "",
+        text: state.stream?.text ?? "",
+        updatedAt: state.stream?.updatedAt ?? 0,
+        cleared: state.stream?.cleared ?? true,
+      };
+    }
+    return {
+      ref: state.ref,
+      text: state.text,
+      updatedAt: state.updatedAt,
+      cleared: state.cleared,
+    };
+  }, [monitorChannel, state]);
   const displayPrefs = useMemo(
-    () => ({ ...DEFAULT_DISPLAY_PREFS, ...(state?.displayPrefs ?? {}) }),
-    [state?.displayPrefs],
+    () => {
+      if (monitorChannel === "stream") {
+        const streamPrefs = { ...DEFAULT_DISPLAY_PREFS, ...(state?.streamDisplayPrefs ?? {}) };
+        return { ...STREAM_DISPLAY_PREFS, ...streamPrefs, layout: "lower-third" };
+      }
+      return { ...DEFAULT_DISPLAY_PREFS, ...(state?.displayPrefs ?? {}) };
+    },
+    [monitorChannel, state?.displayPrefs, state?.streamDisplayPrefs],
   );
   const fontFamily = FONT_FAMILY[displayPrefs.fontStyle];
   const backgroundStyle = useMemo(() => {
@@ -163,7 +208,7 @@ function MonitorPageInner() {
     }
     return BACKGROUND_STYLES[displayPrefs.background];
   }, [displayOnly, displayPrefs.background]);
-  const isLive = state && !state.cleared && state.ref;
+  const isLive = Boolean(activeDisplay && !activeDisplay.cleared && activeDisplay.ref);
   const isLowerThirdLayout = displayPrefs.layout === "lower-third";
   const manualBookSuggestions = useMemo(() => {
     const prefix = extractBookPrefixForSuggest(manualRefInput);
@@ -217,13 +262,16 @@ function MonitorPageInner() {
       if (res.status === 401) { setAuthed(false); stopPolling(); return; }
       if (!res.ok) return;
       const data = await res.json() as MonitorState;
-      if (data.updatedAt !== lastUpdatedAt.current) {
-        lastUpdatedAt.current = data.updatedAt;
+      const incomingUpdatedAt = monitorChannel === "stream"
+        ? (data.stream?.updatedAt ?? 0)
+        : data.updatedAt;
+      if (incomingUpdatedAt !== lastUpdatedAt.current) {
+        lastUpdatedAt.current = incomingUpdatedAt;
         setState(data);
         if (data.queueMode && data.operatorQueue.length > 0) setShowQueue(true);
       }
     } catch { /* network blip */ }
-  }, []);
+  }, [monitorChannel]);
 
   const stopPolling = () => {
     if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
@@ -240,7 +288,9 @@ function MonitorPageInner() {
         const res = await fetch("/api/monitor/state");
         if (res.ok) {
           const data = await res.json() as MonitorState;
-          lastUpdatedAt.current = data.updatedAt;
+          lastUpdatedAt.current = monitorChannel === "stream"
+            ? (data.stream?.updatedAt ?? 0)
+            : data.updatedAt;
           setState(data);
           setAuthed(true);
           startPolling();
@@ -253,7 +303,9 @@ function MonitorPageInner() {
           const retry = await fetch("/api/monitor/state");
           if (retry.ok) {
             const data = await retry.json() as MonitorState;
-            lastUpdatedAt.current = data.updatedAt;
+            lastUpdatedAt.current = monitorChannel === "stream"
+              ? (data.stream?.updatedAt ?? 0)
+              : data.updatedAt;
             setState(data);
             setAuthed(true);
             startPolling();
@@ -267,7 +319,7 @@ function MonitorPageInner() {
         setAuthed(false);
     })();
     return stopPolling;
-  }, [startPolling]);
+  }, [monitorChannel, startPolling]);
 
   // ─── Operator actions ─────────────────────────────────────────────────────
   const operatorGo = async () => {
@@ -308,7 +360,7 @@ function MonitorPageInner() {
     await fetch("/api/monitor/push", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ setDisplayPrefs: patch }),
+      body: JSON.stringify({ setDisplayPrefs: patch, source: "media" }),
     });
     void poll();
   };
@@ -364,7 +416,7 @@ function MonitorPageInner() {
   };
 
   const handleStepVerse = async (delta: -1 | 1) => {
-    const currentRef = state?.ref?.trim() ?? "";
+    const currentRef = activeDisplay?.ref?.trim() ?? "";
     if (!currentRef) return;
     const targetRef = stepSequentialRef(currentRef, delta);
     if (!targetRef) return;
@@ -423,7 +475,8 @@ function MonitorPageInner() {
   }, []);
 
   const openFullscreenOutput = () => {
-    const href = `${window.location.origin}/monitor?displayOnly=1`;
+    const channelQuery = monitorChannel === "stream" ? "&channel=stream" : "";
+    const href = `${window.location.origin}/monitor?displayOnly=1${channelQuery}`;
     const win = window.open(href, "NexusMonitorFullscreen", "noopener,noreferrer");
     if (!win) return;
     win.focus();
@@ -478,7 +531,7 @@ function MonitorPageInner() {
     fitCenter();
     window.addEventListener("resize", fitCenter);
     return () => window.removeEventListener("resize", fitCenter);
-  }, [displayPrefs.centerRefSize, displayPrefs.centerVerseSize, isLive, isLowerThirdLayout, state?.ref, state?.text]);
+  }, [activeDisplay?.ref, activeDisplay?.text, displayPrefs.centerRefSize, displayPrefs.centerVerseSize, isLive, isLowerThirdLayout]);
 
   useLayoutEffect(() => {
     if (!isLowerThirdLayout || !isLive) {
@@ -530,7 +583,7 @@ function MonitorPageInner() {
     fitLowerThird();
     window.addEventListener("resize", fitLowerThird);
     return () => window.removeEventListener("resize", fitLowerThird);
-  }, [displayPrefs.lowerRefSize, displayPrefs.lowerThirdBackground, displayPrefs.lowerThirdSize, displayPrefs.lowerVerseSize, isLive, isLowerThirdLayout, state?.text, state?.ref]);
+  }, [activeDisplay?.ref, activeDisplay?.text, displayPrefs.lowerRefSize, displayPrefs.lowerThirdBackground, displayPrefs.lowerThirdSize, displayPrefs.lowerVerseSize, isLive, isLowerThirdLayout]);
 
   // ─── Controls auto-hide ───────────────────────────────────────────────────
   const revealControls = () => {
@@ -623,7 +676,7 @@ function MonitorPageInner() {
           {isLive ? (
             <div
               ref={centerWrapperRef}
-              key={`${state.ref}-${state.updatedAt}`}
+              key={`${activeDisplay?.ref ?? ""}-${activeDisplay?.updatedAt ?? 0}`}
               className="mx-auto flex h-[92dvh] w-full max-w-5xl flex-col items-center justify-center overflow-hidden px-12 text-center"
               style={{ animation: "fadeUp 0.5s ease both" }}
             >
@@ -636,7 +689,7 @@ function MonitorPageInner() {
                   fontSize: `${autoCenterRefSize / 16}rem`,
                 }}
               >
-                {state.ref}
+                {activeDisplay?.ref ?? ""}
               </p>
               <p
                 ref={centerVerseRef}
@@ -647,7 +700,7 @@ function MonitorPageInner() {
                   fontSize: `${autoCenterVerseSize / 16}rem`,
                 }}
               >
-                &ldquo;{state.text}&rdquo;
+                &ldquo;{activeDisplay?.text ?? ""}&rdquo;
               </p>
             </div>
           ) : (
@@ -674,7 +727,7 @@ function MonitorPageInner() {
           {/* lower-thirds bar */}
           {isLive && (
             <div
-              key={`${state.ref}-${state.updatedAt}`}
+              key={`${activeDisplay?.ref ?? ""}-${activeDisplay?.updatedAt ?? 0}`}
               className="absolute bottom-0 left-0 right-0 overflow-hidden"
               style={{ animation: "slideUp 0.45s ease both", maxHeight: "33.333dvh" }}
             >
@@ -694,7 +747,7 @@ function MonitorPageInner() {
                     fontSize: `${autoLowerRefSize / 16}rem`,
                   }}
                 >
-                  {state.ref}
+                  {activeDisplay?.ref ?? ""}
                 </p>
                 <p
                   ref={lowerThirdVerseRef}
@@ -704,7 +757,7 @@ function MonitorPageInner() {
                     fontSize: `${autoLowerVerseSize / 16}rem`,
                   }}
                 >
-                  &ldquo;{state.text}&rdquo;
+                  &ldquo;{activeDisplay?.text ?? ""}&rdquo;
                 </p>
               </div>
             </div>

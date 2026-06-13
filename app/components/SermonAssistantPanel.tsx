@@ -1148,7 +1148,7 @@ export function SermonAssistantPanel() {
       "const els={section:document.getElementById('section'),counter:document.getElementById('counter'),point:document.getElementById('point'),notes:document.getElementById('notes'),status:document.getElementById('monitor-status'),broadcast:document.getElementById('broadcast'),prev:document.getElementById('prev'),next:document.getElementById('next')};",
       "async function broadcastSlide(){",
       "  if(!broadcast||!slides[i]) return;",
-      "  try{await fetch('/api/monitor/push',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ref:slides[i].section,text:slides[i].audienceText})});els.status.textContent='Broadcast: On ('+(i+1)+'/'+slides.length+')';}",
+      "  try{await fetch('/api/monitor/push',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ref:slides[i].section,text:slides[i].audienceText,source:'app'})});els.status.textContent='Broadcast: On ('+(i+1)+'/'+slides.length+')';}",
       "  catch{els.status.textContent='Broadcast: Failed';}",
       "}",
       "function render(){",
@@ -1188,7 +1188,7 @@ export function SermonAssistantPanel() {
     void fetch("/api/monitor/push", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ref, text }),
+      body: JSON.stringify({ ref, text, source: "app" }),
     });
   }, [mergeScriptureCards]);
 
@@ -1200,7 +1200,7 @@ export function SermonAssistantPanel() {
     void fetch("/api/monitor/push", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ clear: true }),
+      body: JSON.stringify({ clear: true, source: "app" }),
     });
   }, []);
 
@@ -1216,7 +1216,7 @@ export function SermonAssistantPanel() {
     void fetch("/api/monitor/push", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ setDisplayPrefs: patch }),
+      body: JSON.stringify({ setDisplayPrefs: patch, source: "app" }),
     });
   }, []);
 
@@ -3048,6 +3048,18 @@ export function SermonAssistantPanel() {
                 </button>
                 <button
                   type="button"
+                  title="Copy streaming monitor link"
+                  onClick={() => {
+                    const url = `${window.location.origin}/monitor?displayOnly=1&channel=stream`;
+                    void navigator.clipboard.writeText(url).then(() => pushToast("Streaming monitor link copied!", "success"));
+                  }}
+                  className="focus-ring flex h-7 items-center gap-1 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2 text-[10px] font-bold uppercase tracking-wider text-emerald-300 transition hover:bg-emerald-500/20"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3 w-3"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+                  Stream
+                </button>
+                <button
+                  type="button"
                   title="Download scripture reference report (.docx)"
                   onClick={() => void exportReferenceReport()}
                   className="focus-ring flex h-7 items-center gap-1 rounded-md border border-slate-600/60 bg-slate-800/50 px-2 text-[10px] font-bold uppercase tracking-wider text-slate-400 transition hover:bg-slate-700/70 hover:text-slate-200"
@@ -3331,6 +3343,17 @@ export function SermonAssistantPanel() {
               >
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3.5 w-3.5"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
                 Share
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const url = `${window.location.origin}/monitor?displayOnly=1&channel=stream`;
+                  void navigator.clipboard.writeText(url).then(() => pushToast("Streaming monitor link copied!", "success"));
+                }}
+                className="flex h-9 items-center gap-1 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 text-xs font-bold uppercase tracking-wider text-emerald-300"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3.5 w-3.5"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+                Stream
               </button>
             </div>
 
