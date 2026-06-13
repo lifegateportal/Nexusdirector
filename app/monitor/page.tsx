@@ -8,6 +8,7 @@ type VerseQueueItem = { ref: string; text: string };
 type MonitorBackgroundId = "black" | "midnight" | "sunrise" | "ocean" | "charcoal" | "transparent";
 type MonitorFontStyle = "serif" | "sans" | "display";
 type LowerThirdSize = "compact" | "standard" | "large";
+type BibleTranslationCode = "web" | "kjv" | "asv" | "ylt" | "niv" | "nlt" | "nkjv" | "amp" | "msg";
 
 type MonitorDisplayPrefs = {
   layout: "center" | "lower-third";
@@ -58,6 +59,63 @@ type MonitorState = {
   displayPrefs: MonitorDisplayPrefs;
 };
 
+function stepSequentialRef(ref: string, delta: number): string | null {
+  const m = ref.match(/^((?:[1-3]\s+)?[A-Za-z]+(?:\s+[A-Za-z]+)?)\s+(\d+):(\d+)$/);
+  if (!m) return null;
+  const nextVerse = parseInt(m[3], 10) + delta;
+  if (nextVerse < 1) return null;
+  return `${m[1]} ${m[2]}:${nextVerse}`;
+}
+
+const BIBLE_BOOK_SUGGESTIONS = [
+  "Genesis", "Exodus", "Leviticus", "Numbers", "Deuteronomy", "Joshua", "Judges", "Ruth",
+  "1 Samuel", "2 Samuel", "1 Kings", "2 Kings", "1 Chronicles", "2 Chronicles", "Ezra", "Nehemiah", "Esther",
+  "Job", "Psalms", "Proverbs", "Ecclesiastes", "Song of Solomon", "Isaiah", "Jeremiah", "Lamentations",
+  "Ezekiel", "Daniel", "Hosea", "Joel", "Amos", "Obadiah", "Jonah", "Micah", "Nahum", "Habakkuk",
+  "Zephaniah", "Haggai", "Zechariah", "Malachi", "Matthew", "Mark", "Luke", "John", "Acts", "Romans",
+  "1 Corinthians", "2 Corinthians", "Galatians", "Ephesians", "Philippians", "Colossians", "1 Thessalonians",
+  "2 Thessalonians", "1 Timothy", "2 Timothy", "Titus", "Philemon", "Hebrews", "James", "1 Peter", "2 Peter",
+  "1 John", "2 John", "3 John", "Jude", "Revelation",
+] as const;
+
+const TRANSLATION_ALIASES: Array<{ pattern: RegExp; code: BibleTranslationCode }> = [
+  { pattern: /\bnew\s+international\s+version\b|\bniv\b/i, code: "niv" },
+  { pattern: /\bnew\s+living\s+translation\b|\bnlt\b/i, code: "nlt" },
+  { pattern: /\bnew\s+king\s+james(?:\s+version)?\b|\bnkjv\b/i, code: "nkjv" },
+  { pattern: /\bking\s+james(?:\s+version)?\b|\bkjv\b/i, code: "kjv" },
+  { pattern: /\bamerican\s+standard\s+version\b|\basv\b/i, code: "asv" },
+  { pattern: /\byoung'?s\s+literal\s+translation\b|\bylt\b/i, code: "ylt" },
+  { pattern: /\bworld\s+english\s+bible\b|\bweb\b/i, code: "web" },
+  { pattern: /\bamplified(?:\s+bible)?\b|\bamp\b/i, code: "amp" },
+  { pattern: /\bthe\s+message\b|\bmsg\b/i, code: "msg" },
+];
+
+function splitReferenceAndTranslation(raw: string, fallback: BibleTranslationCode): { reference: string; translation: BibleTranslationCode } {
+  const trimmed = raw.trim().replace(/\s+/g, " ");
+  for (const alias of TRANSLATION_ALIASES) {
+    const match = trimmed.match(alias.pattern);
+    if (!match) continue;
+    const start = match.index ?? -1;
+    const token = match[0];
+    if (start < 0) continue;
+    const cleaned = `${trimmed.slice(0, start)} ${trimmed.slice(start + token.length)}`.replace(/\s+/g, " ").trim();
+    if (cleaned) return { reference: cleaned, translation: alias.code };
+  }
+  return { reference: trimmed, translation: fallback };
+}
+
+function normalizeBookToken(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9\s]/g, "").replace(/\s+/g, " ").trim();
+}
+
+function extractBookPrefixForSuggest(input: string): string {
+  const trimmed = input.trimStart();
+  if (!trimmed) return "";
+  if (/[:]/.test(trimmed)) return "";
+  const match = trimmed.match(/^([1-3]?\s*[A-Za-z\s]+)/);
+  return match ? match[1].trim() : "";
+}
+
 function MonitorPageInner() {
   const searchParams = useSearchParams();
   const [authed, setAuthed] = useState<boolean | null>(null);
@@ -74,7 +132,9 @@ function MonitorPageInner() {
   const [manualRefInput, setManualRefInput] = useState("");
   const [manualTextInput, setManualTextInput] = useState("");
   const [manualBusy, setManualBusy] = useState(false);
+  const [manualStepBusy, setManualStepBusy] = useState(false);
   const [manualError, setManualError] = useState("");
+  const [manualRefFocused, setManualRefFocused] = useState(false);
   const [autoCenterRefSize, setAutoCenterRefSize] = useState(DEFAULT_DISPLAY_PREFS.centerRefSize);
   const [autoCenterVerseSize, setAutoCenterVerseSize] = useState(DEFAULT_DISPLAY_PREFS.centerVerseSize);
   const [autoLowerRefSize, setAutoLowerRefSize] = useState(DEFAULT_DISPLAY_PREFS.lowerRefSize);
@@ -105,6 +165,14 @@ function MonitorPageInner() {
   }, [displayOnly, displayPrefs.background]);
   const isLive = state && !state.cleared && state.ref;
   const isLowerThirdLayout = displayPrefs.layout === "lower-third";
+  const manualBookSuggestions = useMemo(() => {
+    const prefix = extractBookPrefixForSuggest(manualRefInput);
+    const normalizedPrefix = normalizeBookToken(prefix);
+    if (!normalizedPrefix) return [] as string[];
+    return BIBLE_BOOK_SUGGESTIONS
+      .filter((book) => normalizeBookToken(book).startsWith(normalizedPrefix))
+      .slice(0, 8);
+  }, [manualRefInput]);
 
   // ─── Auth ────────────────────────────────────────────────────────────────
   const handleLogin = async (e: React.FormEvent) => {
@@ -246,7 +314,9 @@ function MonitorPageInner() {
   };
 
   const handleManualMonitorPush = async () => {
-    const ref = manualRefInput.trim();
+    const parsed = splitReferenceAndTranslation(manualRefInput, "web");
+    const ref = parsed.reference;
+    const translation = parsed.translation;
     let text = manualTextInput.trim();
     if (!ref) {
       setManualError("Enter a scripture reference.");
@@ -260,7 +330,7 @@ function MonitorPageInner() {
         const verseRes = await fetch("/api/bible-verse", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ reference: ref, translation: "web" }),
+          body: JSON.stringify({ reference: ref, translation }),
         });
         if (!verseRes.ok) {
           setManualError("Could not fetch verse text. Add it manually.");
@@ -290,6 +360,52 @@ function MonitorPageInner() {
       setManualError("Manual cast failed. Try again.");
     } finally {
       setManualBusy(false);
+    }
+  };
+
+  const handleStepVerse = async (delta: -1 | 1) => {
+    const currentRef = state?.ref?.trim() ?? "";
+    if (!currentRef) return;
+    const targetRef = stepSequentialRef(currentRef, delta);
+    if (!targetRef) return;
+
+    setManualStepBusy(true);
+    setManualError("");
+    try {
+      const verseRes = await fetch("/api/bible-verse", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reference: targetRef, translation: "web" }),
+      });
+      if (!verseRes.ok) {
+        setManualError("Could not fetch that verse.");
+        return;
+      }
+      const verseData = await verseRes.json() as { reference?: string; text?: string; error?: string };
+      if (verseData.error || !verseData.text) {
+        setManualError("Could not fetch that verse.");
+        return;
+      }
+
+      const ref = (verseData.reference ?? targetRef).trim();
+      const text = verseData.text.trim();
+      const res = await fetch("/api/monitor/push", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ref, text }),
+      });
+      if (!res.ok) {
+        setManualError("Could not update monitor verse.");
+        return;
+      }
+
+      setManualRefInput(ref);
+      setManualTextInput(text);
+      void poll();
+    } catch {
+      setManualError("Could not update monitor verse.");
+    } finally {
+      setManualStepBusy(false);
     }
   };
 
@@ -641,13 +757,36 @@ function MonitorPageInner() {
           <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-violet-300">Manual Scripture</p>
           <p className="mt-1 text-[11px] text-white/55">Use this when auto live detection misses a verse.</p>
           <div className="mt-2 grid gap-2">
-            <input
-              type="text"
-              value={manualRefInput}
-              onChange={(e) => setManualRefInput(e.target.value)}
-              placeholder="Reference (e.g. Romans 8:28)"
-              className="min-h-[48px] rounded-lg border border-white/15 bg-black/50 px-3 text-base text-white placeholder:text-white/30 outline-none focus:border-violet-400/70"
-            />
+            <div className="relative">
+              <input
+                type="text"
+                value={manualRefInput}
+                onChange={(e) => setManualRefInput(e.target.value)}
+                onFocus={() => setManualRefFocused(true)}
+                onBlur={() => window.setTimeout(() => setManualRefFocused(false), 100)}
+                placeholder="Reference (e.g. Romans 8:28)"
+                className="min-h-[48px] w-full rounded-lg border border-white/15 bg-black/50 px-3 text-base text-white placeholder:text-white/30 outline-none focus:border-violet-400/70"
+              />
+              {manualRefFocused && manualBookSuggestions.length > 0 && (
+                <div className="absolute left-0 right-0 top-[calc(100%+0.35rem)] z-20 overflow-hidden rounded-lg border border-white/20 bg-black shadow-2xl">
+                  {manualBookSuggestions.map((book) => (
+                    <button
+                      key={book}
+                      type="button"
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        const suffix = manualRefInput.match(/\s+\d.*$/)?.[0] ?? "";
+                        setManualRefInput(`${book}${suffix}`.trim());
+                        setManualRefFocused(false);
+                      }}
+                      className="flex min-h-[42px] w-full items-center px-3 text-left text-sm text-white/85 hover:bg-white/10"
+                    >
+                      {book}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
             <textarea
               value={manualTextInput}
               onChange={(e) => setManualTextInput(e.target.value)}
@@ -663,6 +802,24 @@ function MonitorPageInner() {
             >
               {manualBusy ? "Sending..." : (state?.queueMode ? "Add To Queue" : "Cast Now")}
             </button>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => void handleStepVerse(-1)}
+                disabled={manualStepBusy || !stepSequentialRef(state?.ref ?? "", -1)}
+                className="min-h-[44px] rounded-lg border border-cyan-400/40 bg-cyan-500/10 px-3 text-[11px] font-bold uppercase tracking-[0.16em] text-cyan-200 transition hover:bg-cyan-500/20 disabled:opacity-40"
+              >
+                Previous Verse
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleStepVerse(1)}
+                disabled={manualStepBusy || !stepSequentialRef(state?.ref ?? "", 1)}
+                className="min-h-[44px] rounded-lg border border-cyan-400/40 bg-cyan-500/10 px-3 text-[11px] font-bold uppercase tracking-[0.16em] text-cyan-200 transition hover:bg-cyan-500/20 disabled:opacity-40"
+              >
+                Next Verse
+              </button>
+            </div>
             {manualError && <p className="text-xs text-red-300">{manualError}</p>}
           </div>
         </div>

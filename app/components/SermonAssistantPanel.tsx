@@ -26,6 +26,7 @@ type CadencePoint = {
 };
 
 type SpeechLanguage = "auto" | "english" | "spanish" | "french" | "portuguese" | "german" | "swahili" | "twi" | "kikuyu";
+type BibleTranslationCode = "web" | "kjv" | "asv" | "ylt" | "niv" | "nlt" | "nkjv" | "amp" | "msg";
 
 type PulpitBlock = {
   kind: "paragraph" | "bullet" | "quote" | "subheading";
@@ -181,6 +182,50 @@ const READING_INTENT_REGEX = /\b(?:i(?:'m| am) (?:now )?reading|(?:let(?:'s| us)
 const NEXT_VERSE_REGEX = /\bnext verse\b/i;
 const VERSE_NUMBER_REGEX = /\bverse\s+(\d+)\b/i;
 
+const BIBLE_BOOK_SUGGESTIONS = [
+  "Genesis", "Exodus", "Leviticus", "Numbers", "Deuteronomy", "Joshua", "Judges", "Ruth",
+  "1 Samuel", "2 Samuel", "1 Kings", "2 Kings", "1 Chronicles", "2 Chronicles", "Ezra", "Nehemiah", "Esther",
+  "Job", "Psalms", "Proverbs", "Ecclesiastes", "Song of Solomon", "Isaiah", "Jeremiah", "Lamentations",
+  "Ezekiel", "Daniel", "Hosea", "Joel", "Amos", "Obadiah", "Jonah", "Micah", "Nahum", "Habakkuk",
+  "Zephaniah", "Haggai", "Zechariah", "Malachi", "Matthew", "Mark", "Luke", "John", "Acts", "Romans",
+  "1 Corinthians", "2 Corinthians", "Galatians", "Ephesians", "Philippians", "Colossians", "1 Thessalonians",
+  "2 Thessalonians", "1 Timothy", "2 Timothy", "Titus", "Philemon", "Hebrews", "James", "1 Peter", "2 Peter",
+  "1 John", "2 John", "3 John", "Jude", "Revelation",
+] as const;
+
+const TRANSLATION_ALIASES: Array<{ pattern: RegExp; code: BibleTranslationCode }> = [
+  { pattern: /\bnew\s+international\s+version\b|\bniv\b/i, code: "niv" },
+  { pattern: /\bnew\s+living\s+translation\b|\bnlt\b/i, code: "nlt" },
+  { pattern: /\bnew\s+king\s+james(?:\s+version)?\b|\bnkjv\b/i, code: "nkjv" },
+  { pattern: /\bking\s+james(?:\s+version)?\b|\bkjv\b/i, code: "kjv" },
+  { pattern: /\bamerican\s+standard\s+version\b|\basv\b/i, code: "asv" },
+  { pattern: /\byoung'?s\s+literal\s+translation\b|\bylt\b/i, code: "ylt" },
+  { pattern: /\bworld\s+english\s+bible\b|\bweb\b/i, code: "web" },
+  { pattern: /\bamplified(?:\s+bible)?\b|\bamp\b/i, code: "amp" },
+  { pattern: /\bthe\s+message\b|\bmsg\b/i, code: "msg" },
+];
+
+function detectTranslationFromSpeech(text: string): BibleTranslationCode | null {
+  for (const alias of TRANSLATION_ALIASES) {
+    if (alias.pattern.test(text)) return alias.code;
+  }
+  return null;
+}
+
+function splitReferenceAndTranslation(raw: string, fallback: BibleTranslationCode): { reference: string; translation: BibleTranslationCode } {
+  const trimmed = raw.trim().replace(/\s+/g, " ");
+  for (const alias of TRANSLATION_ALIASES) {
+    const match = trimmed.match(alias.pattern);
+    if (!match) continue;
+    const start = match.index ?? -1;
+    const token = match[0];
+    if (start < 0) continue;
+    const cleaned = `${trimmed.slice(0, start)} ${trimmed.slice(start + token.length)}`.replace(/\s+/g, " ").trim();
+    if (cleaned) return { reference: cleaned, translation: alias.code };
+  }
+  return { reference: trimmed, translation: fallback };
+}
+
 const NUM_WORDS: Record<string, number> = {
   one:1,two:2,three:3,four:4,five:5,six:6,seven:7,eight:8,nine:9,
   ten:10,eleven:11,twelve:12,thirteen:13,fourteen:14,fifteen:15,
@@ -221,6 +266,14 @@ function nextSequentialRef(ref: string): string | null {
   const m = ref.match(/^((?:[1-3]\s+)?[A-Za-z]+(?:\s+[A-Za-z]+)?)\s+(\d+):(\d+)$/);
   if (!m) return null;
   return `${m[1]} ${m[2]}:${parseInt(m[3]) + 1}`;
+}
+
+function prevSequentialRef(ref: string): string | null {
+  const m = ref.match(/^((?:[1-3]\s+)?[A-Za-z]+(?:\s+[A-Za-z]+)?)\s+(\d+):(\d+)$/);
+  if (!m) return null;
+  const prevVerse = parseInt(m[3]) - 1;
+  if (prevVerse < 1) return null;
+  return `${m[1]} ${m[2]}:${prevVerse}`;
 }
 
 const THEOLOGY_HINTS = [
@@ -405,6 +458,18 @@ function normalizeRef(ref: string): string {
   return ref.replace(/\s+/g, " ").trim();
 }
 
+function normalizeBookToken(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9\s]/g, "").replace(/\s+/g, " ").trim();
+}
+
+function extractBookPrefixForSuggest(input: string): string {
+  const trimmed = input.trimStart();
+  if (!trimmed) return "";
+  if (/[:]/.test(trimmed)) return "";
+  const match = trimmed.match(/^([1-3]?\s*[A-Za-z\s]+)/);
+  return match ? match[1].trim() : "";
+}
+
 function extractScriptureRefs(text: string): string[] {
   const matches = text.match(SCRIPTURE_REF_REGEX) ?? [];
   const unique = new Set<string>();
@@ -501,11 +566,12 @@ export function SermonAssistantPanel() {
   const [mobileDisplayStyleOpen, setMobileDisplayStyleOpen] = useState(false);
   const [readingQueue, setReadingQueue] = useState<Array<{ ref: string; text: string }>>([]);
   const [readingQueueIndex, setReadingQueueIndex] = useState(0);
-  const [bibleTranslation, setBibleTranslation] = useState<"web" | "kjv" | "asv" | "ylt" | "niv" | "nlt" | "nkjv" | "amp" | "msg">("kjv");
+  const [bibleTranslation, setBibleTranslation] = useState<BibleTranslationCode>("kjv");
   const [lastDisplayRef, setLastDisplayRef] = useState("");
   const [manualRefInput, setManualRefInput] = useState("");
   const [manualVerseInput, setManualVerseInput] = useState("");
   const [manualCastBusy, setManualCastBusy] = useState(false);
+  const [manualRefFocused, setManualRefFocused] = useState(false);
 
   const [refsPanelWidth, setRefsPanelWidth] = useState(300);
   const [isDraggingResize, setIsDraggingResize] = useState(false);
@@ -553,13 +619,14 @@ export function SermonAssistantPanel() {
   const notesSlidesWindowRef = useRef<Window | null>(null);
   const pulpitTouchStartXRef = useRef<number | null>(null);
   const rangePlaybackTimeoutRef = useRef<number | null>(null);
+  const monitorSyncUpdatedAtRef = useRef(0);
   const pulpitRangeRefRef = useRef<string>("");
   const pulpitRangeVersesRef = useRef<Array<{ ref: string; text: string }>>([]);
   const pulpitRangeIndexRef = useRef(0);
   const readingQueueRef = useRef<Array<{ ref: string; text: string }>>([]);
   const readingQueueIndexRef = useRef(0);
   const liveModeRef = useRef(false);
-  const bibleTranslationRef = useRef<"web" | "kjv" | "asv" | "ylt" | "niv" | "nlt" | "nkjv" | "amp" | "msg">("kjv");
+  const bibleTranslationRef = useRef<BibleTranslationCode>("kjv");
   const lastMonitorRefRef = useRef<string>("");
   const wordsSpokenForVerseRef = useRef<string>("");
   const tabOrder = isCompactLayout
@@ -631,6 +698,56 @@ export function SermonAssistantPanel() {
       }
     })();
   }, []);
+
+  useEffect(() => {
+    let active = true;
+
+    const syncMonitorState = async () => {
+      try {
+        const res = await fetch("/api/monitor/state");
+        if (!res.ok) return;
+        const data = await res.json() as {
+          ref?: string;
+          text?: string;
+          updatedAt?: number;
+          cleared?: boolean;
+        };
+        if (!active) return;
+        if (typeof data.updatedAt === "number") {
+          if (data.updatedAt === monitorSyncUpdatedAtRef.current) return;
+          monitorSyncUpdatedAtRef.current = data.updatedAt;
+        }
+        if (data.cleared) return;
+        if (typeof data.ref === "string" && data.ref.trim()) {
+          const ref = normalizeRef(data.ref);
+          lastMonitorRefRef.current = ref;
+          setLastDisplayRef(ref);
+          if (typeof data.text === "string" && data.text.trim()) {
+            mergeScriptureCards([{
+              id: `${ref}-monitor-${Date.now()}`,
+              ref,
+              text: data.text.trim(),
+              source: "detected",
+              confidence: 1,
+              reason: "Updated from media monitor",
+            }]);
+          }
+        }
+      } catch {
+        // Ignore monitor sync failures.
+      }
+    };
+
+    void syncMonitorState();
+    const intervalId = window.setInterval(() => {
+      void syncMonitorState();
+    }, 2000);
+
+    return () => {
+      active = false;
+      window.clearInterval(intervalId);
+    };
+  }, [mergeScriptureCards]);
 
   useEffect(() => {
     const applyDrag = (clientX: number) => {
@@ -737,6 +854,14 @@ export function SermonAssistantPanel() {
   }, [speechLanguage]);
 
   const pulpitSections = useMemo(() => buildPulpitSections(organizedMarkdown), [organizedMarkdown]);
+  const manualBookSuggestions = useMemo(() => {
+    const prefix = extractBookPrefixForSuggest(manualRefInput);
+    const normalizedPrefix = normalizeBookToken(prefix);
+    if (!normalizedPrefix) return [] as string[];
+    return BIBLE_BOOK_SUGGESTIONS
+      .filter((book) => normalizeBookToken(book).startsWith(normalizedPrefix))
+      .slice(0, 8);
+  }, [manualRefInput]);
 
   const elapsedPulpitSec = useMemo(() => {
     if (!pulpitStartedAt) return 0;
@@ -1105,15 +1230,18 @@ export function SermonAssistantPanel() {
 
     setManualCastBusy(true);
     try {
-      let ref = rawRef;
+      const parsed = splitReferenceAndTranslation(rawRef, bibleTranslationRef.current);
+      let ref = parsed.reference;
       let text = rawText;
+      bibleTranslationRef.current = parsed.translation;
+      setBibleTranslation(parsed.translation);
 
       // If only the reference is provided, fetch verse text automatically.
       if (!text) {
         const res = await fetch("/api/bible-verse", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ reference: rawRef, translation: bibleTranslationRef.current }),
+          body: JSON.stringify({ reference: ref, translation: parsed.translation }),
         });
         if (!res.ok) {
           pushToast("Could not fetch that scripture. Add verse text manually.", "error");
@@ -1124,7 +1252,7 @@ export function SermonAssistantPanel() {
           pushToast("Could not fetch that scripture. Add verse text manually.", "error");
           return;
         }
-        ref = data.reference ?? rawRef;
+        ref = data.reference ?? ref;
         text = data.text.replace(/\n/g, " ").trim();
       }
 
@@ -1148,19 +1276,22 @@ export function SermonAssistantPanel() {
     }
   }, [manualRefInput, manualVerseInput, mergeScriptureCards, pushToast, pushToMonitor]);
 
-  const fetchAndInjectScripture = useCallback(async (reference: string) => {
+  const fetchAndInjectScripture = useCallback(async (reference: string, translationOverride?: BibleTranslationCode) => {
     stopRangePlayback();
     try {
+      const parsed = splitReferenceAndTranslation(reference, translationOverride ?? bibleTranslationRef.current);
+      const translation = parsed.translation;
+      const cleanReference = parsed.reference;
       const res = await fetch("/api/bible-verse", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ reference, translation: bibleTranslationRef.current }),
+        body: JSON.stringify({ reference: cleanReference, translation }),
       });
       if (!res.ok) return;
       const data = await res.json() as { reference?: string; text?: string; error?: string };
       if (data.error || !data.text) return;
 
-      const ref = data.reference ?? reference;
+      const ref = data.reference ?? cleanReference;
       const text = data.text.replace(/\n/g, " ").trim();
 
       const card: ScriptureCard = {
@@ -1183,15 +1314,19 @@ export function SermonAssistantPanel() {
   const fetchReadingRange = useCallback(async (
     reference: string,
     options?: { autoPlay?: boolean; intervalMs?: number },
+    translationOverride?: BibleTranslationCode,
   ) => {
     stopRangePlayback();
     try {
+      const parsed = splitReferenceAndTranslation(reference, translationOverride ?? bibleTranslationRef.current);
+      const translation = parsed.translation;
+      const cleanReference = parsed.reference;
       const res = await fetch("/api/bible-verse", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          reference,
-          translation: bibleTranslationRef.current,
+          reference: cleanReference,
+          translation,
           returnVerses: true,
         }),
       });
@@ -1389,6 +1524,15 @@ export function SermonAssistantPanel() {
     } else {
       const next = nextSequentialRef(lastMonitorRefRef.current);
       if (next) void fetchAndInjectScripture(next);
+    }
+  }, [advanceReadingQueue, fetchAndInjectScripture]);
+
+  const handlePreviousVerse = useCallback(() => {
+    if (readingQueueRef.current.length > 0 && readingQueueIndexRef.current > 0) {
+      advanceReadingQueue(readingQueueIndexRef.current - 1);
+    } else {
+      const prev = prevSequentialRef(lastMonitorRefRef.current);
+      if (prev) void fetchAndInjectScripture(prev);
     }
   }, [advanceReadingQueue, fetchAndInjectScripture]);
 
@@ -1627,6 +1771,11 @@ export function SermonAssistantPanel() {
 
           if (payload.is_final) {
             setInterimText("");
+            const spokenTranslation = detectTranslationFromSpeech(transcript);
+            if (spokenTranslation && spokenTranslation !== bibleTranslationRef.current) {
+              bibleTranslationRef.current = spokenTranslation;
+              setBibleTranslation(spokenTranslation);
+            }
             detectScripture(transcript);
             detectReadingIntent(transcript);
 
@@ -1636,9 +1785,9 @@ export function SermonAssistantPanel() {
               for (const r of spokenRefs) {
                 const isRange = /-\d+/.test(r);
                 if (isRange) {
-                  void fetchReadingRange(r);
+                  void fetchReadingRange(r, undefined, spokenTranslation ?? undefined);
                 } else {
-                  void fetchAndInjectScripture(r.trim());
+                  void fetchAndInjectScripture(r.trim(), spokenTranslation ?? undefined);
                 }
               }
             } else {
@@ -2911,13 +3060,36 @@ export function SermonAssistantPanel() {
               <div className="mt-2 rounded-lg border border-violet-500/25 bg-violet-500/5 p-2">
                 <p className="mb-1 text-[10px] font-bold uppercase tracking-wider text-violet-300">Manual Cast</p>
                 <div className="grid grid-cols-1 gap-2">
-                  <input
-                    type="text"
-                    value={manualRefInput}
-                    onChange={(e) => setManualRefInput(e.target.value)}
-                    placeholder="Reference (e.g. Romans 8:28)"
-                    className="focus-ring min-h-12 rounded-md border border-slate-700/70 bg-slate-950/70 px-3 text-base text-slate-100 placeholder:text-slate-500"
-                  />
+                  <div className="relative">
+                    <input
+                      type="text"
+                      value={manualRefInput}
+                      onChange={(e) => setManualRefInput(e.target.value)}
+                      onFocus={() => setManualRefFocused(true)}
+                      onBlur={() => window.setTimeout(() => setManualRefFocused(false), 100)}
+                      placeholder="Reference (e.g. Romans 8:28)"
+                      className="focus-ring min-h-12 w-full rounded-md border border-slate-700/70 bg-slate-950/70 px-3 text-base text-slate-100 placeholder:text-slate-500"
+                    />
+                    {manualRefFocused && manualBookSuggestions.length > 0 && (
+                      <div className="absolute left-0 right-0 top-[calc(100%+0.35rem)] z-20 overflow-hidden rounded-md border border-slate-700/80 bg-slate-950 shadow-2xl">
+                        {manualBookSuggestions.map((book) => (
+                          <button
+                            key={book}
+                            type="button"
+                            onMouseDown={(e) => {
+                              e.preventDefault();
+                              const suffix = manualRefInput.match(/\s+\d.*$/)?.[0] ?? "";
+                              setManualRefInput(`${book}${suffix}`.trim());
+                              setManualRefFocused(false);
+                            }}
+                            className="flex min-h-[40px] w-full items-center px-3 text-left text-sm text-slate-200 hover:bg-slate-800"
+                          >
+                            {book}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                   <textarea
                     value={manualVerseInput}
                     onChange={(e) => setManualVerseInput(e.target.value)}
@@ -2965,20 +3137,37 @@ export function SermonAssistantPanel() {
                 </div>
               )}
 
-              {/* Always-visible Next Verse tab — sequential chapter navigation */}
-              <button
-                type="button"
-                onClick={handleNextVerse}
-                disabled={!lastDisplayRef && readingQueue.length === 0}
-                className="mt-1.5 flex w-full items-center justify-center gap-2 rounded-lg border border-cyan-500/50 bg-cyan-500/15 py-2 text-xs font-bold uppercase tracking-wider text-cyan-300 transition hover:bg-cyan-500/25 active:scale-95 disabled:pointer-events-none disabled:opacity-25"
-              >
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} className="h-3.5 w-3.5"><polyline points="9 18 15 12 9 6"/></svg>
-                {readingQueue.length > 0 && readingQueueIndex < readingQueue.length - 1
-                  ? `Next — ${readingQueue[readingQueueIndex + 1]?.ref ?? "Verse"}`
-                  : lastDisplayRef
-                    ? `Next — ${nextSequentialRef(lastDisplayRef) ?? "Verse"}`
-                    : "Next Verse"}
-              </button>
+              <div className="mt-1.5 grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={handlePreviousVerse}
+                  disabled={
+                    (readingQueue.length > 0 && readingQueueIndex === 0) ||
+                    (readingQueue.length === 0 && !prevSequentialRef(lastDisplayRef))
+                  }
+                  className="flex min-h-[44px] items-center justify-center gap-2 rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-2 text-[10px] font-bold uppercase tracking-wider text-cyan-300 transition hover:bg-cyan-500/20 active:scale-95 disabled:pointer-events-none disabled:opacity-25"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} className="h-3.5 w-3.5"><polyline points="15 18 9 12 15 6"/></svg>
+                  {readingQueue.length > 0 && readingQueueIndex > 0
+                    ? `Prev — ${readingQueue[readingQueueIndex - 1]?.ref ?? "Verse"}`
+                    : lastDisplayRef
+                      ? `Prev — ${prevSequentialRef(lastDisplayRef) ?? "Verse"}`
+                      : "Prev Verse"}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleNextVerse}
+                  disabled={!lastDisplayRef && readingQueue.length === 0}
+                  className="flex min-h-[44px] items-center justify-center gap-2 rounded-lg border border-cyan-500/50 bg-cyan-500/15 px-2 text-[10px] font-bold uppercase tracking-wider text-cyan-300 transition hover:bg-cyan-500/25 active:scale-95 disabled:pointer-events-none disabled:opacity-25"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} className="h-3.5 w-3.5"><polyline points="9 18 15 12 9 6"/></svg>
+                  {readingQueue.length > 0 && readingQueueIndex < readingQueue.length - 1
+                    ? `Next — ${readingQueue[readingQueueIndex + 1]?.ref ?? "Verse"}`
+                    : lastDisplayRef
+                      ? `Next — ${nextSequentialRef(lastDisplayRef) ?? "Verse"}`
+                      : "Next Verse"}
+                </button>
+              </div>
             </div>
 
             {/* Card list */}
@@ -3148,13 +3337,36 @@ export function SermonAssistantPanel() {
             <div className="mt-2 rounded-lg border border-violet-500/25 bg-violet-500/5 p-2">
               <p className="mb-1 text-[10px] font-bold uppercase tracking-wider text-violet-300">Manual Cast</p>
               <div className="grid grid-cols-1 gap-2">
-                <input
-                  type="text"
-                  value={manualRefInput}
-                  onChange={(e) => setManualRefInput(e.target.value)}
-                  placeholder="Reference (e.g. Romans 8:28)"
-                  className="focus-ring min-h-12 rounded-md border border-slate-700/70 bg-slate-950/70 px-3 text-base text-slate-100 placeholder:text-slate-500"
-                />
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={manualRefInput}
+                    onChange={(e) => setManualRefInput(e.target.value)}
+                    onFocus={() => setManualRefFocused(true)}
+                    onBlur={() => window.setTimeout(() => setManualRefFocused(false), 100)}
+                    placeholder="Reference (e.g. Romans 8:28)"
+                    className="focus-ring min-h-12 w-full rounded-md border border-slate-700/70 bg-slate-950/70 px-3 text-base text-slate-100 placeholder:text-slate-500"
+                  />
+                  {manualRefFocused && manualBookSuggestions.length > 0 && (
+                    <div className="absolute left-0 right-0 top-[calc(100%+0.35rem)] z-20 overflow-hidden rounded-md border border-slate-700/80 bg-slate-950 shadow-2xl">
+                      {manualBookSuggestions.map((book) => (
+                        <button
+                          key={book}
+                          type="button"
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            const suffix = manualRefInput.match(/\s+\d.*$/)?.[0] ?? "";
+                            setManualRefInput(`${book}${suffix}`.trim());
+                            setManualRefFocused(false);
+                          }}
+                          className="flex min-h-[44px] w-full items-center px-3 text-left text-sm text-slate-200 active:bg-slate-800"
+                        >
+                          {book}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
                 <textarea
                   value={manualVerseInput}
                   onChange={(e) => setManualVerseInput(e.target.value)}
@@ -3188,20 +3400,37 @@ export function SermonAssistantPanel() {
               </div>
             )}
 
-            {/* Next Verse */}
-            <button
-              type="button"
-              onClick={handleNextVerse}
-              disabled={!lastDisplayRef && readingQueue.length === 0}
-              className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg border border-cyan-500/50 bg-cyan-500/15 py-2.5 text-sm font-bold uppercase tracking-wider text-cyan-300 active:bg-cyan-500/25 disabled:pointer-events-none disabled:opacity-25"
-            >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} className="h-4 w-4"><polyline points="9 18 15 12 9 6"/></svg>
-              {readingQueue.length > 0 && readingQueueIndex < readingQueue.length - 1
-                ? `Next — ${readingQueue[readingQueueIndex + 1]?.ref ?? "Verse"}`
-                : lastDisplayRef
-                  ? `Next — ${nextSequentialRef(lastDisplayRef) ?? "Verse"}`
-                  : "Next Verse"}
-            </button>
+            <div className="mt-2 grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={handlePreviousVerse}
+                disabled={
+                  (readingQueue.length > 0 && readingQueueIndex === 0) ||
+                  (readingQueue.length === 0 && !prevSequentialRef(lastDisplayRef))
+                }
+                className="flex min-h-[48px] items-center justify-center gap-2 rounded-lg border border-cyan-500/40 bg-cyan-500/10 py-2.5 text-xs font-bold uppercase tracking-wider text-cyan-300 active:bg-cyan-500/20 disabled:pointer-events-none disabled:opacity-25"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} className="h-4 w-4"><polyline points="15 18 9 12 15 6"/></svg>
+                {readingQueue.length > 0 && readingQueueIndex > 0
+                  ? `Prev — ${readingQueue[readingQueueIndex - 1]?.ref ?? "Verse"}`
+                  : lastDisplayRef
+                    ? `Prev — ${prevSequentialRef(lastDisplayRef) ?? "Verse"}`
+                    : "Prev Verse"}
+              </button>
+              <button
+                type="button"
+                onClick={handleNextVerse}
+                disabled={!lastDisplayRef && readingQueue.length === 0}
+                className="flex min-h-[48px] items-center justify-center gap-2 rounded-lg border border-cyan-500/50 bg-cyan-500/15 py-2.5 text-xs font-bold uppercase tracking-wider text-cyan-300 active:bg-cyan-500/25 disabled:pointer-events-none disabled:opacity-25"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} className="h-4 w-4"><polyline points="9 18 15 12 9 6"/></svg>
+                {readingQueue.length > 0 && readingQueueIndex < readingQueue.length - 1
+                  ? `Next — ${readingQueue[readingQueueIndex + 1]?.ref ?? "Verse"}`
+                  : lastDisplayRef
+                    ? `Next — ${nextSequentialRef(lastDisplayRef) ?? "Verse"}`
+                    : "Next Verse"}
+              </button>
+            </div>
           </div>
 
           {/* Scripture cards */}
