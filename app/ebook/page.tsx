@@ -18,9 +18,11 @@ import {
   deleteEbookProject,
   generateEbookProjectId,
 } from "@/lib/ebook-project-store";
+import { getEbookJob } from "@/lib/ebook-job-store";
 import type { EbookProject } from "@/lib/ebook-project-store";
 
 const JOB_STATE_KEY = "nexus_ebook_job_state";
+const JOB_STORAGE_KEY = "nexus_ebook_current_job";
 const PENDING_MOUNT_KEY = "nexus_ebook_pending_mount";
 const VOICE_STUDIO_STORAGE_PREFIX = "nexus_voice_studio_";
 const VALID_JOB_STATUSES = new Set([
@@ -288,7 +290,13 @@ function EbookPageClient() {
       const fallbackProject = currentProjectId
         ? projects.find((p) => p.id === currentProjectId)
         : null;
-      const parsedRaw = raw ? JSON.parse(raw) as unknown : fallbackProject?.jobState;
+      let parsedRaw = raw ? JSON.parse(raw) as unknown : fallbackProject?.jobState;
+      if (!parsedRaw) {
+        const savedJobId = localStorage.getItem(JOB_STORAGE_KEY);
+        if (savedJobId) {
+          parsedRaw = await getEbookJob(savedJobId).catch(() => null);
+        }
+      }
       if (!parsedRaw) {
         setStatusMsg({ type: "error", text: "Nothing to save yet — start the pipeline first." });
         return;
