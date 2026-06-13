@@ -202,9 +202,9 @@ function extractSpokenRefs(raw: string): string[] {
   s = wordsToDigits(s);
   s = s.replace(/\bchapter\s+(\d+)[,\s]+(?:and\s+)?verse\s+(\d+)/gi, "$1:$2");
   s = s.replace(/\b(\d+)\s+verse\s+(\d+)/gi, "$1:$2");
-  const spaceRefs = s.match(/\b(?:[1-3]\s+)?[A-Z][a-z]+(?:\s+[A-Za-z]+)?\s+(\d{1,3})\s+(\d{1,3})\b/g) ?? [];
+  const spaceRefs = s.match(/\b(?:[1-3]\s+)?[A-Za-z]+(?:\s+[A-Za-z]+)?\s+(\d{1,3})\s+(\d{1,3})\b/gi) ?? [];
   const spaceFixed = spaceRefs.map((r) => r.replace(/(\d+)\s+(\d+)$/, "$1:$2"));
-  const standard = s.match(/\b(?:[1-3]\s+)?[A-Z][a-z]+(?:\s+[A-Za-z]+)?\s+\d{1,3}:\d{1,3}(?:-\d{1,3})?\b/g) ?? [];
+  const standard = s.match(/\b(?:[1-3]\s+)?[A-Za-z]+(?:\s+[A-Za-z]+)?\s+\d{1,3}:\d{1,3}(?:-\d{1,3})?\b/gi) ?? [];
   return [...new Set([...standard, ...spaceFixed])];
 }
 
@@ -1357,6 +1357,9 @@ export function SermonAssistantPanel() {
     const hasQueue = readingQueueRef.current.length > 0;
     const normalized = wordsToDigits(chunk.trim());
 
+    // If an explicit scripture reference is present, do not run fallback verse-number logic.
+    if (extractSpokenRefs(chunk).length > 0 || extractScriptureRefs(chunk).length > 0) return;
+
     if (NEXT_VERSE_REGEX.test(normalized)) {
       if (hasQueue) {
         advanceReadingQueue();
@@ -1631,17 +1634,20 @@ export function SermonAssistantPanel() {
             setInterimText("");
             detectScripture(transcript);
             detectReadingIntent(transcript);
-            detectNextVerse(transcript, (ref) => void fetchAndInjectScripture(ref));
 
             // Spoken-ref detection: catches "Luke 4 2", "chapter 4 verse 2", word numbers, etc.
             const spokenRefs = extractSpokenRefs(transcript);
-            for (const r of spokenRefs) {
-              const isRange = /-\d+/.test(r);
-              if (isRange) {
-                void fetchReadingRange(r);
-              } else {
-                void fetchAndInjectScripture(r.trim());
+            if (spokenRefs.length > 0) {
+              for (const r of spokenRefs) {
+                const isRange = /-\d+/.test(r);
+                if (isRange) {
+                  void fetchReadingRange(r);
+                } else {
+                  void fetchAndInjectScripture(r.trim());
+                }
               }
+            } else {
+              detectNextVerse(transcript, (ref) => void fetchAndInjectScripture(ref));
             }
 
             // Auto-advance reading queue when enough of the current verse has been spoken

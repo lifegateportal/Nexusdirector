@@ -247,15 +247,33 @@ function MonitorPageInner() {
 
   const handleManualMonitorPush = async () => {
     const ref = manualRefInput.trim();
-    const text = manualTextInput.trim();
-    if (!ref || !text) {
-      setManualError("Enter both reference and verse text.");
+    let text = manualTextInput.trim();
+    if (!ref) {
+      setManualError("Enter a scripture reference.");
       return;
     }
 
     setManualBusy(true);
     setManualError("");
     try {
+      if (!text) {
+        const verseRes = await fetch("/api/bible-verse", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reference: ref, translation: "web" }),
+        });
+        if (!verseRes.ok) {
+          setManualError("Could not fetch verse text. Add it manually.");
+          return;
+        }
+        const verseData = await verseRes.json() as { text?: string; error?: string };
+        if (verseData.error || !verseData.text) {
+          setManualError("Could not fetch verse text. Add it manually.");
+          return;
+        }
+        text = verseData.text.trim();
+      }
+
       const res = await fetch("/api/monitor/push", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -634,13 +652,13 @@ function MonitorPageInner() {
               value={manualTextInput}
               onChange={(e) => setManualTextInput(e.target.value)}
               rows={2}
-              placeholder="Verse text"
+              placeholder="Verse text (optional if reference is valid)"
               className="rounded-lg border border-white/15 bg-black/50 px-3 py-2 text-base text-white placeholder:text-white/30 outline-none focus:border-violet-400/70"
             />
             <button
               type="button"
               onClick={() => void handleManualMonitorPush()}
-              disabled={manualBusy || !manualRefInput.trim() || !manualTextInput.trim()}
+              disabled={manualBusy || !manualRefInput.trim()}
               className="min-h-[48px] rounded-lg border border-violet-400/60 bg-violet-500/20 px-4 text-xs font-bold uppercase tracking-[0.18em] text-violet-100 transition hover:bg-violet-500/30 disabled:opacity-40"
             >
               {manualBusy ? "Sending..." : (state?.queueMode ? "Add To Queue" : "Cast Now")}
