@@ -503,6 +503,9 @@ export function SermonAssistantPanel() {
   const [readingQueueIndex, setReadingQueueIndex] = useState(0);
   const [bibleTranslation, setBibleTranslation] = useState<"web" | "kjv" | "asv" | "ylt" | "niv" | "nlt" | "nkjv" | "amp" | "msg">("kjv");
   const [lastDisplayRef, setLastDisplayRef] = useState("");
+  const [manualRefInput, setManualRefInput] = useState("");
+  const [manualVerseInput, setManualVerseInput] = useState("");
+  const [manualCastBusy, setManualCastBusy] = useState(false);
 
   const [refsPanelWidth, setRefsPanelWidth] = useState(300);
   const [isDraggingResize, setIsDraggingResize] = useState(false);
@@ -1096,6 +1099,59 @@ export function SermonAssistantPanel() {
       body: JSON.stringify({ setDisplayPrefs: patch }),
     });
   }, []);
+
+  const handleManualCast = useCallback(async (options?: { closeMobile?: boolean }) => {
+    const rawRef = manualRefInput.trim();
+    const rawText = manualVerseInput.trim();
+    if (!rawRef) {
+      pushToast("Enter a scripture reference first.", "error");
+      return;
+    }
+
+    setManualCastBusy(true);
+    try {
+      let ref = rawRef;
+      let text = rawText;
+
+      // If only the reference is provided, fetch verse text automatically.
+      if (!text) {
+        const res = await fetch("/api/bible-verse", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reference: rawRef, translation: bibleTranslationRef.current }),
+        });
+        if (!res.ok) {
+          pushToast("Could not fetch that scripture. Add verse text manually.", "error");
+          return;
+        }
+        const data = await res.json() as { reference?: string; text?: string; error?: string };
+        if (data.error || !data.text) {
+          pushToast("Could not fetch that scripture. Add verse text manually.", "error");
+          return;
+        }
+        ref = data.reference ?? rawRef;
+        text = data.text.replace(/\n/g, " ").trim();
+      }
+
+      mergeScriptureCards([{ 
+        id: `${ref}-manual-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        ref,
+        text,
+        source: "detected",
+        confidence: 1,
+        reason: "Manually added",
+      }]);
+      pushToMonitor(ref, text);
+      setManualRefInput(ref);
+      setManualVerseInput(text);
+      if (options?.closeMobile) setMobileRefsOpen(false);
+      pushToast(`Cast ${ref} to monitor.`, "success");
+    } catch {
+      pushToast("Manual cast failed. Try again.", "error");
+    } finally {
+      setManualCastBusy(false);
+    }
+  }, [manualRefInput, manualVerseInput, mergeScriptureCards, pushToast, pushToMonitor]);
 
   const fetchAndInjectScripture = useCallback(async (reference: string) => {
     stopRangePlayback();
@@ -2851,6 +2907,34 @@ export function SermonAssistantPanel() {
                 </button>
               </div>
 
+              <div className="mt-2 rounded-lg border border-violet-500/25 bg-violet-500/5 p-2">
+                <p className="mb-1 text-[10px] font-bold uppercase tracking-wider text-violet-300">Manual Cast</p>
+                <div className="grid grid-cols-1 gap-2">
+                  <input
+                    type="text"
+                    value={manualRefInput}
+                    onChange={(e) => setManualRefInput(e.target.value)}
+                    placeholder="Reference (e.g. Romans 8:28)"
+                    className="focus-ring min-h-12 rounded-md border border-slate-700/70 bg-slate-950/70 px-3 text-base text-slate-100 placeholder:text-slate-500"
+                  />
+                  <textarea
+                    value={manualVerseInput}
+                    onChange={(e) => setManualVerseInput(e.target.value)}
+                    rows={2}
+                    placeholder="Optional verse text. Leave blank to auto-fetch."
+                    className="focus-ring rounded-md border border-slate-700/70 bg-slate-950/70 px-3 py-2 text-base text-slate-100 placeholder:text-slate-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void handleManualCast()}
+                    disabled={manualCastBusy || !manualRefInput.trim()}
+                    className="focus-ring min-h-12 rounded-md border border-violet-400/60 bg-violet-500/20 px-3 text-xs font-bold uppercase tracking-wider text-violet-200 transition hover:bg-violet-500/30 disabled:opacity-40"
+                  >
+                    {manualCastBusy ? "Casting..." : "Cast Manual Scripture"}
+                  </button>
+                </div>
+              </div>
+
               {monitorDisplayControls(false)}
 
               {/* Row 3 (conditional): reading queue nav */}
@@ -3058,6 +3142,34 @@ export function SermonAssistantPanel() {
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-3.5 w-3.5"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
                 Share
               </button>
+            </div>
+
+            <div className="mt-2 rounded-lg border border-violet-500/25 bg-violet-500/5 p-2">
+              <p className="mb-1 text-[10px] font-bold uppercase tracking-wider text-violet-300">Manual Cast</p>
+              <div className="grid grid-cols-1 gap-2">
+                <input
+                  type="text"
+                  value={manualRefInput}
+                  onChange={(e) => setManualRefInput(e.target.value)}
+                  placeholder="Reference (e.g. Romans 8:28)"
+                  className="focus-ring min-h-12 rounded-md border border-slate-700/70 bg-slate-950/70 px-3 text-base text-slate-100 placeholder:text-slate-500"
+                />
+                <textarea
+                  value={manualVerseInput}
+                  onChange={(e) => setManualVerseInput(e.target.value)}
+                  rows={2}
+                  placeholder="Optional verse text. Leave blank to auto-fetch."
+                  className="focus-ring rounded-md border border-slate-700/70 bg-slate-950/70 px-3 py-2 text-base text-slate-100 placeholder:text-slate-500"
+                />
+                <button
+                  type="button"
+                  onClick={() => void handleManualCast({ closeMobile: true })}
+                  disabled={manualCastBusy || !manualRefInput.trim()}
+                  className="focus-ring min-h-12 rounded-md border border-violet-400/60 bg-violet-500/20 px-3 text-xs font-bold uppercase tracking-wider text-violet-200 transition active:bg-violet-500/30 disabled:opacity-40"
+                >
+                  {manualCastBusy ? "Casting..." : "Cast Manual Scripture"}
+                </button>
+              </div>
             </div>
 
             {monitorDisplayControls(true)}

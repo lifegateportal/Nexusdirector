@@ -71,6 +71,10 @@ function MonitorPageInner() {
   const [showQueue, setShowQueue] = useState(false);
   const [fullscreenError, setFullscreenError] = useState("");
   const [fullscreenPromptVisible, setFullscreenPromptVisible] = useState(true);
+  const [manualRefInput, setManualRefInput] = useState("");
+  const [manualTextInput, setManualTextInput] = useState("");
+  const [manualBusy, setManualBusy] = useState(false);
+  const [manualError, setManualError] = useState("");
   const [autoCenterRefSize, setAutoCenterRefSize] = useState(DEFAULT_DISPLAY_PREFS.centerRefSize);
   const [autoCenterVerseSize, setAutoCenterVerseSize] = useState(DEFAULT_DISPLAY_PREFS.centerVerseSize);
   const [autoLowerRefSize, setAutoLowerRefSize] = useState(DEFAULT_DISPLAY_PREFS.lowerRefSize);
@@ -239,6 +243,36 @@ function MonitorPageInner() {
       body: JSON.stringify({ setDisplayPrefs: patch }),
     });
     void poll();
+  };
+
+  const handleManualMonitorPush = async () => {
+    const ref = manualRefInput.trim();
+    const text = manualTextInput.trim();
+    if (!ref || !text) {
+      setManualError("Enter both reference and verse text.");
+      return;
+    }
+
+    setManualBusy(true);
+    setManualError("");
+    try {
+      const res = await fetch("/api/monitor/push", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ref, text }),
+      });
+      if (!res.ok) {
+        setManualError("Manual cast failed. Try again.");
+        return;
+      }
+      setManualRefInput("");
+      setManualTextInput("");
+      void poll();
+    } catch {
+      setManualError("Manual cast failed. Try again.");
+    } finally {
+      setManualBusy(false);
+    }
   };
 
   const requestFullscreen = useCallback(async () => {
@@ -581,6 +615,38 @@ function MonitorPageInner() {
               ))}
             </div>
           )}
+        </div>
+      )}
+
+      {!displayOnly && (
+        <div className="absolute left-4 top-4 z-20 w-[min(420px,calc(100vw-2rem))] rounded-2xl border border-violet-500/25 bg-black/85 p-3 shadow-2xl backdrop-blur">
+          <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-violet-300">Manual Scripture</p>
+          <p className="mt-1 text-[11px] text-white/55">Use this when auto live detection misses a verse.</p>
+          <div className="mt-2 grid gap-2">
+            <input
+              type="text"
+              value={manualRefInput}
+              onChange={(e) => setManualRefInput(e.target.value)}
+              placeholder="Reference (e.g. Romans 8:28)"
+              className="min-h-[48px] rounded-lg border border-white/15 bg-black/50 px-3 text-base text-white placeholder:text-white/30 outline-none focus:border-violet-400/70"
+            />
+            <textarea
+              value={manualTextInput}
+              onChange={(e) => setManualTextInput(e.target.value)}
+              rows={2}
+              placeholder="Verse text"
+              className="rounded-lg border border-white/15 bg-black/50 px-3 py-2 text-base text-white placeholder:text-white/30 outline-none focus:border-violet-400/70"
+            />
+            <button
+              type="button"
+              onClick={() => void handleManualMonitorPush()}
+              disabled={manualBusy || !manualRefInput.trim() || !manualTextInput.trim()}
+              className="min-h-[48px] rounded-lg border border-violet-400/60 bg-violet-500/20 px-4 text-xs font-bold uppercase tracking-[0.18em] text-violet-100 transition hover:bg-violet-500/30 disabled:opacity-40"
+            >
+              {manualBusy ? "Sending..." : (state?.queueMode ? "Add To Queue" : "Cast Now")}
+            </button>
+            {manualError && <p className="text-xs text-red-300">{manualError}</p>}
+          </div>
         </div>
       )}
 
