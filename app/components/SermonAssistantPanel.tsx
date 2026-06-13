@@ -1059,18 +1059,13 @@ export function SermonAssistantPanel() {
     const win = presentationWindowRef.current;
     if (win && !win.closed) {
       win.postMessage({ type: "update", ref, text }, "*");
-    } else {
-      launchDisplay();
-      window.setTimeout(() => {
-        presentationWindowRef.current?.postMessage({ type: "update", ref, text }, "*");
-      }, 800);
     }
     void fetch("/api/monitor/push", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ref, text }),
     });
-  }, [launchDisplay, mergeScriptureCards]);
+  }, [mergeScriptureCards]);
 
   const clearMonitor = useCallback(() => {
     const win = presentationWindowRef.current;
