@@ -39,6 +39,11 @@ async function computeNexusToken(secret: string, password: string): Promise<stri
 }
 
 export async function GET(req: NextRequest) {
+  const channel = req.nextUrl.searchParams.get("channel");
+  if (channel === "stream") {
+    return NextResponse.json(getMonitorState());
+  }
+
   const authPassword = process.env.AUTH_PASSWORD;
   const cookieSecret = process.env.AUTH_COOKIE_SECRET;
 

@@ -173,6 +173,10 @@ function MonitorPageInner() {
 
   const displayOnly = searchParams.get("displayOnly") === "1";
   const monitorChannel: MonitorChannel = searchParams.get("channel") === "stream" ? "stream" : "primary";
+  const stateEndpoint = useMemo(
+    () => `/api/monitor/state${monitorChannel === "stream" ? "?channel=stream" : ""}`,
+    [monitorChannel],
+  );
   const activeDisplay = useMemo(() => {
     if (!state) return null;
     if (monitorChannel === "stream") {
@@ -258,7 +262,7 @@ function MonitorPageInner() {
   // ─── Polling ─────────────────────────────────────────────────────────────
   const poll = useCallback(async () => {
     try {
-      const res = await fetch("/api/monitor/state");
+      const res = await fetch(stateEndpoint);
       if (res.status === 401) { setAuthed(false); stopPolling(); return; }
       if (!res.ok) return;
       const data = await res.json() as MonitorState;
@@ -271,7 +275,7 @@ function MonitorPageInner() {
         if (data.queueMode && data.operatorQueue.length > 0) setShowQueue(true);
       }
     } catch { /* network blip */ }
-  }, [monitorChannel]);
+  }, [monitorChannel, stateEndpoint]);
 
   const stopPolling = () => {
     if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
@@ -284,8 +288,15 @@ function MonitorPageInner() {
 
   useEffect(() => {
     void (async () => {
+      if (monitorChannel === "stream") {
+        setAuthed(true);
+        startPolling();
+        void poll();
+        return;
+      }
+
       try {
-        const res = await fetch("/api/monitor/state");
+        const res = await fetch(stateEndpoint);
         if (res.ok) {
           const data = await res.json() as MonitorState;
           lastUpdatedAt.current = monitorChannel === "stream"
@@ -300,7 +311,7 @@ function MonitorPageInner() {
         // If monitor cookie is missing, try bridging from existing app session.
         const bridge = await fetch("/api/monitor/auth/bridge", { method: "POST" });
         if (bridge.ok) {
-          const retry = await fetch("/api/monitor/state");
+          const retry = await fetch(stateEndpoint);
           if (retry.ok) {
             const data = await retry.json() as MonitorState;
             lastUpdatedAt.current = monitorChannel === "stream"
@@ -319,7 +330,7 @@ function MonitorPageInner() {
         setAuthed(false);
     })();
     return stopPolling;
-  }, [monitorChannel, startPolling]);
+  }, [monitorChannel, poll, startPolling, stateEndpoint]);
 
   // ─── Operator actions ─────────────────────────────────────────────────────
   const operatorGo = async () => {
