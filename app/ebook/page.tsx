@@ -180,7 +180,13 @@ function EbookPageClient() {
 
   useEffect(() => {
     try {
-      const raw = localStorage.getItem(PENDING_MOUNT_KEY);
+      const raw = (() => {
+        try {
+          return localStorage.getItem(PENDING_MOUNT_KEY);
+        } catch {
+          return null;
+        }
+      })();
       if (!raw) return;
       const parsed = JSON.parse(raw) as {
         projectId?: string;
@@ -192,17 +198,21 @@ function EbookPageClient() {
         ts?: number;
       };
       if (typeof parsed.ts !== "number" || Date.now() - parsed.ts > 120000) {
-        localStorage.removeItem(PENDING_MOUNT_KEY);
+        try { localStorage.removeItem(PENDING_MOUNT_KEY); } catch {}
         return;
       }
       const jobParsed = EbookJobStateSchema.safeParse(parsed.jobState);
       if (!jobParsed.success) {
-        localStorage.removeItem(PENDING_MOUNT_KEY);
+        try { localStorage.removeItem(PENDING_MOUNT_KEY); } catch {}
         return;
       }
 
-      localStorage.setItem(JOB_STATE_KEY, JSON.stringify(jobParsed.data));
-      localStorage.setItem(JOB_STORAGE_KEY, jobParsed.data.jobId);
+      try {
+        localStorage.setItem(JOB_STATE_KEY, JSON.stringify(jobParsed.data));
+        localStorage.setItem(JOB_STORAGE_KEY, jobParsed.data.jobId);
+      } catch {
+        // Browser storage unavailable; continue with in-memory load.
+      }
       setPipelineInitialJobState(jobParsed.data);
       if (typeof parsed.projectId === "string") setCurrentProjectId(parsed.projectId);
 
@@ -218,9 +228,9 @@ function EbookPageClient() {
       setPipelineKey((k) => k + 1);
       setActiveTab("pipeline");
       setStatusMsg({ type: "success", text: `"${parsed.projectName ?? "Project"}" mounted in standalone pipeline.` });
-      localStorage.removeItem(PENDING_MOUNT_KEY);
+      try { localStorage.removeItem(PENDING_MOUNT_KEY); } catch {}
     } catch {
-      localStorage.removeItem(PENDING_MOUNT_KEY);
+      try { localStorage.removeItem(PENDING_MOUNT_KEY); } catch {}
     }
   }, []);
 
@@ -233,8 +243,12 @@ function EbookPageClient() {
     try {
       const normalized = normalizeJobStateForSave(project.jobState);
       if (!normalized) return;
-      localStorage.setItem(JOB_STATE_KEY, JSON.stringify(normalized));
-      localStorage.setItem(JOB_STORAGE_KEY, normalized.jobId);
+      try {
+        localStorage.setItem(JOB_STATE_KEY, JSON.stringify(normalized));
+        localStorage.setItem(JOB_STORAGE_KEY, normalized.jobId);
+      } catch {
+        // Browser storage unavailable; continue with in-memory load.
+      }
       setPipelineInitialJobState(normalized);
       setCurrentProjectId(project.id);
       const manifest = toManifestFromJob(normalized);
@@ -591,12 +605,12 @@ function EbookPageClient() {
         return;
       }
 
+      let storageUnavailable = false;
       try {
         localStorage.setItem(JOB_STATE_KEY, JSON.stringify(normalized));
         localStorage.setItem(JOB_STORAGE_KEY, normalized.jobId);
       } catch {
-        setStatusMsg({ type: "error", text: "Cannot load: browser storage unavailable. Try clearing cache." });
-        return;
+        storageUnavailable = true;
       }
       
       // Set as initial state for pipeline to use directly (more reliable than localStorage-only)
@@ -613,7 +627,12 @@ function EbookPageClient() {
           : null
       );
       setActiveTab("pipeline");
-      setStatusMsg({ type: "success", text: `"${p.name}" loaded — resuming pipeline.` });
+      setStatusMsg({
+        type: "success",
+        text: storageUnavailable
+          ? `"${p.name}" loaded from memory (browser storage unavailable).`
+          : `"${p.name}" loaded — resuming pipeline.`,
+      });
       setPipelineKey((k) => k + 1);
     } catch (err) {
       setStatusMsg({ type: "error", text: err instanceof Error ? err.message : "Load failed." });
@@ -675,8 +694,12 @@ function EbookPageClient() {
     await saveEbookProject(project);
     setProjects(await listEbookProjects());
     setCurrentProjectId(project.id);
-    localStorage.setItem(JOB_STATE_KEY, JSON.stringify(project.jobState));
-    localStorage.setItem(JOB_STORAGE_KEY, project.jobState.jobId);
+    try {
+      localStorage.setItem(JOB_STATE_KEY, JSON.stringify(project.jobState));
+      localStorage.setItem(JOB_STORAGE_KEY, project.jobState.jobId);
+    } catch {
+      // Browser storage unavailable; continue with in-memory load.
+    }
     setPipelineInitialJobState(project.jobState);
     setPipelineKey((k) => k + 1);
     // Mirror imported project to cloud snapshot store (best-effort)
