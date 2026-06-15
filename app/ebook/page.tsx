@@ -499,16 +499,25 @@ function EbookPageClient() {
 
       const id = currentProjectId || generateEbookProjectId();
       const existing = projects.find((p) => p.id === id);
+      const existingChapters = (existing?.jobState.chapters ?? []).filter((chapter): chapter is ChapterDraft => Boolean(chapter && typeof chapter === "object"));
+      const shouldPreserveExisting = Boolean(existing && existingChapters.length > 0 && chapterCount === 0);
+      const persistedJobState = shouldPreserveExisting
+        ? existing!.jobState
+        : safeJobState;
+      const persistedChapters = shouldPreserveExisting ? existingChapters : safeChapters;
+      const persistedChapterCount = persistedChapters.length;
+      const persistedTotalWordCount = persistedChapters.reduce((sum, chapter) => sum + (chapter.totalWordCount ?? 0), 0);
+
       const project: EbookProject = {
         id,
         name,
         createdAt: existing?.createdAt ?? new Date().toISOString(),
         updatedAt: new Date().toISOString(),
-        bookTitle: ebookManifest?.bookTitle ?? jobState.architecture?.bookTitle ?? name,
-        chapterCount,
-        totalWordCount,
-        status: safeJobState.status,
-        jobState: safeJobState,
+        bookTitle: ebookManifest?.bookTitle ?? persistedJobState.architecture?.bookTitle ?? name,
+        chapterCount: persistedChapterCount,
+        totalWordCount: persistedTotalWordCount,
+        status: persistedJobState.status,
+        jobState: persistedJobState,
         publishedSlug: existing?.publishedSlug,
         coverImageUrl: existing?.coverImageUrl,
         authorImageUrl: existing?.authorImageUrl,
@@ -517,7 +526,7 @@ function EbookPageClient() {
       try {
         await saveEbookProject(project);
         localSaved = true;
-        if (chapterCount === 0 && project.jobState.status === "complete") {
+        if (persistedChapterCount === 0 && project.jobState.status === "complete") {
           console.warn("[handleSaveProject] WARNING: Saving complete project with 0 valid chapters");
         }
       } catch (err) {
@@ -561,7 +570,7 @@ function EbookPageClient() {
             logicResult: null,
             uiResult: null,
             ebookManifest: null,
-            ebookJobState: safeJobState,
+            ebookJobState: persistedJobState,
             publishedSlug: project.publishedSlug,
             coverImageUrl: project.coverImageUrl,
             authorImageUrl: project.authorImageUrl,
@@ -594,15 +603,32 @@ function EbookPageClient() {
     toJsonSafeValue,
   ]);
 
-  const handleLoadProject = useCallback((id: string) => {
+  const handleLoadProject = useCallback(async (id: string) => {
     const p = projects.find((proj) => proj.id === id);
     if (!p) return;
 
     try {
-      const normalized = normalizeJobStateForSave(p.jobState);
+      let normalized = normalizeJobStateForSave(p.jobState);
       if (!normalized) {
         setStatusMsg({ type: "error", text: "Cannot load this project: saved data is corrupted or incomplete." });
         return;
+      }
+
+      let manifest = toManifestFromJob(normalized);
+      if (!manifest && p.publishedSlug) {
+        try {
+          const res = await fetch(`/api/ebook/publish?slug=${encodeURIComponent(p.publishedSlug)}`);
+          if (res.ok) {
+            const payload = await res.json() as { manifest?: EbookManifest };
+            if (payload.manifest) {
+              manifest = payload.manifest;
+              const merged = mergeManifestIntoJobState(normalized, payload.manifest);
+              if (merged) normalized = merged;
+            }
+          }
+        } catch {
+          // Published fallback is best-effort.
+        }
       }
 
       let storageUnavailable = false;
@@ -616,7 +642,6 @@ function EbookPageClient() {
       // Set as initial state for pipeline to use directly (more reliable than localStorage-only)
       setPipelineInitialJobState(normalized);
       setCurrentProjectId(p.id);
-      const manifest = toManifestFromJob(normalized);
       setEbookManifest(
         manifest
           ? {
@@ -637,7 +662,7 @@ function EbookPageClient() {
     } catch (err) {
       setStatusMsg({ type: "error", text: err instanceof Error ? err.message : "Load failed." });
     }
-  }, [normalizeJobStateForSave, projects, toManifestFromJob]);
+  }, [mergeManifestIntoJobState, normalizeJobStateForSave, projects, toManifestFromJob]);
 
   const handleDeleteProject = useCallback(async (id: string) => {
     await deleteEbookProject(id);

@@ -21,7 +21,7 @@ export const maxDuration = 30;
 
 // ── GET /api/ebook/publish — fetch the live published catalog ─────────────────
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   const {
     R2_ACCOUNT_ID,
     R2_ACCESS_KEY_ID,
@@ -35,6 +35,25 @@ export async function GET() {
 
   try {
     const s3 = makeS3Client(R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY);
+
+    const slug = req.nextUrl.searchParams.get("slug");
+    if (slug) {
+      try {
+        const manifestRes = await s3.send(
+          new GetObjectCommand({ Bucket: R2_BUCKET_NAME, Key: `published/${slug}/manifest.json` }),
+        );
+        const rawManifest = await manifestRes.Body?.transformToString();
+        if (!rawManifest) return NextResponse.json({ error: "Manifest not found" }, { status: 404 });
+        const parsedManifest = EbookManifestSchema.safeParse(JSON.parse(rawManifest));
+        if (!parsedManifest.success) {
+          return NextResponse.json({ error: "Invalid manifest" }, { status: 422 });
+        }
+        return NextResponse.json({ manifest: parsedManifest.data }, { status: 200 });
+      } catch {
+        return NextResponse.json({ error: "Manifest not found" }, { status: 404 });
+      }
+    }
+
     const res = await s3.send(
       new GetObjectCommand({ Bucket: R2_BUCKET_NAME, Key: "published/index.json" }),
     );
