@@ -333,6 +333,15 @@ function EbookPageClient() {
         ? projects.find((p) => p.id === currentProjectId)
         : null;
       let parsedRaw: unknown = liveJobState ?? fallbackProject?.jobState;
+      
+      console.log("[handleSaveProject] Initial state sources:", {
+        hasLiveJobState: !!liveJobState,
+        liveChapters: (liveJobState as any)?.chapters?.length ?? 0,
+        hasFallbackProject: !!fallbackProject,
+        fallbackChapters: (fallbackProject?.jobState as any)?.chapters?.length ?? 0,
+        hasRawLocalStorage: !!raw
+      });
+      
       if (raw) {
         try {
           parsedRaw = JSON.parse(raw) as unknown;
@@ -352,6 +361,8 @@ function EbookPageClient() {
         setStatusMsg({ type: "error", text: "Nothing to save yet — start the pipeline first." });
         return;
       }
+      
+      console.log("[handleSaveProject] About to save jobState with chapters:", jobState.chapters?.length ?? 0);
       const id = currentProjectId || generateEbookProjectId();
       const existing = projects.find((p) => p.id === id);
       const project: EbookProject = {
@@ -372,7 +383,9 @@ function EbookPageClient() {
       try {
         await saveEbookProject(project);
         localSaved = true;
-        // Verify chapters were actually saved
+        // Verify what was actually saved by reading it back
+        const verification = await getEbookJob(project.jobState.jobId).catch(() => null);
+        console.log("[handleSaveProject] Save verification - chapters in IndexedDB:", verification?.chapters?.length ?? "failed to read");
         const chapterCount = project.jobState.chapters?.length ?? 0;
         if (chapterCount === 0 && project.jobState.status === "complete") {
           console.warn("[handleSaveProject] WARNING: Saving complete project with 0 chapters");
@@ -445,12 +458,29 @@ function EbookPageClient() {
   const handleLoadProject = useCallback((id: string) => {
     const p = projects.find((proj) => proj.id === id);
     if (!p) return;
+    
+    console.log("[handleLoadProject] Loading project:", {
+      name: p.name,
+      hasJobState: !!p.jobState,
+      jobStateKeys: p.jobState ? Object.keys(p.jobState) : [],
+      rawChapters: (p.jobState as any)?.chapters?.length ?? 0,
+      status: (p.jobState as any)?.status
+    });
+    
     try {
       const normalized = normalizeJobStateForSave(p.jobState);
       if (!normalized) {
+        console.error("[handleLoadProject] Normalization returned null");
         setStatusMsg({ type: "error", text: "Cannot load this project: saved data is corrupted or incomplete." });
         return;
       }
+      
+      console.log("[handleLoadProject] After normalization:", {
+        chapters: normalized.chapters?.length ?? 0,
+        architecture: !!normalized.architecture,
+        contentMap: !!normalized.contentMap,
+        masterTranscript: normalized.masterTranscript?.length ?? 0
+      });
       
       // Verify we have recoverable data before writing to storage
       const hasData = Boolean(
