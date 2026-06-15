@@ -1726,8 +1726,11 @@ export function EbookPipeline({
   // because data is loaded with JSON.parse (not Zod.parse), so .default() never runs.
   function normalizeJob(raw: EbookJobState): EbookJobState {
     const fixArrays = <T,>(v: unknown): T[] => (Array.isArray(v) ? v as T[] : []);
+    const fixObjectArrays = <T extends Record<string, unknown>>(v: unknown): T[] => (
+      fixArrays<unknown>(v).filter((item): item is T => Boolean(item && typeof item === "object"))
+    );
     const fixStr = (v: unknown, fb = ""): string => (typeof v === "string" ? v : fb);
-    const transcripts = fixArrays<Record<string, unknown>>(raw.transcripts as unknown)
+    const transcripts = fixObjectArrays<Record<string, unknown>>(raw.transcripts as unknown)
       .map((t) => ({
         label: fixStr(t.label),
         text: fixStr(t.text),
@@ -1759,7 +1762,7 @@ export function EbookPipeline({
       uniqueVocabulary:  fixArrays(cm.uniqueVocabulary),
       toneMap:           fixStr(cm.toneMap),
       allQuotes: fixArrays(cm.allQuotes),
-      segments: fixArrays<Record<string, unknown>>(cm.segments).map((s) => ({
+      segments: fixObjectArrays<Record<string, unknown>>(cm.segments).map((s) => ({
         ...s,
         keyPoints: fixArrays(s.keyPoints),
         quotes:    fixArrays(s.quotes),
@@ -1770,10 +1773,10 @@ export function EbookPipeline({
     const arch = raw.architecture as Record<string, unknown> | null;
     const architecture = arch ? {
       ...arch,
-      chapters: fixArrays<Record<string, unknown>>(arch.chapters).map((c) => ({
+      chapters: fixObjectArrays<Record<string, unknown>>(arch.chapters).map((c) => ({
         ...c,
         quotesInChapter: fixArrays(c.quotesInChapter),
-        sections: fixArrays<Record<string, unknown>>(c.sections).map((s) => ({
+        sections: fixObjectArrays<Record<string, unknown>>(c.sections).map((s) => ({
           ...s,
           keyPoints:       fixArrays(s.keyPoints),
           quotesInSection: fixArrays(s.quotesInSection),
@@ -1782,13 +1785,13 @@ export function EbookPipeline({
       })),
     } : null;
 
-    const sections = fixArrays<Record<string, unknown>>(raw.sections as unknown).map((s) => ({
+    const sections = fixObjectArrays<Record<string, unknown>>(raw.sections as unknown).map((s) => ({
       ...s,
       body:    fixStr(s.body),
       heading: fixStr(s.heading),
     }));
 
-    const sectionAssignments = fixArrays<Record<string, unknown>>(raw.sectionAssignments as unknown).map((a) => {
+    const sectionAssignments = fixObjectArrays<Record<string, unknown>>(raw.sectionAssignments as unknown).map((a) => {
       const avdna = a.voiceDNA as Record<string, unknown> | null | undefined;
       return {
         ...a,
@@ -1808,13 +1811,13 @@ export function EbookPipeline({
       };
     });
 
-    const chapters = fixArrays<Record<string, unknown>>(raw.chapters as unknown).map((c) => ({
+    const chapters = fixObjectArrays<Record<string, unknown>>(raw.chapters as unknown).map((c) => ({
       ...c,
       intro:               fixStr(c.intro),
       forwardQuestion:     fixStr(c.forwardQuestion),
       keyTakeaways:        fixArrays(c.keyTakeaways),
       reflectionQuestions: fixArrays(c.reflectionQuestions),
-      sections: fixArrays<Record<string, unknown>>(c.sections).map((s) => ({
+      sections: fixObjectArrays<Record<string, unknown>>(c.sections).map((s) => ({
         ...s,
         body:    fixStr(s.body),
         heading: fixStr(s.heading),
