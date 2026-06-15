@@ -1,3 +1,4 @@
+import { use } from "react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { EbookManifestSchema } from "@/lib/schemas/ebook";
@@ -95,7 +96,7 @@ export default async function BookLandingPage({
 }: {
   params: Promise<{ slug: string }>;
 }) {
-  const { slug } = await params;
+  const { slug } = use(params);
   const [manifest, accent] = await Promise.all([
     fetchManifest(slug),
     fetchAccent(slug),
