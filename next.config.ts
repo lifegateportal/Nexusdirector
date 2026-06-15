@@ -4,6 +4,7 @@ const nextConfig: NextConfig = {
   serverExternalPackages: ["@deepgram/sdk", "epub-gen-memory", "pdfkit"],
   experimental: {
     serverActions: { bodySizeLimit: "30mb" },
+    serverRequestBodySizeLimit: "50mb",
   },
   allowedDevOrigins: ["*.replit.dev", "*.replit.app", "*.riker.replit.dev"],
   outputFileTracingIncludes: {

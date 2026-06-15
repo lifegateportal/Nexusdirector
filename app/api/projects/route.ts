@@ -11,6 +11,7 @@ import { z } from "zod";
 
 export const runtime    = "nodejs";
 export const maxDuration = 30;
+export const maxRequestBodySize = "50mb";
 
 function makeS3(accountId: string, accessKey: string, secretKey: string) {
   return new S3Client({

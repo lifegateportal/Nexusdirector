@@ -553,6 +553,19 @@ function EbookPageClient() {
         });
       }
 
+      // Strip raw transcript text from cloud payload — it's the largest part and
+      // not needed for chapter restore. Chapters, architecture, frontMatter and
+      // contentMap are preserved in full so reload works from R2.
+      const cloudJobState = {
+        ...persistedJobState,
+        masterTranscript: "",
+        filteredTranscript: "",
+        transcripts: (persistedJobState.transcripts ?? []).map((t: any) => ({
+          label: t.label,
+          text: "",
+        })),
+      };
+
       let cloudSaved = false;
       const cloudRes = await fetch("/api/projects", {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -570,7 +583,7 @@ function EbookPageClient() {
             logicResult: null,
             uiResult: null,
             ebookManifest: null,
-            ebookJobState: persistedJobState,
+            ebookJobState: cloudJobState,
             publishedSlug: project.publishedSlug,
             coverImageUrl: project.coverImageUrl,
             authorImageUrl: project.authorImageUrl,
