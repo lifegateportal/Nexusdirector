@@ -61,6 +61,8 @@ function EbookPageClient() {
   const [currentProjectId, setCurrentProjectId] = useState<string>("");
   // Incrementing this key remounts <EbookPipeline> so it re-reads localStorage on load
   const [pipelineKey, setPipelineKey] = useState(0);
+  // Direct prop to pass initial job state to pipeline on load (more reliable than localStorage-only)
+  const [pipelineInitialJobState, setPipelineInitialJobState] = useState<EbookJobState | null>(null);
   const hydratedLoadRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -366,6 +368,21 @@ function EbookPageClient() {
         coverImageUrl: existing?.coverImageUrl,
         authorImageUrl: existing?.authorImageUrl,
       };
+      
+      // Verify we're saving real data before persisting
+      const isMeaningfullySaved = Boolean(
+        jobState.chapters?.length ||
+        jobState.masterTranscript?.length ||
+        jobState.architecture ||
+        jobState.voiceDNA ||
+        jobState.contentMap
+      );
+      
+      if (!isMeaningfullySaved) {
+        setStatusMsg({ type: "error", text: `Cannot save "${name}" — project has no content (no chapters, transcript, or architecture).` });
+        return;
+      }
+      
       let localSaved = false;
       try {
         await saveEbookProject(project);
@@ -484,6 +501,9 @@ function EbookPageClient() {
         setStatusMsg({ type: "error", text: "Cannot load: browser storage unavailable. Try clearing cache." });
         return;
       }
+      
+      // Set as initial state for pipeline to use directly (more reliable than localStorage-only)
+      setPipelineInitialJobState(normalized);
       setCurrentProjectId(p.id);
       const job = normalized;
       if (job.architecture && job.frontMatter && job.contentMap) {
@@ -958,6 +978,7 @@ function EbookPageClient() {
               <div className="h-full w-full overflow-y-auto overscroll-contain px-4 pt-5 pb-[max(env(safe-area-inset-bottom),1.5rem)] lg:px-8 lg:pt-6 lg:pb-6" style={{ WebkitOverflowScrolling: "touch" }}>
                 <EbookPipeline
                   key={pipelineKey}
+                  initialJobState={pipelineInitialJobState}
                   ebookManifest={ebookManifest}
                   onManifestReady={handleManifestReady}
                   onPipelineSnapshotChange={handlePipelineSnapshotChange}

@@ -1461,12 +1461,14 @@ const JOB_STATE_KEY = "nexus_ebook_job_state";    // stores full state as JSON (
 
 export function EbookPipeline({
   ebookManifest,
+  initialJobState,
   onManifestReady,
   onPipelineSnapshotChange,
   onJobStateChange,
   onSaveProject,
 }: {
   ebookManifest?: EbookManifest | null;
+  initialJobState?: EbookJobState | null;
   onManifestReady?: (manifest: EbookManifest) => void;
   onPipelineSnapshotChange?: (snapshot: EbookPipelineSnapshot | null) => void;
   onJobStateChange?: (jobState: EbookJobState | null) => void;
@@ -1933,17 +1935,31 @@ export function EbookPipeline({
     };
 
     const fromLocal = tryLocalStorage();
-    if (fromLocal) { restore(fromLocal); return; }
+    if (fromLocal) { 
+      console.log("[Pipeline.restore] Restoring from localStorage");
+      restore(fromLocal); 
+      return; 
+    }
+
+    // If initialJobState was provided (e.g., from handleLoadProject), use it
+    if (initialJobState) {
+      console.log("[Pipeline.restore] Restoring from initialJobState prop. Chapters:", initialJobState.chapters?.length ?? 0);
+      restore(normalizeJob(initialJobState));
+      return;
+    }
 
     // IndexedDB fallback
     const savedId = localStorage.getItem(JOB_STORAGE_KEY);
-    if (!savedId) return;
+    if (!savedId) {
+      console.log("[Pipeline.restore] No fallback data found (no savedId in localStorage)");
+      return;
+    }
     void getEbookJob(savedId).then((job) => {
       if (!job) return;
       restore(normalizeJob(job));
     }).catch(() => { /* IndexedDB unavailable — ignore */ });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [initialJobState]);
 
   const setAudio = useCallback((i: number, f: File | null) => {
     setAudioFiles((prev) => { const next = [...prev]; next[i] = f; return next; });
