@@ -368,21 +368,6 @@ function EbookPageClient() {
         coverImageUrl: existing?.coverImageUrl,
         authorImageUrl: existing?.authorImageUrl,
       };
-      
-      // Verify we're saving real data before persisting
-      const isMeaningfullySaved = Boolean(
-        jobState.chapters?.length ||
-        jobState.masterTranscript?.length ||
-        jobState.architecture ||
-        jobState.voiceDNA ||
-        jobState.contentMap
-      );
-      
-      if (!isMeaningfullySaved) {
-        setStatusMsg({ type: "error", text: `Cannot save "${name}" — project has no content (no chapters, transcript, or architecture).` });
-        return;
-      }
-      
       let localSaved = false;
       try {
         await saveEbookProject(project);
