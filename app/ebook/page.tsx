@@ -9,7 +9,7 @@ import { NexusNav } from "@/app/components/NexusNav";
 import { StatusBar } from "@/app/components/StatusBar";
 import { SiteConfigSchema } from "@/lib/schemas/site-config";
 import { EbookManifestSchema, EbookJobStateSchema } from "@/lib/schemas/ebook";
-import type { EbookManifest, EbookJobState } from "@/lib/schemas/ebook";
+import type { ChapterDraft, EbookManifest, EbookJobState } from "@/lib/schemas/ebook";
 import type { SiteConfig } from "@/lib/schemas/site-config";
 import type { EbookPipelineSnapshot } from "@/app/components/EbookPipeline";
 import {
@@ -255,7 +255,10 @@ function EbookPageClient() {
     } catch (err) {
       setStatusMsg({ type: "error", text: err instanceof Error ? err.message : "Project mount failed." });
     }
-  }, [requestedLoad, projects, router, normalizeJobStateForSave, toManifestFromJob]);
+  // Intentionally avoid callback deps here because this effect is defined
+  // before those callbacks are initialized in this component body.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requestedLoad, projects, router]);
 
   const suggestedName = ebookPipelineSnapshot?.bookTitle ?? ebookManifest?.bookTitle ?? "";
 
@@ -322,6 +325,38 @@ function EbookPageClient() {
     return normalized;
   }, []);
 
+  const toJsonSafeValue = useCallback((value: unknown): unknown => {
+    const seen = new WeakSet<object>();
+
+    const walk = (input: unknown): unknown => {
+      if (input === null) return null;
+      if (input instanceof Date) return input.toISOString();
+
+      const t = typeof input;
+      if (t === "string" || t === "number" || t === "boolean") return input;
+      if (t === "bigint") return input.toString();
+      if (t === "undefined" || t === "function" || t === "symbol") return null;
+
+      if (Array.isArray(input)) return input.map((item) => walk(item));
+
+      if (t === "object") {
+        const obj = input as Record<string, unknown>;
+        if (seen.has(obj)) return null;
+        seen.add(obj);
+
+        const out: Record<string, unknown> = {};
+        for (const [key, val] of Object.entries(obj)) {
+          out[key] = walk(val);
+        }
+        return out;
+      }
+
+      return null;
+    };
+
+    return walk(value);
+  }, []);
+
   const mergeManifestIntoJobState = useCallback((
     job: EbookJobState | null,
     manifest: EbookManifest | null,
@@ -373,7 +408,7 @@ function EbookPageClient() {
   }, []);
 
   const toManifestFromJob = useCallback((job: EbookJobState): EbookManifest | null => {
-    const chapters = job.chapters ?? [];
+    const chapters = (job.chapters ?? []).filter((chapter): chapter is ChapterDraft => Boolean(chapter && typeof chapter === "object"));
     if (chapters.length === 0) return null;
     return {
       jobId: job.jobId,
@@ -438,6 +473,16 @@ function EbookPageClient() {
         return;
       }
 
+      const safeJobState = normalizeJobStateForSave(toJsonSafeValue(jobState));
+      if (!safeJobState) {
+        setStatusMsg({ type: "error", text: "Save failed: project data contains unsupported values." });
+        return;
+      }
+
+      const safeChapters = (safeJobState.chapters ?? []).filter((chapter): chapter is ChapterDraft => Boolean(chapter && typeof chapter === "object"));
+      const chapterCount = safeChapters.length;
+      const totalWordCount = safeChapters.reduce((sum, chapter) => sum + (chapter.totalWordCount ?? 0), 0);
+
       const id = currentProjectId || generateEbookProjectId();
       const existing = projects.find((p) => p.id === id);
       const project: EbookProject = {
@@ -446,10 +491,10 @@ function EbookPageClient() {
         createdAt: existing?.createdAt ?? new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         bookTitle: ebookManifest?.bookTitle ?? jobState.architecture?.bookTitle ?? name,
-        chapterCount: jobState.chapters?.length ?? 0,
-        totalWordCount: (jobState.chapters ?? []).reduce((s, c) => s + (c.totalWordCount ?? 0), 0),
-        status: jobState.status,
-        jobState,
+        chapterCount,
+        totalWordCount,
+        status: safeJobState.status,
+        jobState: safeJobState,
         publishedSlug: existing?.publishedSlug,
         coverImageUrl: existing?.coverImageUrl,
         authorImageUrl: existing?.authorImageUrl,
@@ -458,6 +503,9 @@ function EbookPageClient() {
       try {
         await saveEbookProject(project);
         localSaved = true;
+        if (chapterCount === 0 && project.jobState.status === "complete") {
+          console.warn("[handleSaveProject] WARNING: Saving complete project with 0 valid chapters");
+        }
       } catch (err) {
         localSaved = false;
         console.error("[handleSaveProject] IndexedDB save failed:", err);
@@ -499,7 +547,7 @@ function EbookPageClient() {
             logicResult: null,
             uiResult: null,
             ebookManifest: null,
-            ebookJobState: project.jobState,
+            ebookJobState: safeJobState,
             publishedSlug: project.publishedSlug,
             coverImageUrl: project.coverImageUrl,
             authorImageUrl: project.authorImageUrl,
@@ -522,7 +570,15 @@ function EbookPageClient() {
     } catch (err) {
       setStatusMsg({ type: "error", text: err instanceof Error ? err.message : "Save failed." });
     }
-  }, [currentProjectId, ebookManifest, liveJobState, mergeManifestIntoJobState, normalizeJobStateForSave, projects]);
+  }, [
+    currentProjectId,
+    ebookManifest,
+    liveJobState,
+    mergeManifestIntoJobState,
+    normalizeJobStateForSave,
+    projects,
+    toJsonSafeValue,
+  ]);
 
   const handleLoadProject = useCallback((id: string) => {
     const p = projects.find((proj) => proj.id === id);
