@@ -288,7 +288,6 @@ function EbookPageClient() {
 
     const nowIso = new Date().toISOString();
     const record = value as Record<string, unknown>;
-    const rawStatus = typeof record.status === "string" ? record.status : "idle";
 
     let storedJobId: string | null = null;
     try {
@@ -306,18 +305,21 @@ function EbookPageClient() {
       return Number.isFinite(ts) ? new Date(ts).toISOString() : nowIso;
     };
 
-    const normalized: Record<string, unknown> = {
+    const rawStatus = typeof record.status === "string" ? record.status : "idle";
+    const isValidStatus = VALID_JOB_STATUSES.has(rawStatus);
+
+    // Preserve entire record structure, only fixing required fields
+    const normalized: EbookJobState = {
       ...record,
       jobId: typeof record.jobId === "string" && record.jobId.trim().length > 0
         ? record.jobId
         : (storedJobId ?? `job-${Date.now()}`),
-      status: VALID_JOB_STATUSES.has(rawStatus) ? rawStatus : "idle",
+      status: (isValidStatus ? rawStatus : "idle") as any,
       createdAt: toIso(record.createdAt),
       updatedAt: toIso(record.updatedAt),
-    };
+    } as EbookJobState;
 
-    const parsed = EbookJobStateSchema.safeParse(normalized);
-    return parsed.success ? parsed.data : null;
+    return normalized;
   }, []);
 
   // ── Project handlers ──────────────────────────────────────────────────────
@@ -368,13 +370,20 @@ function EbookPageClient() {
       try {
         await saveEbookProject(project);
         localSaved = true;
-      } catch {
+        // Verify chapters were actually saved
+        const chapterCount = project.jobState.chapters?.length ?? 0;
+        if (chapterCount === 0 && project.jobState.status === "complete") {
+          console.warn("[handleSaveProject] WARNING: Saving complete project with 0 chapters");
+        }
+      } catch (err) {
         localSaved = false;
+        console.error("[handleSaveProject] IndexedDB save failed:", err);
       }
       try {
         localStorage.setItem(JOB_STATE_KEY, JSON.stringify(project.jobState));
-      } catch {
+      } catch (err) {
         // localStorage may be unavailable in some browser modes
+        console.warn("[handleSaveProject] localStorage unavailable:", err);
       }
       setCurrentProjectId(id);
       if (localSaved) {
@@ -435,9 +444,48 @@ function EbookPageClient() {
     const p = projects.find((proj) => proj.id === id);
     if (!p) return;
     try {
-      localStorage.setItem(JOB_STATE_KEY, JSON.stringify(p.jobState));
+      const normalized = normalizeJobStateForSave(p.jobState);
+      if (!normalized) {
+        setStatusMsg({ type: "error", text: "Cannot load this project: saved data is corrupted or incomplete." });
+        return;
+      }
+      
+      // Verify we have recoverable data before writing to storage
+      const hasData = Boolean(
+        normalized.chapters?.length ||
+        normalized.architecture ||
+        normalized.contentMap ||
+        normalized.masterTranscript ||
+        normalized.voiceDNA ||
+        normalized.status === "complete"
+      );
+      
+      if (!hasData) {
+        setStatusMsg({ type: "error", text: "Project saved but has no content to restore. Try running the pipeline again." });
+        return;
+      }
+      
+      // Debug: log what we're about to load
+      const chapterCount = normalized.chapters?.length ?? 0;
+      console.log("[handleLoadProject] Loading project with chapters:", chapterCount, "status:", normalized.status);
+      
+      try {
+        localStorage.setItem(JOB_STATE_KEY, JSON.stringify(normalized));
+        localStorage.setItem(JOB_STORAGE_KEY, normalized.jobId);
+        // Verify it was written
+        const verify = localStorage.getItem(JOB_STATE_KEY);
+        if (verify) {
+          const parsed = JSON.parse(verify);
+          console.log("[handleLoadProject] Verified localStorage write. Chapters in storage:", parsed.chapters?.length ?? 0);
+        } else {
+          console.warn("[handleLoadProject] localStorage write verification failed");
+        }
+      } catch (storageErr) {
+        setStatusMsg({ type: "error", text: "Cannot load: browser storage unavailable. Try clearing cache." });
+        return;
+      }
       setCurrentProjectId(p.id);
-      const job = p.jobState;
+      const job = normalized;
       if (job.architecture && job.frontMatter && job.contentMap) {
         setEbookManifest({
           jobId: job.jobId,
@@ -463,7 +511,7 @@ function EbookPageClient() {
     } catch (err) {
       setStatusMsg({ type: "error", text: err instanceof Error ? err.message : "Load failed." });
     }
-  }, [projects]);
+  }, [normalizeJobStateForSave, projects]);
 
   const handleDeleteProject = useCallback(async (id: string) => {
     await deleteEbookProject(id);
