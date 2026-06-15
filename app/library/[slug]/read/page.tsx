@@ -1,4 +1,3 @@
-import { use } from "react";
 import { notFound } from "next/navigation";
 import { EbookManifestSchema } from "@/lib/schemas/ebook";
 import { ReaderClient } from "./ReaderClient";
@@ -26,8 +25,8 @@ export default async function ReadPage({
   params:       Promise<{ slug: string }>;
   searchParams: Promise<{ chapter?: string }>;
 }) {
-  const { slug } = use(params);
-  const sp       = use(searchParams);
+  const { slug } = await params;
+  const sp       = await searchParams;
   const initial  = sp.chapter !== undefined
     ? Math.max(0, parseInt(sp.chapter, 10))
     : undefined;
