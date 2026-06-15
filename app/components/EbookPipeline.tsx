@@ -1463,11 +1463,13 @@ export function EbookPipeline({
   ebookManifest,
   onManifestReady,
   onPipelineSnapshotChange,
+  onJobStateChange,
   onSaveProject,
 }: {
   ebookManifest?: EbookManifest | null;
   onManifestReady?: (manifest: EbookManifest) => void;
   onPipelineSnapshotChange?: (snapshot: EbookPipelineSnapshot | null) => void;
+  onJobStateChange?: (jobState: EbookJobState | null) => void;
   /** Called when the user clicks Save inside the pipeline. Receives the chosen project name. */
   onSaveProject?: (name: string) => void;
 } = {}) {
@@ -1844,6 +1846,7 @@ export function EbookPipeline({
 
     const restore = (job: EbookJobState) => {
       savedJobRef.current = job;
+      onJobStateChange?.(job);
       const filterInfo = parseSignalFilterLog(job.errorLog ?? []);
       setSignalFilterState(filterInfo.state);
       setSignalFilterDetail(filterInfo.detail);
@@ -2065,6 +2068,12 @@ export function EbookPipeline({
           createdAt: now,
           updatedAt: now,
         };
+
+    // Expose the initial running state immediately so Save Project does not
+    // race with async persistence on fast taps.
+    savedJobRef.current = { ...acc };
+    onJobStateChange?.({ ...acc });
+
     const checkpoint = async (s: PipelineStage) => {
       acc.status = s;
       acc.currentStage = s;
@@ -2074,7 +2083,11 @@ export function EbookPipeline({
       try { localStorage.setItem(JOB_STATE_KEY, JSON.stringify(acc)); } catch { /* quota */ }
       // Secondary: IndexedDB
       try { await saveEbookJob({ ...acc }); } catch { /* silently fail */ }
+      onJobStateChange?.({ ...acc });
     };
+
+    // Persist immediately so Save Project works from the first running stage.
+    await checkpoint("transcribing");
 
     try {
       // ── Stage 1: Transcribe (skip if resuming with existing transcript) ────
@@ -3017,6 +3030,7 @@ export function EbookPipeline({
       try { await saveEbookJob({ ...acc }); } catch { /* ignore */ }
       // Update savedJobRef so the Resume button has the partial state
       savedJobRef.current = { ...acc };
+      onJobStateChange?.({ ...acc });
       setStage("failed");
       addLog(`✗ Error: ${msg}`);
     }
