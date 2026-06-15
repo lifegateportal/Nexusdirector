@@ -1841,16 +1841,10 @@ export function EbookPipeline({
     const tryLocalStorage = () => {
       try {
         const raw = localStorage.getItem(JOB_STATE_KEY);
-        if (!raw) {
-          console.log("[Pipeline.tryLocalStorage] No data in localStorage");
-          return null;
-        }
+        if (!raw) return null;
         const parsed = JSON.parse(raw) as EbookJobState;
-        const normalized = normalizeJob(parsed);
-        console.log("[Pipeline.tryLocalStorage] Found in localStorage. Chapters:", normalized.chapters?.length ?? 0);
-        return normalized;
-      } catch (err) {
-        console.error("[Pipeline.tryLocalStorage] Error reading localStorage:", err);
+        return normalizeJob(parsed);
+      } catch {
         return null;
       }
     };
@@ -1875,11 +1869,7 @@ export function EbookPipeline({
         job.status === "complete" ||
         job.status === "failed"
       );
-      console.log("[Pipeline.restore] hasRecoverableState:", hasRecoverableState, "chapters:", job.chapters?.length ?? 0, "status:", job.status);
-      if (!hasRecoverableState) {
-        console.log("[Pipeline.restore] No recoverable state found, skipping restore");
-        return;
-      }
+      if (!hasRecoverableState) return;
       jobIdRef.current = job.jobId;
       setStage(job.status as PipelineStage);
       logRef.current = job.errorLog ?? [];
@@ -1934,26 +1924,21 @@ export function EbookPipeline({
       if (words > 0) setTotalWords(words);
     };
 
-    const fromLocal = tryLocalStorage();
-    if (fromLocal) { 
-      console.log("[Pipeline.restore] Restoring from localStorage");
-      restore(fromLocal); 
-      return; 
-    }
-
     // If initialJobState was provided (e.g., from handleLoadProject), use it
     if (initialJobState) {
-      console.log("[Pipeline.restore] Restoring from initialJobState prop. Chapters:", initialJobState.chapters?.length ?? 0);
       restore(normalizeJob(initialJobState));
+      return;
+    }
+
+    const fromLocal = tryLocalStorage();
+    if (fromLocal) {
+      restore(fromLocal);
       return;
     }
 
     // IndexedDB fallback
     const savedId = localStorage.getItem(JOB_STORAGE_KEY);
-    if (!savedId) {
-      console.log("[Pipeline.restore] No fallback data found (no savedId in localStorage)");
-      return;
-    }
+    if (!savedId) return;
     void getEbookJob(savedId).then((job) => {
       if (!job) return;
       restore(normalizeJob(job));

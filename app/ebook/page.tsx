@@ -202,6 +202,8 @@ function EbookPageClient() {
       }
 
       localStorage.setItem(JOB_STATE_KEY, JSON.stringify(jobParsed.data));
+      localStorage.setItem(JOB_STORAGE_KEY, jobParsed.data.jobId);
+      setPipelineInitialJobState(jobParsed.data);
       if (typeof parsed.projectId === "string") setCurrentProjectId(parsed.projectId);
 
       const manifestParsed = EbookManifestSchema.safeParse(parsed.ebookManifest);
@@ -229,26 +231,22 @@ function EbookPageClient() {
     if (!project) return;
 
     try {
-      localStorage.setItem(JOB_STATE_KEY, JSON.stringify(project.jobState));
+      const normalized = normalizeJobStateForSave(project.jobState);
+      if (!normalized) return;
+      localStorage.setItem(JOB_STATE_KEY, JSON.stringify(normalized));
+      localStorage.setItem(JOB_STORAGE_KEY, normalized.jobId);
+      setPipelineInitialJobState(normalized);
       setCurrentProjectId(project.id);
-      const job = project.jobState;
-      if (job.architecture && job.frontMatter && job.contentMap) {
-        setEbookManifest({
-          jobId: job.jobId,
-          bookTitle: job.architecture.bookTitle,
-          subtitle: job.architecture.subtitle,
-          authorName: job.architecture.authorName,
-          frontMatter: job.frontMatter,
-          chapters: job.chapters ?? [],
-          totalWordCount: (job.chapters ?? []).reduce((sum, chapter) => sum + (chapter.totalWordCount ?? 0), 0),
-          allQuotes: job.contentMap.allQuotes ?? [],
-          generatedAt: new Date().toISOString(),
-          selectedTemplate: "devotional",
-          printSpec: { trimSize: "6x9", runningHeaders: true, bleed: false, cropMarks: false },
-          coverImageUrl: project.coverImageUrl ?? null,
-          authorImageUrl: project.authorImageUrl ?? null,
-        });
-      }
+      const manifest = toManifestFromJob(normalized);
+      setEbookManifest(
+        manifest
+          ? {
+              ...manifest,
+              coverImageUrl: project.coverImageUrl ?? null,
+              authorImageUrl: project.authorImageUrl ?? null,
+            }
+          : null
+      );
       setPipelineKey((k) => k + 1);
       setActiveTab("pipeline");
       hydratedLoadRef.current = requestedLoad;
@@ -257,7 +255,7 @@ function EbookPageClient() {
     } catch (err) {
       setStatusMsg({ type: "error", text: err instanceof Error ? err.message : "Project mount failed." });
     }
-  }, [requestedLoad, projects, router]);
+  }, [requestedLoad, projects, router, normalizeJobStateForSave, toManifestFromJob]);
 
   const suggestedName = ebookPipelineSnapshot?.bookTitle ?? ebookManifest?.bookTitle ?? "";
 
@@ -324,45 +322,122 @@ function EbookPageClient() {
     return normalized;
   }, []);
 
+  const mergeManifestIntoJobState = useCallback((
+    job: EbookJobState | null,
+    manifest: EbookManifest | null,
+  ): EbookJobState | null => {
+    if (!job) return null;
+    if (!manifest || manifest.chapters.length === 0) return job;
+
+    return {
+      ...job,
+      status: job.status === "failed" ? "failed" : "complete",
+      chapters: manifest.chapters,
+      frontMatter: manifest.frontMatter ?? job.frontMatter,
+      architecture: job.architecture
+        ? {
+            ...job.architecture,
+            bookTitle: manifest.bookTitle,
+            subtitle: manifest.subtitle,
+            authorName: manifest.authorName,
+          }
+        : {
+            bookTitle: manifest.bookTitle,
+            subtitle: manifest.subtitle,
+            authorName: manifest.authorName,
+            estimatedTotalWords: manifest.totalWordCount,
+            chapters: [],
+            frontMatterNotes: "",
+            backMatterNotes: "",
+            seriesArc: [],
+            droppedSegments: [],
+          },
+      contentMap: job.contentMap
+        ? {
+            ...job.contentMap,
+            allQuotes: manifest.allQuotes ?? job.contentMap.allQuotes ?? [],
+          }
+        : {
+            totalEstimatedWords: manifest.totalWordCount,
+            overarchingThemes: [],
+            teachingArc: "",
+            coreThesis: "",
+            targetAudience: "",
+            uniqueVocabulary: [],
+            toneMap: "",
+            segments: [],
+            allQuotes: manifest.allQuotes ?? [],
+          },
+      updatedAt: new Date().toISOString(),
+    };
+  }, []);
+
+  const toManifestFromJob = useCallback((job: EbookJobState): EbookManifest | null => {
+    const chapters = job.chapters ?? [];
+    if (chapters.length === 0) return null;
+    return {
+      jobId: job.jobId,
+      bookTitle: job.architecture?.bookTitle ?? "Untitled Book",
+      subtitle: job.architecture?.subtitle ?? "",
+      authorName: job.architecture?.authorName ?? "the author",
+      frontMatter: job.frontMatter ?? {
+        preface: "",
+        introduction: "",
+        conclusion: "",
+        aboutAuthor: null,
+        resourcesList: [],
+        scriptureIndex: [],
+      },
+      chapters,
+      totalWordCount: chapters.reduce((sum, chapter) => sum + (chapter.totalWordCount ?? 0), 0),
+      allQuotes: job.contentMap?.allQuotes ?? [],
+      generatedAt: new Date().toISOString(),
+      selectedTemplate: "devotional",
+      printSpec: { trimSize: "6x9", runningHeaders: true, bleed: false, cropMarks: false },
+    };
+  }, []);
+
   // ── Project handlers ──────────────────────────────────────────────────────
 
   const handleSaveProject = useCallback(async (name: string) => {
     try {
-      const raw = localStorage.getItem(JOB_STATE_KEY);
       const fallbackProject = currentProjectId
         ? projects.find((p) => p.id === currentProjectId)
         : null;
+
       let parsedRaw: unknown = liveJobState ?? fallbackProject?.jobState;
-      
-      console.log("[handleSaveProject] Initial state sources:", {
-        hasLiveJobState: !!liveJobState,
-        liveChapters: (liveJobState as any)?.chapters?.length ?? 0,
-        hasFallbackProject: !!fallbackProject,
-        fallbackChapters: (fallbackProject?.jobState as any)?.chapters?.length ?? 0,
-        hasRawLocalStorage: !!raw
-      });
-      
-      if (raw) {
+      if (!parsedRaw) {
         try {
-          parsedRaw = JSON.parse(raw) as unknown;
+          const raw = localStorage.getItem(JOB_STATE_KEY);
+          if (raw) {
+            parsedRaw = JSON.parse(raw) as unknown;
+          }
         } catch {
-          parsedRaw = liveJobState ?? fallbackProject?.jobState;
+          parsedRaw = null;
         }
       }
-      let jobState = normalizeJobStateForSave(parsedRaw);
+
+      let jobState = mergeManifestIntoJobState(
+        normalizeJobStateForSave(parsedRaw),
+        ebookManifest,
+      );
+
       if (!parsedRaw) {
         const savedJobId = localStorage.getItem(JOB_STORAGE_KEY);
         if (savedJobId) {
           parsedRaw = await getEbookJob(savedJobId).catch(() => null);
-          jobState = normalizeJobStateForSave(parsedRaw);
+          jobState = mergeManifestIntoJobState(
+            normalizeJobStateForSave(parsedRaw),
+            ebookManifest,
+          );
         }
       }
+
       if (!jobState) {
         setStatusMsg({ type: "error", text: "Nothing to save yet — start the pipeline first." });
         return;
       }
-      
-      console.log("[handleSaveProject] About to save jobState with chapters:", jobState.chapters?.length ?? 0);
+
       const id = currentProjectId || generateEbookProjectId();
       const existing = projects.find((p) => p.id === id);
       const project: EbookProject = {
@@ -370,7 +445,7 @@ function EbookPageClient() {
         name,
         createdAt: existing?.createdAt ?? new Date().toISOString(),
         updatedAt: new Date().toISOString(),
-        bookTitle: jobState.architecture?.bookTitle ?? name,
+        bookTitle: ebookManifest?.bookTitle ?? jobState.architecture?.bookTitle ?? name,
         chapterCount: jobState.chapters?.length ?? 0,
         totalWordCount: (jobState.chapters ?? []).reduce((s, c) => s + (c.totalWordCount ?? 0), 0),
         status: jobState.status,
@@ -383,19 +458,13 @@ function EbookPageClient() {
       try {
         await saveEbookProject(project);
         localSaved = true;
-        // Verify what was actually saved by reading it back
-        const verification = await getEbookJob(project.jobState.jobId).catch(() => null);
-        console.log("[handleSaveProject] Save verification - chapters in IndexedDB:", verification?.chapters?.length ?? "failed to read");
-        const chapterCount = project.jobState.chapters?.length ?? 0;
-        if (chapterCount === 0 && project.jobState.status === "complete") {
-          console.warn("[handleSaveProject] WARNING: Saving complete project with 0 chapters");
-        }
       } catch (err) {
         localSaved = false;
         console.error("[handleSaveProject] IndexedDB save failed:", err);
       }
       try {
         localStorage.setItem(JOB_STATE_KEY, JSON.stringify(project.jobState));
+        localStorage.setItem(JOB_STORAGE_KEY, project.jobState.jobId);
       } catch (err) {
         // localStorage may be unavailable in some browser modes
         console.warn("[handleSaveProject] localStorage unavailable:", err);
@@ -453,66 +522,23 @@ function EbookPageClient() {
     } catch (err) {
       setStatusMsg({ type: "error", text: err instanceof Error ? err.message : "Save failed." });
     }
-  }, [currentProjectId, liveJobState, normalizeJobStateForSave, projects]);
+  }, [currentProjectId, ebookManifest, liveJobState, mergeManifestIntoJobState, normalizeJobStateForSave, projects]);
 
   const handleLoadProject = useCallback((id: string) => {
     const p = projects.find((proj) => proj.id === id);
     if (!p) return;
-    
-    console.log("[handleLoadProject] Loading project:", {
-      name: p.name,
-      hasJobState: !!p.jobState,
-      jobStateKeys: p.jobState ? Object.keys(p.jobState) : [],
-      rawChapters: (p.jobState as any)?.chapters?.length ?? 0,
-      status: (p.jobState as any)?.status
-    });
-    
+
     try {
       const normalized = normalizeJobStateForSave(p.jobState);
       if (!normalized) {
-        console.error("[handleLoadProject] Normalization returned null");
         setStatusMsg({ type: "error", text: "Cannot load this project: saved data is corrupted or incomplete." });
         return;
       }
-      
-      console.log("[handleLoadProject] After normalization:", {
-        chapters: normalized.chapters?.length ?? 0,
-        architecture: !!normalized.architecture,
-        contentMap: !!normalized.contentMap,
-        masterTranscript: normalized.masterTranscript?.length ?? 0
-      });
-      
-      // Verify we have recoverable data before writing to storage
-      const hasData = Boolean(
-        normalized.chapters?.length ||
-        normalized.architecture ||
-        normalized.contentMap ||
-        normalized.masterTranscript ||
-        normalized.voiceDNA ||
-        normalized.status === "complete"
-      );
-      
-      if (!hasData) {
-        setStatusMsg({ type: "error", text: "Project saved but has no content to restore. Try running the pipeline again." });
-        return;
-      }
-      
-      // Debug: log what we're about to load
-      const chapterCount = normalized.chapters?.length ?? 0;
-      console.log("[handleLoadProject] Loading project with chapters:", chapterCount, "status:", normalized.status);
-      
+
       try {
         localStorage.setItem(JOB_STATE_KEY, JSON.stringify(normalized));
         localStorage.setItem(JOB_STORAGE_KEY, normalized.jobId);
-        // Verify it was written
-        const verify = localStorage.getItem(JOB_STATE_KEY);
-        if (verify) {
-          const parsed = JSON.parse(verify);
-          console.log("[handleLoadProject] Verified localStorage write. Chapters in storage:", parsed.chapters?.length ?? 0);
-        } else {
-          console.warn("[handleLoadProject] localStorage write verification failed");
-        }
-      } catch (storageErr) {
+      } catch {
         setStatusMsg({ type: "error", text: "Cannot load: browser storage unavailable. Try clearing cache." });
         return;
       }
@@ -520,33 +546,23 @@ function EbookPageClient() {
       // Set as initial state for pipeline to use directly (more reliable than localStorage-only)
       setPipelineInitialJobState(normalized);
       setCurrentProjectId(p.id);
-      const job = normalized;
-      if (job.architecture && job.frontMatter && job.contentMap) {
-        setEbookManifest({
-          jobId: job.jobId,
-          bookTitle: job.architecture.bookTitle,
-          subtitle: job.architecture.subtitle,
-          authorName: job.architecture.authorName,
-          frontMatter: job.frontMatter,
-          chapters: job.chapters ?? [],
-          totalWordCount: (job.chapters ?? []).reduce((sum, chapter) => sum + (chapter.totalWordCount ?? 0), 0),
-          allQuotes: job.contentMap.allQuotes ?? [],
-          generatedAt: new Date().toISOString(),
-          selectedTemplate: "devotional",
-          printSpec: { trimSize: "6x9", runningHeaders: true, bleed: false, cropMarks: false },
-          coverImageUrl: p.coverImageUrl ?? null,
-          authorImageUrl: p.authorImageUrl ?? null,
-        });
-      } else {
-        setEbookManifest(null);
-      }
+      const manifest = toManifestFromJob(normalized);
+      setEbookManifest(
+        manifest
+          ? {
+              ...manifest,
+              coverImageUrl: p.coverImageUrl ?? null,
+              authorImageUrl: p.authorImageUrl ?? null,
+            }
+          : null
+      );
       setActiveTab("pipeline");
       setStatusMsg({ type: "success", text: `"${p.name}" loaded — resuming pipeline.` });
       setPipelineKey((k) => k + 1);
     } catch (err) {
       setStatusMsg({ type: "error", text: err instanceof Error ? err.message : "Load failed." });
     }
-  }, [normalizeJobStateForSave, projects]);
+  }, [normalizeJobStateForSave, projects, toManifestFromJob]);
 
   const handleDeleteProject = useCallback(async (id: string) => {
     await deleteEbookProject(id);
@@ -604,6 +620,8 @@ function EbookPageClient() {
     setProjects(await listEbookProjects());
     setCurrentProjectId(project.id);
     localStorage.setItem(JOB_STATE_KEY, JSON.stringify(project.jobState));
+    localStorage.setItem(JOB_STORAGE_KEY, project.jobState.jobId);
+    setPipelineInitialJobState(project.jobState);
     setPipelineKey((k) => k + 1);
     // Mirror imported project to cloud snapshot store (best-effort)
     fetch("/api/projects", {
@@ -776,29 +794,13 @@ function EbookPageClient() {
 
   // ── Manifest handlers ─────────────────────────────────────────────────────
 
-  const buildManifestFromJob = useCallback((job: EbookJobState): EbookManifest | null => {
-    if (!job.architecture || !job.frontMatter || !job.contentMap) return null;
-    return {
-      jobId: job.jobId,
-      bookTitle: job.architecture.bookTitle,
-      subtitle: job.architecture.subtitle,
-      authorName: job.architecture.authorName,
-      frontMatter: job.frontMatter,
-      chapters: job.chapters ?? [],
-      totalWordCount: (job.chapters ?? []).reduce((sum, chapter) => sum + (chapter.totalWordCount ?? 0), 0),
-      allQuotes: job.contentMap.allQuotes ?? [],
-      generatedAt: new Date().toISOString(),
-      selectedTemplate: "devotional",
-      printSpec: { trimSize: "6x9", runningHeaders: true, bleed: false, cropMarks: false },
-    };
-  }, []);
-
   const handleManifestReady = useCallback((manifest: EbookManifest) => {
     setEbookManifest(manifest);
   }, []);
 
   const handleEbookUpdate = useCallback((manifest: EbookManifest) => {
     setEbookManifest(manifest);
+    setLiveJobState((current) => mergeManifestIntoJobState(current, manifest));
     // Write the AI-edited manifest back to localStorage so the pipeline display,
     // saves, and reloads all reflect the changes immediately.
     try {
@@ -825,7 +827,7 @@ function EbookPageClient() {
     } catch {
       // localStorage unavailable — in-memory state still updated correctly
     }
-  }, []);
+  }, [mergeManifestIntoJobState]);
 
   const handlePipelineSnapshotChange = useCallback((snapshot: EbookPipelineSnapshot | null) => {
     setEbookPipelineSnapshot(snapshot);
@@ -850,6 +852,7 @@ function EbookPageClient() {
 
     try {
       localStorage.removeItem(JOB_STATE_KEY);
+      localStorage.removeItem(JOB_STORAGE_KEY);
       localStorage.removeItem(PENDING_MOUNT_KEY);
     } catch {
       // localStorage unavailable; in-memory reset still applies
@@ -857,6 +860,7 @@ function EbookPageClient() {
 
     hydratedLoadRef.current = null;
     setCurrentProjectId("");
+    setPipelineInitialJobState(null);
     setEbookManifest(null);
     setEbookPipelineSnapshot(null);
     setAssistantOpen(false);
@@ -1013,7 +1017,7 @@ function EbookPageClient() {
                   onLoad={handleLoadProject}
                   onDelete={handleDeleteProject}
                   onImport={handleImportProject}
-                  onImportManifestJson={buildManifestFromJob}
+                  onImportManifestJson={toManifestFromJob}
                   onPublish={handlePublish}
                   onUnpublish={handleUnpublish}
                   onUpdateImages={handleUpdateImages}
