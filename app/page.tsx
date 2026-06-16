@@ -47,6 +47,16 @@ const INITIAL_MODELS: ModelState[] = [
   { name: "Manus",    handle: "manus",    role: "Executive",         status: "standby" }
 ];
 
+function sanitizeChapters(chapters: unknown): Array<{ totalWordCount?: number }> {
+  return Array.isArray(chapters)
+    ? chapters.filter((chapter): chapter is { totalWordCount?: number } => Boolean(chapter && typeof chapter === "object"))
+    : [];
+}
+
+function sumChapterWords(chapters: unknown): number {
+  return sanitizeChapters(chapters).reduce((sum, chapter) => sum + (typeof chapter.totalWordCount === "number" ? chapter.totalWordCount : 0), 0);
+}
+
 export default function HomePage() {
   const router = useRouter();
   const [logs,        setLogs]        = useState<LogEntry[]>([]);
@@ -266,16 +276,17 @@ export default function HomePage() {
     try {
       await saveProject(snapshot);
       if (ebookJobState) {
+        const safeChapters = sanitizeChapters(ebookJobState.chapters);
         await saveEbookProject({
           id,
           name,
           createdAt: snapshot.createdAt,
           updatedAt: snapshot.updatedAt,
           bookTitle: ebookJobState.architecture?.bookTitle ?? name,
-          chapterCount: ebookJobState.chapters?.length ?? 0,
-          totalWordCount: (ebookJobState.chapters ?? []).reduce((sum, chapter) => sum + (chapter.totalWordCount ?? 0), 0),
+          chapterCount: safeChapters.length,
+          totalWordCount: sumChapterWords(safeChapters),
           status: ebookJobState.status,
-          jobState: ebookJobState,
+          jobState: { ...ebookJobState, chapters: safeChapters as typeof ebookJobState.chapters },
           publishedSlug: snapshot.publishedSlug,
           coverImageUrl: snapshot.coverImageUrl,
           authorImageUrl: snapshot.authorImageUrl,
@@ -407,6 +418,7 @@ export default function HomePage() {
     setEbookManifest(p.ebookManifest ?? null);
     // Restore full ebook pipeline state so the pipeline can resume from where it left off
     if (loadableEbookJobState) {
+      const safeChapters = sanitizeChapters(loadableEbookJobState.chapters);
       try {
         localStorage.setItem(EBOOK_JOB_KEY, JSON.stringify(loadableEbookJobState));
         localStorage.setItem(EBOOK_PENDING_MOUNT_KEY, JSON.stringify({
@@ -426,10 +438,10 @@ export default function HomePage() {
         createdAt: p.createdAt,
         updatedAt: new Date().toISOString(),
         bookTitle: loadableEbookJobState.architecture?.bookTitle ?? p.name,
-        chapterCount: loadableEbookJobState.chapters?.length ?? 0,
-        totalWordCount: (loadableEbookJobState.chapters ?? []).reduce((sum, chapter) => sum + (chapter.totalWordCount ?? 0), 0),
+        chapterCount: safeChapters.length,
+        totalWordCount: sumChapterWords(safeChapters),
         status: loadableEbookJobState.status,
-        jobState: loadableEbookJobState,
+        jobState: { ...loadableEbookJobState, chapters: safeChapters as typeof loadableEbookJobState.chapters },
         publishedSlug: p.publishedSlug,
         coverImageUrl: p.coverImageUrl,
         authorImageUrl: p.authorImageUrl,
@@ -495,16 +507,17 @@ export default function HomePage() {
   const handleImportProject = useCallback(async (snapshot: ProjectSnapshot) => {
     await saveProject(snapshot);
     if (snapshot.ebookJobState) {
+      const safeChapters = sanitizeChapters(snapshot.ebookJobState.chapters);
       await saveEbookProject({
         id: snapshot.id,
         name: snapshot.name,
         createdAt: snapshot.createdAt,
         updatedAt: snapshot.updatedAt,
         bookTitle: snapshot.ebookJobState.architecture?.bookTitle ?? snapshot.name,
-        chapterCount: snapshot.ebookJobState.chapters?.length ?? 0,
-        totalWordCount: (snapshot.ebookJobState.chapters ?? []).reduce((sum, chapter) => sum + (chapter.totalWordCount ?? 0), 0),
+        chapterCount: safeChapters.length,
+        totalWordCount: sumChapterWords(safeChapters),
         status: snapshot.ebookJobState.status,
-        jobState: snapshot.ebookJobState,
+        jobState: { ...snapshot.ebookJobState, chapters: safeChapters as typeof snapshot.ebookJobState.chapters },
         publishedSlug: snapshot.publishedSlug,
         coverImageUrl: snapshot.coverImageUrl,
         authorImageUrl: snapshot.authorImageUrl,
@@ -562,8 +575,8 @@ export default function HomePage() {
           subtitle:      job!.architecture!.subtitle,
           authorName:    job!.architecture!.authorName,
           frontMatter:   job!.frontMatter,
-          chapters:      job!.chapters ?? [],
-          totalWordCount: (job!.chapters ?? []).reduce((s: number, c: { totalWordCount?: number }) => s + (c.totalWordCount ?? 0), 0),
+          chapters:      sanitizeChapters(job!.chapters),
+          totalWordCount: sumChapterWords(job!.chapters),
           allQuotes:     job!.contentMap?.allQuotes ?? [],
           generatedAt:   job!.updatedAt ?? new Date().toISOString(),
           selectedTemplate: "devotional",

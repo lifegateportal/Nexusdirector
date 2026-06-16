@@ -335,15 +335,15 @@ export const EbookManifestSchema = z.object({
   /** Print trim size and running-header preferences */
   printSpec: PrintSpecSchema.default({ trimSize: "6x9", runningHeaders: true }),
   /** Optional R2 public URL for the book cover image */
-  coverImageUrl: z.string().url().optional().nullable(),
+  coverImageUrl: z.string().url().nullish(),
   /** Optional R2 public URL for the author's photo */
-  authorImageUrl: z.string().url().optional().nullable(),
+  authorImageUrl: z.string().url().nullish(),
   /** Optional published narration map keyed by chapter/front-matter audio track id */
   narrationUrls: z.record(z.string().min(1), z.string().min(1)).optional(),
   /** Voice DNA captured during the pipeline — threaded into audit + apply-audit for voice fidelity */
-  voiceDNA: VoiceDNASchema.optional().nullable(),
+  voiceDNA: VoiceDNASchema.nullish(),
   /** Back matter: glossary, reading group guide, scripture index, recommended resources */
-  backMatter: BackMatterSchema.optional().nullable(),
+  backMatter: BackMatterSchema.nullish(),
   /** Audit trail — rolling log of every assistant edit (max 50 entries, oldest dropped first) */
   changeLog: z.array(z.object({
     timestamp:   z.string().datetime(),

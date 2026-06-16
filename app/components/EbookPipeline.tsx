@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useCallback, useId, useEffect } from "react";
+import { z } from "zod";
 import { ProseEditor, ProseToolbarProvider, SharedProseToolbar } from "./ProseEditor";
 import { EbookProgressRing } from "@/app/components/EbookProgressRing";
 import { VoiceStudio } from "@/app/components/VoiceStudio";
@@ -24,6 +25,7 @@ import type {
   EbookJobState,
   EbookManifest,
 } from "@/lib/schemas/ebook";
+import { WriteChapterOutputSchema } from "@/lib/schemas/ebook";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -64,6 +66,15 @@ const STAGE_ORDER: PipelineStage[] = [
 ];
 type SignalFilterState = "idle" | "applied" | "skipped";
 type QualityReport = { score: number; pass: boolean; issues: { severity: "warn" | "error"; message: string }[] };
+
+const WriteSectionResponseSchema = z.object({
+  body: z.string(),
+  claimLedger: z.array(z.object({ claim: z.string(), excerptNumbers: z.array(z.number().int()) })).default([]),
+  passiveVoiceCount: z.number().int().nonnegative().default(0),
+  unfullfilledHook: z.string().nullable().default(null),
+  sequenceBreakCount: z.number().int().nonnegative().default(0),
+});
+
 export type EbookPipelineSnapshot = {
   stage: PipelineStage;
   progress: { total: number; completed: number };
@@ -142,16 +153,14 @@ async function streamSection(
   assignment: SectionAssignment,
   authorConfig?: { instructions: string; targetAudience: string }
 ): Promise<{ body: string; claimLedger: Array<{ claim: string; excerptNumbers: number[] }>; passiveVoiceCount: number; unfullfilledHook: string | null; sequenceBreakCount: number }> {
-  const result = await postJson<{ body: string; claimLedger?: Array<{ claim: string; excerptNumbers: number[] }>; passiveVoiceCount?: number; unfullfilledHook?: string | null; sequenceBreakCount?: number }>(
+  const result = await postJson<unknown>(
     "/api/ebook/write-section", { assignment, ...(authorConfig ? { authorConfig } : {}) }
   );
-  return {
-    body: (result.body ?? "").trim(),
-    claimLedger: result.claimLedger ?? [],
-    passiveVoiceCount: result.passiveVoiceCount ?? 0,
-    unfullfilledHook: result.unfullfilledHook ?? null,
-    sequenceBreakCount: result.sequenceBreakCount ?? 0,
-  };
+  const parsed = WriteSectionResponseSchema.safeParse(result);
+  if (!parsed.success) {
+    throw new Error(`Invalid write-section response for Ch${assignment.chapterNumber} §${assignment.sectionNumber}`);
+  }
+  return parsed.data;
 }
 
 function countWords(text: string): number {
@@ -167,6 +176,7 @@ function extractIllustrationLabels(body: string): string[] {
   const labels: string[] = [];
   const sentences = body.replace(/^#{1,3} .+$/gm, "").split(/(?<=[.!?])\s+/).filter(Boolean);
   for (const sentence of sentences) {
+    STORY_OPENERS.lastIndex = 0;
     if (STORY_OPENERS.test(sentence)) {
       labels.push(sentence.replace(/[#>*_]/g, "").trim().slice(0, 100));
     }
@@ -330,9 +340,11 @@ function extractStoryPayoffPairs(excerpts: string[]): { setup: string; principle
   for (const excerpt of excerpts) {
     const sentences = excerpt.split(/(?<=[.!?])\s+/).filter(Boolean);
     for (let i = 0; i < sentences.length; i++) {
+      STORY_OPENERS.lastIndex = 0;
       if (!STORY_OPENERS.test(sentences[i])) continue;
       // Look forward up to 5 sentences for the payoff
       for (let j = i + 1; j < Math.min(i + 6, sentences.length); j++) {
+        PRINCIPLE_SIGNALS.lastIndex = 0;
         if (PRINCIPLE_SIGNALS.test(sentences[j])) {
           pairs.push({
             setup: sentences[i].replace(/[#>*_]/g, "").trim().slice(0, 130),
@@ -406,7 +418,7 @@ function checkSequenceWatermark(
       if (lastExcerptIdx >= 0 && bestExcerptIdx < lastExcerptIdx) {
         breaks.push({ paragraphIdx: pIdx + 1, expectedMin: lastExcerptIdx + 1, got: bestExcerptIdx + 1 });
       }
-      lastExcerptIdx = Math.max(lastExcerptIdx, bestExcerptIdx);
+      lastExcerptIdx = bestExcerptIdx;
     }
   }
   return breaks;
@@ -1722,6 +1734,23 @@ export function EbookPipeline({
 
   // ── Hydrate from localStorage (primary) or IndexedDB (fallback) on mount ──
 
+  const sanitizeTranscriptEntries = (value: unknown): { label: string; text: string }[] => {
+    const entries = Array.isArray(value) ? value : [];
+    return entries
+      .filter((item): item is { label?: unknown; text?: unknown } => Boolean(item && typeof item === "object"))
+      .map((item) => ({
+        label: typeof item.label === "string" ? item.label : "",
+        text: typeof item.text === "string" ? item.text : "",
+      }))
+      .filter((item) => item.text);
+  };
+
+  const buildMasterTranscript = (value: unknown): string => (
+    sanitizeTranscriptEntries(value)
+      .map((item) => `[${item.label}]\n${item.text}`)
+      .join("\n\n═══════════════════════════════════════\n\n")
+  );
+
   // Sanitize raw localStorage data — applies missing defaults that Zod can't fill
   // because data is loaded with JSON.parse (not Zod.parse), so .default() never runs.
   function normalizeJob(raw: EbookJobState): EbookJobState {
@@ -1730,15 +1759,8 @@ export function EbookPipeline({
       fixArrays<unknown>(v).filter((item): item is T => Boolean(item && typeof item === "object"))
     );
     const fixStr = (v: unknown, fb = ""): string => (typeof v === "string" ? v : fb);
-    const transcripts = fixObjectArrays<Record<string, unknown>>(raw.transcripts as unknown)
-      .map((t) => ({
-        label: fixStr(t.label),
-        text: fixStr(t.text),
-      }))
-      .filter((t) => t.text);
-    const rebuiltMasterTranscript = transcripts
-      .map((t) => `[${t.label}]\n${t.text}`)
-      .join("\n\n═══════════════════════════════════════\n\n");
+    const transcripts = sanitizeTranscriptEntries(raw.transcripts as unknown);
+    const rebuiltMasterTranscript = buildMasterTranscript(transcripts);
 
     const vdna = raw.voiceDNA as Record<string, unknown> | null;
     const voiceDNA = vdna ? {
@@ -2062,7 +2084,7 @@ export function EbookPipeline({
           chapters: resume.chapters ?? [],
           sections: resume.sections ?? [],
           sectionAssignments: resume.sectionAssignments ?? [],
-          transcripts: resume.transcripts ?? [],
+          transcripts: sanitizeTranscriptEntries(resume.transcripts),
           errorLog: resume.errorLog ?? [],
         }
       : {
@@ -2139,9 +2161,7 @@ export function EbookPipeline({
 
           transcriptResults.push({ label, text: slotText });
         }
-        masterTranscript = transcriptResults
-          .map((t) => `[${t.label}]\n${t.text}`)
-          .join("\n\n═══════════════════════════════════════\n\n");
+        masterTranscript = buildMasterTranscript(transcriptResults);
         addLog(`Master transcript assembled — ${countWords(masterTranscript).toLocaleString()} words after per-slot filtering`);
 
         // ── Stage 1b: Glossary sanitization — zero-cost regex ASR correction ─
@@ -2599,16 +2619,19 @@ export function EbookPipeline({
                   if (done) break;
                   buf += dec.decode(value, { stream: true });
                 }
-                let chapterWriteResult: { sections: Array<{ sectionNumber: number; paragraphs: string[]; claimLedger: Array<{ claim: string }> }>; error?: string } | null = null;
+                let chapterWriteResult: unknown = null;
                 for (const line of buf.split("\n")) {
                   if (line.startsWith("data: ")) {
                     chapterWriteResult = JSON.parse(line.slice(6));
                     break;
                   }
                 }
-                if (!chapterWriteResult || chapterWriteResult.error) throw new Error(chapterWriteResult?.error ?? "Empty response from write-chapter");
+                const parsedChapterWrite = WriteChapterOutputSchema.safeParse(chapterWriteResult);
+                if (!parsedChapterWrite.success) {
+                  throw new Error("Invalid response from write-chapter");
+                }
 
-                for (const sec of chapterWriteResult.sections ?? []) {
+                for (const sec of parsedChapterWrite.data.sections ?? []) {
                   chapterWriteCache.set(`${assignment.chapterNumber}-${sec.sectionNumber}`, {
                     paragraphs: sec.paragraphs ?? [],
                     claimLedger: sec.claimLedger ?? [],
@@ -2954,9 +2977,7 @@ export function EbookPipeline({
         // prayers, announcements, and altar calls don't bleed into the preface/introduction.
         const frontMatterTranscript = typeof teachingTranscript === "string" && teachingTranscript
           ? teachingTranscript
-          : acc.transcripts
-              .map((t) => `[${t.label}]\n${t.text}`)
-              .join("\n\n═══════════════════════════════════════\n\n");
+            : buildMasterTranscript(acc.transcripts);
         if (countWords(frontMatterTranscript) < 100) {
           throw new Error("Saved job is missing transcript text required for front matter");
         }

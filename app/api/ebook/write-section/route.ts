@@ -111,9 +111,9 @@ function ngramTokens(text: string, n: number): Set<string> {
 function hookFulfilled(hook: string, body: string): boolean {
   // The body past the first paragraph is where the hook should be addressed
   const remainingBody = body.split(/\n\n+/).slice(1).join(" ");
-  if (!remainingBody || remainingBody.split(/\s+/).length < 20) return true; // too short to judge
+  if (!remainingBody || remainingBody.split(/\s+/).length < 20) return false; // fail closed when there is not enough evidence
   const hookGrams = ngramTokens(hook, 3);
-  if (hookGrams.size === 0) return true;
+  if (hookGrams.size === 0) return false;
   const bodyGrams = ngramTokens(remainingBody, 3);
   let overlap = 0;
   for (const g of hookGrams) {
@@ -989,9 +989,6 @@ Now write the section prose:`;
       claimLedger: [],
       fallback: true,
       error: err instanceof Error && err.message.trim() ? err.message : "Section write used transcript fallback",
-      details: err instanceof Error && err.stack
-        ? err.stack.split("\n").slice(0, 3).join(" | ")
-        : undefined,
     }, { status: 200 });
   }
 }

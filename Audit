@@ -1,0 +1,125 @@
+
+Here is the full audit report:
+
+---
+
+## Ebook Pipeline Audit — 32 Issues Found
+
+### 🔴 Critical (8)
+
+**1. EbookPipeline.tsx — Unsafe Response Parsing**
+API response fields are silently filled with `?? []` / `?? 0` defaults. A broken/mismatched response from the LLM is never detected and the pipeline continues with wrong data. Fix: validate with Zod schema before using.
+
+**2. EbookPipeline.tsx — Regex `lastIndex` Bug**
+`STORY_OPENERS.test()` and `PRINCIPLE_SIGNALS.test()` use global-flag regexes. After `.test()`, `lastIndex` is not reset, causing subsequent calls to skip matches entirely. Fix: reset `.lastIndex = 0` before every `.test()` call.
+
+**3. EbookPipeline.tsx — Unreachable Sequence Inversion Detection**
+In `checkSequenceWatermark()`, the inversion check `bestExcerptIdx < lastExcerptIdx` is logically unreachable because `Math.max()` is called immediately after — ensuring `lastExcerptIdx` is always `>=` on the next iteration. The inversion is never detected.
+
+**4. route.ts — Missing `generateEpubBuffer` / `generateDocxBuffer`**
+Both functions are called but are not defined in ebook-generator.tsx. Export route will crash with `TypeError: undefined is not a function`.
+
+**5. page.tsx — Missing `normalizeJobStateForSave` and `toManifestFromJob`**
+Both functions are called in the page but not defined or visibly imported. Will throw `TypeError` at runtime whenever saving/publishing.
+
+**6. route.ts — Silent Segment Loss**
+In `normalizeArchitecture()`, segments not assigned to any section are dropped with no warning or logging. Content can silently disappear from the book.
+
+**7. route.ts — `hookFulfilled()` Always Returns `true` for Short Sections**
+Any section with fewer than 20 words after the first paragraph is marked as "hook fulfilled" unconditionally, so unfulfilled hooks are never caught.
+
+**8. route.ts — File Appears Truncated**
+The POST handler and core LLM-calling logic cannot be fully verified. The file ends mid-implementation.
+
+---
+
+### 🟠 High Priority (9)
+
+**9. EbookProjectsPanel.tsx — Silent Image Upload Failure**
+`catch { /* silently ignore */ }` — user has zero feedback when cover/author image upload fails.
+
+**10. EbookProjectsPanel.tsx — Race Condition on Image Upload**
+Multiple uploads share `imageTargetRef.current`. Quickly clicking two upload buttons overwrites the ref; the wrong project gets the wrong image.
+
+**11. route.ts — Inconsistent GET Response Shape**
+Returns `{ books: [] }`, `{ manifest: ... }`, or `{ error: ... }` depending on branch. Client cannot reliably type this; leads to silent runtime errors.
+
+**12. route.ts — Unvalidated LLM Enum Output**
+`removedCategories: string[]` returned by the LLM is never validated against an enum. Unexpected strings break downstream switch logic.
+
+**13. route.ts — Missing Section Structure Validation**
+`chapter.sections.map(...)` is called after only a shallow `Array.isArray` check; if sections is `undefined`, the app crashes.
+
+**14. ebook-quality.ts — Overlap Threshold Too Low**
+A 3.5% n-gram overlap threshold means a 200-word section needs only ~7 words of sourced content to pass quality checks. Threshold should scale with word count (minimum ~15%).
+
+**15. EbookProgressRing.tsx — SVG Text Centering Broken**
+`style={{ transform: \`rotate(90deg) translate(0px, -${size}px)\` }}` on an SVG `<text>` element produces unpredictable cross-browser offset. Use `textAnchor="middle"` with explicit `x`/`y` attributes instead.
+
+**16. page.tsx — `localStorage` Failure Silent**
+Storage errors are caught and return `null`, indistinguishable from "no data". User loses pipeline state with no indication.
+
+**17. route.ts — No Manifest Completeness Check**
+`generatePdfBuffer(manifest, ...)` is called even when `manifest.chapters` is empty, producing a useless document.
+
+---
+
+### 🔐 Security (3)
+
+**18. route.ts — Stack Traces Leaked to Client**
+```ts
+details: err instanceof Error && err.stack ? err.stack.split("\n").slice(0, 3).join(" | ") : undefined
+```
+Exposes internal file paths, dependency names, and implementation details. Log server-side only; send a generic message to the client.
+
+**19. route.ts — Stack Traces Leaked**
+Same pattern as above.
+
+**20. route.ts — Stack Traces Leaked**
+Same pattern as above.
+
+---
+
+### 🟡 Medium / Architectural (12)
+
+**21. ebook-project-store.ts — Storage Failure Returns Empty Array**
+`catch { return []; }` makes a broken store indistinguishable from "no projects".
+
+**22. ebook-job-store.ts — No Error Logging**
+All IndexedDB promise rejections are caught silently; debugging failures is impossible.
+
+**23. ebook.ts — Confusing `.optional().nullable()` Pattern**
+Use `.nullish()` for fields that can be both `null` and `undefined`, or choose one semantic deliberately.
+
+**24. ebook.ts — `SectionAssignmentSchema` Over-Complexity**
+50+ fields, many overlapping. Hard to maintain and easy to pass the wrong shape. Should use discriminated unions.
+
+**25. State Fragmented Across Three Storage Layers**
+Job state split between IndexedDB (projects), `localStorage` (current job), and component state with no transaction boundaries. A mid-pipeline browser crash leaves partially applied state with no recovery path.
+
+**26. No Rollback / Resume Mechanism**
+If the pipeline fails after writing 8 of 10 sections, the 8 completed sections are orphaned with no way to resume. A checkpoint/saga pattern is needed.
+
+**27. Schema Not Versioned**
+No `_version` field on saved project schemas. Future schema changes will silently corrupt existing saved projects.
+
+**28. `previousSectionEnding` Not Freshly Fetched**
+`write-section` is told what the previous section ended with rather than reading it from the store. If any earlier write was retried, the continuation prompt will be based on stale/incorrect text.
+
+**29. ebook-generator.tsx — Silent Font Fallback**
+Falls back from Georgia → Times-Roman with no warning. The generated PDF looks completely different from the intended design.
+
+**30–32. Missing Implementations Summary**
+
+| Function | File | Status |
+|---|---|---|
+| `generateEpubBuffer` | ebook-generator.tsx | ❌ Missing |
+| `generateDocxBuffer` | ebook-generator.tsx | ❌ Missing |
+| `normalizeJobStateForSave` | page.tsx | ❌ Missing |
+| `toManifestFromJob` | page.tsx | ❌ Missing |
+
+---
+
+**Risk Level: VERY HIGH** — Multiple missing function implementations will crash at runtime, the regex `lastIndex` bug silently corrupts content filtering, segment loss has no warning, and stack traces are exposed in three API routes.
+
+Would you like me to start fixing any of these? I can prioritize the runtime-crashing critical issues first (missing functions, the regex bug, the export crash), or tackle security issues, or work through them all systematically.

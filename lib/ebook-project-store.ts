@@ -1,6 +1,9 @@
 import type { EbookJobState } from "@/lib/schemas/ebook";
 
+export const EBOOK_PROJECT_SCHEMA_VERSION = 1;
+
 export type EbookProject = {
+  _version: number;
   id: string;
   name: string;
   createdAt: string;
@@ -42,14 +45,20 @@ export async function listEbookProjects(): Promise<EbookProject[]> {
       const tx  = db.transaction(STORE, "readonly");
       const req = tx.objectStore(STORE).getAll();
       req.onsuccess = () => {
-        const items = (req.result as EbookProject[]).sort(
+        const items = (req.result as Array<Partial<EbookProject>>)
+          .map((raw) => ({
+            ...raw,
+            _version: typeof raw._version === "number" ? raw._version : EBOOK_PROJECT_SCHEMA_VERSION,
+          }) as EbookProject)
+          .sort(
           (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
         );
         resolve(items);
       };
       req.onerror = () => reject(req.error);
     });
-  } catch {
+  } catch (err) {
+    console.error("[ebook-project-store] Failed to list projects:", err);
     return [];
   }
 }
@@ -58,7 +67,11 @@ export async function saveEbookProject(project: EbookProject): Promise<void> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, "readwrite");
-    tx.objectStore(STORE).put({ ...project, updatedAt: new Date().toISOString() });
+    tx.objectStore(STORE).put({
+      ...project,
+      _version: typeof project._version === "number" ? project._version : EBOOK_PROJECT_SCHEMA_VERSION,
+      updatedAt: new Date().toISOString(),
+    });
     tx.oncomplete = () => resolve();
     tx.onerror    = () => reject(tx.error);
   });

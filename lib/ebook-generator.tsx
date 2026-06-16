@@ -77,6 +77,8 @@ function resolvePdfFonts(doc: any): PdfFontSet {
     };
   }
 
+  console.warn("[ebook-generator] Georgia fonts unavailable; falling back to Times-Roman for PDF export.");
+
   return {
     serif: "Times-Roman",
     serifItalic: "Times-Italic",

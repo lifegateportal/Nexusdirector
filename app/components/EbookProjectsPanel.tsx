@@ -2,6 +2,7 @@
 
 import { useRef, useState, useEffect } from "react";
 import type { EbookProject } from "@/lib/ebook-project-store";
+import { EBOOK_PROJECT_SCHEMA_VERSION } from "@/lib/ebook-project-store";
 import type { EbookJobState, EbookManifest } from "@/lib/schemas/ebook";
 import { EbookManifestSchema, EbookJobStateSchema } from "@/lib/schemas/ebook";
 import type { ProjectSnapshot } from "@/lib/project-store";
@@ -61,8 +62,6 @@ export function EbookProjectsPanel({
   const [unpublishingId, setUnpublishingId] = useState<string | null>(null);
   // Image upload state: tracks which project/type is currently uploading
   const [imageUploading, setImageUploading] = useState<{ id: string; type: "cover" | "author" } | null>(null);
-  const imageTargetRef = useRef<{ id: string; type: "cover" | "author" } | null>(null);
-  const imageInputRef = useRef<HTMLInputElement>(null);
   const projectFileRef = useRef<HTMLInputElement>(null);
   const manifestFileRef = useRef<HTMLInputElement>(null);
 
@@ -110,13 +109,17 @@ export function EbookProjectsPanel({
           if (!jobParse.success) throw new Error("Invalid ebook job state in project file.");
 
           onImport({
+            _version: EBOOK_PROJECT_SCHEMA_VERSION,
             id: snapshot.id,
             name: snapshot.name,
             createdAt: snapshot.createdAt ?? now,
             updatedAt: now,
             bookTitle: jobParse.data.architecture?.bookTitle ?? snapshot.name,
             chapterCount: jobParse.data.chapters?.length ?? 0,
-            totalWordCount: (jobParse.data.chapters ?? []).reduce((sum, chapter) => sum + (chapter.totalWordCount ?? 0), 0),
+            totalWordCount: (jobParse.data.chapters ?? []).reduce(
+              (sum, chapter) => sum + (chapter && typeof chapter === "object" && typeof chapter.totalWordCount === "number" ? chapter.totalWordCount : 0),
+              0,
+            ),
             status: jobParse.data.status,
             jobState: jobParse.data,
             publishedSlug: snapshot.publishedSlug,
@@ -133,6 +136,7 @@ export function EbookProjectsPanel({
         if (!jobParse.success) throw new Error("Invalid ebook job state in project file.");
         onImport({
           ...parsed,
+          _version: typeof parsed._version === "number" ? parsed._version : EBOOK_PROJECT_SCHEMA_VERSION,
           jobState: jobParse.data,
           id: `ebook-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
           updatedAt: now,
@@ -189,11 +193,13 @@ export function EbookProjectsPanel({
     e.target.value = "";
   }
 
-  async function handleImageFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+  async function handleImageFileChange(
+    e: React.ChangeEvent<HTMLInputElement>,
+    target: { id: string; type: "cover" | "author" }
+  ) {
     const file = e.target.files?.[0];
     e.target.value = "";
-    const target = imageTargetRef.current;
-    if (!file || !target || !onUpdateImages) return;
+    if (!file || !onUpdateImages) return;
 
     setImageUploading(target);
     try {
@@ -221,11 +227,13 @@ export function EbookProjectsPanel({
         target.type === "cover"  ? publicUrl : undefined,
         target.type === "author" ? publicUrl : undefined,
       );
-    } catch {
-      /* silently ignore — user can retry */
+      setImportError(null);
+      setImportSuccess(target.type === "cover" ? "Cover image uploaded." : "Author image uploaded.");
+    } catch (err) {
+      setImportSuccess(null);
+      setImportError(err instanceof Error ? err.message : "Image upload failed.");
     } finally {
       setImageUploading(null);
-      imageTargetRef.current = null;
     }
   }
 
@@ -295,7 +303,6 @@ export function EbookProjectsPanel({
         </p>
         <input ref={projectFileRef}  type="file" accept=".json,application/json" className="hidden" onChange={handleProjectFileImport} />
         <input ref={manifestFileRef} type="file" accept=".json,application/json" className="hidden" onChange={handleManifestFileImport} />
-        <input ref={imageInputRef}   type="file" accept="image/*" className="hidden" onChange={handleImageFileChange} />
       </div>
 
       {/* ── Saved project list ───────────────────────────────────────────── */}
@@ -385,14 +392,16 @@ export function EbookProjectsPanel({
                 {onUpdateImages && (
                   <div className="mt-2 flex items-center gap-3 rounded-xl border border-slate-700/40 bg-slate-800/30 p-3">
                     {/* Cover image slot */}
-                    <button
-                      onClick={() => {
-                        imageTargetRef.current = { id: p.id, type: "cover" };
-                        imageInputRef.current?.click();
-                      }}
+                    <label
                       title="Upload book cover"
-                      className="relative flex h-16 w-12 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-slate-600 bg-slate-800 transition hover:border-cyan-500/60"
+                      className="relative flex h-16 w-12 shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-lg border border-slate-600 bg-slate-800 transition hover:border-cyan-500/60"
                     >
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={(e) => void handleImageFileChange(e, { id: p.id, type: "cover" })}
+                      />
                       {p.coverImageUrl ? (
                         /* eslint-disable-next-line @next/next/no-img-element */
                         <img src={p.coverImageUrl} alt="Cover" className="h-full w-full object-cover" />
@@ -409,17 +418,19 @@ export function EbookProjectsPanel({
                           </svg>
                         </div>
                       )}
-                    </button>
+                    </label>
 
                     {/* Author photo slot */}
-                    <button
-                      onClick={() => {
-                        imageTargetRef.current = { id: p.id, type: "author" };
-                        imageInputRef.current?.click();
-                      }}
+                    <label
                       title="Upload author photo"
-                      className="relative flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-full border border-slate-600 bg-slate-800 transition hover:border-cyan-500/60"
+                      className="relative flex h-12 w-12 shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-full border border-slate-600 bg-slate-800 transition hover:border-cyan-500/60"
                     >
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={(e) => void handleImageFileChange(e, { id: p.id, type: "author" })}
+                      />
                       {p.authorImageUrl ? (
                         /* eslint-disable-next-line @next/next/no-img-element */
                         <img src={p.authorImageUrl} alt="Author" className="h-full w-full object-cover" />
@@ -436,7 +447,7 @@ export function EbookProjectsPanel({
                           </svg>
                         </div>
                       )}
-                    </button>
+                    </label>
 
                     <div className="min-w-0">
                       <p className="text-xs font-medium text-slate-400">

@@ -18,6 +18,10 @@ export async function POST(req: NextRequest) {
   }
 
   const { manifest, formats, template } = input;
+  if (!Array.isArray(manifest.chapters) || manifest.chapters.length === 0) {
+    return NextResponse.json({ error: "Manifest must include at least one chapter to export." }, { status: 422 });
+  }
+
   const safeBookTitle = typeof manifest.bookTitle === "string" ? manifest.bookTitle : "ebook";
   const slug = safeBookTitle
     .toLowerCase()
@@ -56,9 +60,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       route: "ebook/export",
       error: message,
-      details: err instanceof Error && err.stack
-        ? err.stack.split("\n").slice(0, 3).join(" | ")
-        : undefined,
     }, { status: 500 });
   }
 }

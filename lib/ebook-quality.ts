@@ -80,6 +80,12 @@ function normalizeRecapSentence(input: string): string {
     .trim();
 }
 
+function minimumSourceOverlap(words: number): number {
+  if (words < 200) return 0;
+  const scaled = 0.15 + Math.min(0.05, (words - 200) / 4000);
+  return Number(scaled.toFixed(3));
+}
+
 export function evaluateBookQuality(input: {
   chapters: ChapterDraft[];
   contentMap: ContentMap;
@@ -120,11 +126,12 @@ export function evaluateBookQuality(input: {
       // Only run the check on sections with enough words to make the metric meaningful.
       const sectionTokens = tokenize(body);
       const overlap = jaccard(sectionTokens, sourceTokens);
-      if (words >= 200 && overlap < 0.035) {
+      const overlapFloor = minimumSourceOverlap(words);
+      if (overlapFloor > 0 && overlap < overlapFloor) {
         issues.push({
           code: "LOW_CONTENT_OVERLAP",
           severity: "warn",
-          message: `Chapter ${chapter.number} section ${section.sectionNumber} has low source overlap (${overlap.toFixed(3)}).`,
+          message: `Chapter ${chapter.number} section ${section.sectionNumber} has low source overlap (${overlap.toFixed(3)} < ${overlapFloor.toFixed(3)}).`,
         });
         score -= 6;
       }

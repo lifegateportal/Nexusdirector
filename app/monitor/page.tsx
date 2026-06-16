@@ -177,6 +177,27 @@ function MonitorPageInner() {
     () => `/api/monitor/state${monitorChannel === "stream" ? "?channel=stream" : ""}`,
     [monitorChannel],
   );
+
+  useEffect(() => {
+    if (!displayOnly) return;
+
+    const html = document.documentElement;
+    const body = document.body;
+    const previousHtmlBackground = html.style.background;
+    const previousBodyBackground = body.style.background;
+    const previousBodyBackgroundColor = body.style.backgroundColor;
+
+    html.style.background = "transparent";
+    body.style.background = "transparent";
+    body.style.backgroundColor = "transparent";
+
+    return () => {
+      html.style.background = previousHtmlBackground;
+      body.style.background = previousBodyBackground;
+      body.style.backgroundColor = previousBodyBackgroundColor;
+    };
+  }, [displayOnly]);
+
   const activeDisplay = useMemo(() => {
     if (!state) return null;
     if (monitorChannel === "stream") {
@@ -667,7 +688,7 @@ function MonitorPageInner() {
       onMouseMove={revealControls}
       onTouchStart={revealControls}
     >
-      {displayOnly && fullscreenPromptVisible && (
+      {displayOnly && monitorChannel !== "stream" && fullscreenPromptVisible && (
         <div className="pointer-events-none absolute left-0 right-0 top-4 z-30 flex justify-center">
           <div className="pointer-events-auto flex flex-col items-center gap-2 rounded-2xl border border-white/15 bg-black/70 px-4 py-2 backdrop-blur">
             <button
@@ -922,12 +943,14 @@ function MonitorPageInner() {
             {state?.queueMode ? "Queue Mode ON" : "Queue Mode OFF"}
           </button>
 
-          <button
-            onClick={openFullscreenOutput}
-            className="rounded-lg border border-cyan-500/60 bg-cyan-500/20 px-3 py-1.5 text-xs font-bold text-cyan-200 hover:bg-cyan-500/30"
-          >
-            Deploy Fullscreen
-          </button>
+          {monitorChannel !== "stream" && (
+            <button
+              onClick={openFullscreenOutput}
+              className="rounded-lg border border-cyan-500/60 bg-cyan-500/20 px-3 py-1.5 text-xs font-bold text-cyan-200 hover:bg-cyan-500/30"
+            >
+              Deploy Fullscreen
+            </button>
+          )}
         </div>
 
         <div className="grid grid-cols-2 gap-2 lg:grid-cols-7">

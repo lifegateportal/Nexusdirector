@@ -1,3 +1,4 @@
+import { use } from "react";
 import { notFound } from "next/navigation";
 import { EbookManifestSchema } from "@/lib/schemas/ebook";
 import { ReaderClient } from "./ReaderClient";
@@ -18,20 +19,20 @@ async function fetchManifest(slug: string) {
   } catch { return null; }
 }
 
-export default async function ReadPage({
+export default function ReadPage({
   params,
   searchParams,
 }: {
   params:       Promise<{ slug: string }>;
   searchParams: Promise<{ chapter?: string }>;
 }) {
-  const { slug } = await params;
-  const sp       = await searchParams;
+  const { slug } = use(params);
+  const sp       = use(searchParams);
   const initial  = sp.chapter !== undefined
     ? Math.max(0, parseInt(sp.chapter, 10))
     : undefined;
 
-  const manifest = await fetchManifest(slug);
+  const manifest = use(fetchManifest(slug));
   if (!manifest) notFound();
 
   return <ReaderClient manifest={manifest} slug={slug} initialChapter={initial} />;

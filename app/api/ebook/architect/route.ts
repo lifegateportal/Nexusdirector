@@ -738,9 +738,6 @@ This content is a sermon series. The author's preaching sequence IS the book's s
     return NextResponse.json({
       route: "ebook/architect",
       error: message,
-      details: err instanceof Error && err.stack
-        ? err.stack.split("\n").slice(0, 3).join(" | ")
-        : undefined,
     }, { status: 500 });
   }
 }

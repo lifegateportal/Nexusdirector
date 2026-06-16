@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "rm -rf .next && NEXT_DISABLE_DEVTOOLS=1 next dev --port 5000 --hostname 0.0.0.0",
+    "dev": "node scripts/dev-server.mjs",
     "clean:next": "rm -rf .next",
     "build": "next build",
     "start": "node server.mjs",

@@ -29,6 +29,9 @@ export function GlobalMiniPlayer() {
   // Don't render when idle or no chapter loaded
   if (state === "idle" || !chapterMeta) return null;
 
+  // Never include player chrome in monitor/browser-source outputs.
+  if (pathname.startsWith("/monitor")) return null;
+
   // Don't render when the user is already on the reader page
   if (pathname.startsWith(chapterMeta.readerHref)) return null;
 

@@ -19,6 +19,16 @@ import { z } from "zod";
 export const runtime    = "nodejs";
 export const maxDuration = 30;
 
+type PublishGetResponse = {
+  books: z.infer<typeof PublishedCatalogSchema>["books"];
+  manifest: z.infer<typeof EbookManifestSchema> | null;
+  error?: string;
+};
+
+function jsonResponse(payload: PublishGetResponse, status = 200) {
+  return NextResponse.json(payload, { status });
+}
+
 // ── GET /api/ebook/publish — fetch the live published catalog ─────────────────
 
 export async function GET(req: NextRequest) {
@@ -30,7 +40,7 @@ export async function GET(req: NextRequest) {
   } = env;
 
   if (!R2_ACCOUNT_ID || !R2_ACCESS_KEY_ID || !R2_SECRET_ACCESS_KEY || !R2_BUCKET_NAME) {
-    return NextResponse.json({ books: [] }, { status: 200 });
+    return jsonResponse({ books: [], manifest: null }, 200);
   }
 
   try {
@@ -43,14 +53,14 @@ export async function GET(req: NextRequest) {
           new GetObjectCommand({ Bucket: R2_BUCKET_NAME, Key: `published/${slug}/manifest.json` }),
         );
         const rawManifest = await manifestRes.Body?.transformToString();
-        if (!rawManifest) return NextResponse.json({ error: "Manifest not found" }, { status: 404 });
+        if (!rawManifest) return jsonResponse({ books: [], manifest: null, error: "Manifest not found" }, 404);
         const parsedManifest = EbookManifestSchema.safeParse(JSON.parse(rawManifest));
         if (!parsedManifest.success) {
-          return NextResponse.json({ error: "Invalid manifest" }, { status: 422 });
+          return jsonResponse({ books: [], manifest: null, error: "Invalid manifest" }, 422);
         }
-        return NextResponse.json({ manifest: parsedManifest.data }, { status: 200 });
+        return jsonResponse({ books: [], manifest: parsedManifest.data }, 200);
       } catch {
-        return NextResponse.json({ error: "Manifest not found" }, { status: 404 });
+        return jsonResponse({ books: [], manifest: null, error: "Manifest not found" }, 404);
       }
     }
 
@@ -58,11 +68,11 @@ export async function GET(req: NextRequest) {
       new GetObjectCommand({ Bucket: R2_BUCKET_NAME, Key: "published/index.json" }),
     );
     const raw = await res.Body?.transformToString();
-    if (!raw) return NextResponse.json({ books: [] }, { status: 200 });
+    if (!raw) return jsonResponse({ books: [], manifest: null }, 200);
     const parsed = PublishedCatalogSchema.safeParse(JSON.parse(raw));
-    return NextResponse.json(parsed.success ? parsed.data : { books: [] }, { status: 200 });
+    return jsonResponse({ books: parsed.success ? parsed.data.books : [], manifest: null }, 200);
   } catch {
-    return NextResponse.json({ books: [] }, { status: 200 });
+    return jsonResponse({ books: [], manifest: null }, 200);
   }
 }
 
