@@ -676,7 +676,7 @@ function EbookPageClient() {
             blueprint: null,
             logicResult: null,
             uiResult: null,
-            ebookManifest: null,
+            ebookManifest: toManifestFromJob(persistedJobState),
             ebookJobState: cloudJobState,
             publishedSlug: project.publishedSlug,
             coverImageUrl: project.coverImageUrl,

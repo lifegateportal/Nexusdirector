@@ -25,6 +25,32 @@ const ProjectRecordSchema = z.object({
 
 type ProjectRecord = z.infer<typeof ProjectRecordSchema>;
 
+function countChapters(value: unknown): number {
+  if (!Array.isArray(value)) return 0;
+  return value.filter((item) => Boolean(item && typeof item === "object")).length;
+}
+
+function payloadSize(value: unknown): number {
+  try {
+    return JSON.stringify(value)?.length ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
+function pickRicherValue<T>(incoming: T | undefined, existing: T | undefined, chapterAccessor: (value: T) => unknown): T | undefined {
+  if (incoming === undefined) return existing;
+  if (existing === undefined) return incoming;
+
+  const incomingChapters = countChapters(chapterAccessor(incoming));
+  const existingChapters = countChapters(chapterAccessor(existing));
+  if (incomingChapters !== existingChapters) {
+    return incomingChapters > existingChapters ? incoming : existing;
+  }
+
+  return payloadSize(incoming) >= payloadSize(existing) ? incoming : existing;
+}
+
 function makeS3(accountId: string, accessKey: string, secretKey: string) {
   return new S3Client({
     region: "auto",
@@ -173,6 +199,61 @@ async function saveR2Project(project: ProjectRecord) {
   return true;
 }
 
+async function readWorkspaceProject(id: string): Promise<ProjectRecord | null> {
+  try {
+    const raw = await readFile(workspaceProjectPath(id), "utf8");
+    return normalizeProject(JSON.parse(raw) as unknown);
+  } catch {
+    return null;
+  }
+}
+
+async function readR2Project(id: string): Promise<ProjectRecord | null> {
+  const r2 = r2Ready();
+  if (!r2) return null;
+
+  try {
+    const res = await r2.s3.send(new GetObjectCommand({ Bucket: r2.bucket, Key: `projects/${id}.json` }));
+    const raw = await res.Body?.transformToString();
+    if (!raw) return null;
+    return normalizeProject(JSON.parse(raw) as unknown);
+  } catch {
+    return null;
+  }
+}
+
+function mergeProjectRecord(existing: ProjectRecord | null, incoming: ProjectRecord): ProjectRecord {
+  if (!existing) return incoming;
+
+  const merged: ProjectRecord = {
+    ...existing,
+    ...incoming,
+    ebookJobState: pickRicherValue(
+      incoming.ebookJobState as ProjectRecord["ebookJobState"] | undefined,
+      existing.ebookJobState as ProjectRecord["ebookJobState"] | undefined,
+      (value) => (value && typeof value === "object" ? (value as Record<string, unknown>).chapters : undefined),
+    ),
+    ebookManifest: pickRicherValue(
+      incoming.ebookManifest as ProjectRecord["ebookManifest"] | undefined,
+      existing.ebookManifest as ProjectRecord["ebookManifest"] | undefined,
+      (value) => (value && typeof value === "object" ? (value as Record<string, unknown>).chapters : undefined),
+    ),
+    publishedSlug: incoming.publishedSlug ?? existing.publishedSlug,
+    coverImageUrl: incoming.coverImageUrl ?? existing.coverImageUrl,
+    authorImageUrl: incoming.authorImageUrl ?? existing.authorImageUrl,
+  };
+
+  const existingCreatedAt = existing.createdAt && Number.isFinite(Date.parse(existing.createdAt))
+    ? new Date(existing.createdAt).toISOString()
+    : incoming.createdAt;
+  const incomingCreatedAt = incoming.createdAt && Number.isFinite(Date.parse(incoming.createdAt))
+    ? new Date(incoming.createdAt).toISOString()
+    : existingCreatedAt;
+  merged.createdAt = existingCreatedAt <= incomingCreatedAt ? existingCreatedAt : incomingCreatedAt;
+
+  return merged;
+}
+
 async function deleteR2Project(id: string) {
   const r2 = r2Ready();
   if (!r2) return false;
@@ -219,12 +300,18 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const project = normalizeProject(input.project);
-  if (!project) {
+  const incomingProject = normalizeProject(input.project);
+  if (!incomingProject) {
     return NextResponse.json({ error: "Invalid project payload" }, { status: 400 });
   }
 
   try {
+    const existingProject = mergeProjects((await Promise.all([
+      readWorkspaceProject(incomingProject.id),
+      readR2Project(incomingProject.id),
+    ])).filter((project): project is ProjectRecord => Boolean(project)))[0] ?? null;
+    const project = mergeProjectRecord(existingProject, incomingProject);
+
     await saveWorkspaceProject(project);
 
     let cloudSaved = false;

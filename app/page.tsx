@@ -57,6 +57,39 @@ function sumChapterWords(chapters: unknown): number {
   return sanitizeChapters(chapters).reduce((sum, chapter) => sum + (typeof chapter.totalWordCount === "number" ? chapter.totalWordCount : 0), 0);
 }
 
+function synthesizeEbookManifest(
+  job: { jobId: string; architecture?: { bookTitle?: string; subtitle?: string; authorName?: string } | null; frontMatter?: unknown; chapters?: unknown; contentMap?: { allQuotes?: unknown[] } | null; updatedAt?: string },
+  fallbackTitle: string,
+  coverImageUrl?: string,
+  authorImageUrl?: string,
+): EbookManifest | null {
+  const chapters = sanitizeChapters(job.chapters);
+  if (chapters.length === 0) return null;
+
+  return {
+    jobId: job.jobId,
+    bookTitle: job.architecture?.bookTitle ?? fallbackTitle,
+    subtitle: job.architecture?.subtitle ?? "",
+    authorName: job.architecture?.authorName ?? "the author",
+    frontMatter: (job.frontMatter as EbookManifest["frontMatter"] | undefined) ?? {
+      preface: "",
+      introduction: "",
+      conclusion: "",
+      aboutAuthor: null,
+      resourcesList: [],
+      scriptureIndex: [],
+    },
+    chapters: chapters as EbookManifest["chapters"],
+    totalWordCount: sumChapterWords(chapters),
+    allQuotes: job.contentMap?.allQuotes ?? [],
+    generatedAt: job.updatedAt ?? new Date().toISOString(),
+    selectedTemplate: "devotional",
+    printSpec: { trimSize: "6x9", runningHeaders: true, bleed: false, cropMarks: false },
+    coverImageUrl: coverImageUrl ?? null,
+    authorImageUrl: authorImageUrl ?? null,
+  };
+}
+
 export default function HomePage() {
   const router = useRouter();
   const [logs,        setLogs]        = useState<LogEntry[]>([]);
@@ -255,6 +288,15 @@ export default function HomePage() {
       const raw = localStorage.getItem(EBOOK_JOB_KEY);
       if (raw) ebookJobState = EbookJobStateSchema.parse(JSON.parse(raw) as unknown);
     } catch { /* ignore — job state is optional */ }
+    const resolvedEbookManifest = ebookManifest ?? (ebookJobState
+      ? synthesizeEbookManifest(
+          ebookJobState,
+          name,
+          existingProject?.coverImageUrl ?? existingEbookProject?.coverImageUrl,
+          existingProject?.authorImageUrl ?? existingEbookProject?.authorImageUrl,
+        )
+      : null);
+
     const snapshot: ProjectSnapshot = {
       id,
       name,
@@ -267,7 +309,7 @@ export default function HomePage() {
       blueprint: blueprint ?? null,
       logicResult: logicResult ?? null,
       uiResult: uiResult ?? null,
-      ebookManifest: ebookManifest ?? null,
+      ebookManifest: resolvedEbookManifest,
       ebookJobState: ebookJobState ?? undefined,
       publishedSlug: existingProject?.publishedSlug ?? existingEbookProject?.publishedSlug,
       coverImageUrl: existingProject?.coverImageUrl ?? existingEbookProject?.coverImageUrl,
