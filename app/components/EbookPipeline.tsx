@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useRef, useCallback, useId, useEffect } from "react";
-import { z } from "zod";
 import { ProseEditor, ProseToolbarProvider, SharedProseToolbar } from "./ProseEditor";
 import { EbookProgressRing } from "@/app/components/EbookProgressRing";
 import { VoiceStudio } from "@/app/components/VoiceStudio";
@@ -25,7 +24,6 @@ import type {
   EbookJobState,
   EbookManifest,
 } from "@/lib/schemas/ebook";
-import { WriteChapterOutputSchema } from "@/lib/schemas/ebook";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -66,15 +64,6 @@ const STAGE_ORDER: PipelineStage[] = [
 ];
 type SignalFilterState = "idle" | "applied" | "skipped";
 type QualityReport = { score: number; pass: boolean; issues: { severity: "warn" | "error"; message: string }[] };
-
-const WriteSectionResponseSchema = z.object({
-  body: z.string(),
-  claimLedger: z.array(z.object({ claim: z.string(), excerptNumbers: z.array(z.number().int()) })).default([]),
-  passiveVoiceCount: z.number().int().nonnegative().default(0),
-  unfullfilledHook: z.string().nullable().default(null),
-  sequenceBreakCount: z.number().int().nonnegative().default(0),
-});
-
 export type EbookPipelineSnapshot = {
   stage: PipelineStage;
   progress: { total: number; completed: number };
@@ -153,14 +142,16 @@ async function streamSection(
   assignment: SectionAssignment,
   authorConfig?: { instructions: string; targetAudience: string }
 ): Promise<{ body: string; claimLedger: Array<{ claim: string; excerptNumbers: number[] }>; passiveVoiceCount: number; unfullfilledHook: string | null; sequenceBreakCount: number }> {
-  const result = await postJson<unknown>(
+  const result = await postJson<{ body: string; claimLedger?: Array<{ claim: string; excerptNumbers: number[] }>; passiveVoiceCount?: number; unfullfilledHook?: string | null; sequenceBreakCount?: number }>(
     "/api/ebook/write-section", { assignment, ...(authorConfig ? { authorConfig } : {}) }
   );
-  const parsed = WriteSectionResponseSchema.safeParse(result);
-  if (!parsed.success) {
-    throw new Error(`Invalid write-section response for Ch${assignment.chapterNumber} §${assignment.sectionNumber}`);
-  }
-  return parsed.data;
+  return {
+    body: (result.body ?? "").trim(),
+    claimLedger: result.claimLedger ?? [],
+    passiveVoiceCount: result.passiveVoiceCount ?? 0,
+    unfullfilledHook: result.unfullfilledHook ?? null,
+    sequenceBreakCount: result.sequenceBreakCount ?? 0,
+  };
 }
 
 function countWords(text: string): number {
@@ -418,7 +409,7 @@ function checkSequenceWatermark(
       if (lastExcerptIdx >= 0 && bestExcerptIdx < lastExcerptIdx) {
         breaks.push({ paragraphIdx: pIdx + 1, expectedMin: lastExcerptIdx + 1, got: bestExcerptIdx + 1 });
       }
-      lastExcerptIdx = bestExcerptIdx;
+      lastExcerptIdx = Math.max(lastExcerptIdx, bestExcerptIdx);
     }
   }
   return breaks;
@@ -2619,19 +2610,16 @@ export function EbookPipeline({
                   if (done) break;
                   buf += dec.decode(value, { stream: true });
                 }
-                let chapterWriteResult: unknown = null;
+                let chapterWriteResult: { sections: Array<{ sectionNumber: number; paragraphs: string[]; claimLedger: Array<{ claim: string }> }>; error?: string } | null = null;
                 for (const line of buf.split("\n")) {
                   if (line.startsWith("data: ")) {
                     chapterWriteResult = JSON.parse(line.slice(6));
                     break;
                   }
                 }
-                const parsedChapterWrite = WriteChapterOutputSchema.safeParse(chapterWriteResult);
-                if (!parsedChapterWrite.success) {
-                  throw new Error("Invalid response from write-chapter");
-                }
+                if (!chapterWriteResult || chapterWriteResult.error) throw new Error(chapterWriteResult?.error ?? "Empty response from write-chapter");
 
-                for (const sec of parsedChapterWrite.data.sections ?? []) {
+                for (const sec of chapterWriteResult.sections ?? []) {
                   chapterWriteCache.set(`${assignment.chapterNumber}-${sec.sectionNumber}`, {
                     paragraphs: sec.paragraphs ?? [],
                     claimLedger: sec.claimLedger ?? [],

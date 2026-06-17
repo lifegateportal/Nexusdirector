@@ -259,10 +259,8 @@ ${excerptPayload}`;
       } catch (err) {
         clearInterval(heartbeat);
         console.error("[chapter-plan] Error:", err);
-        const fallback: z.infer<typeof ChapterPlanResponseSchema> = {
-          sectionPlans: sections.map((s) => ({ sectionNumber: s.sectionNumber, paragraphPlan: [] })),
-        };
-        controller.enqueue(encoder.encode(JSON.stringify(fallback)));
+        controller.error(err instanceof Error ? err : new Error("Chapter plan generation failed"));
+        return;
       } finally {
         try { controller.close(); } catch { /* already closed */ }
       }
