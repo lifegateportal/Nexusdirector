@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { generateObject } from "ai";
 import { z } from "zod";
 import { createHash } from "crypto";
-import { deepSeekModel, deepSeekReasonerModel } from "@/lib/ai-providers";
+import { deepSeekReasonerModel } from "@/lib/ai-providers";
 import {
   EbookManifestSchema,
   SectionDraftSchema,
@@ -187,65 +187,178 @@ export async function POST(req: NextRequest) {
 
   const selectedModel = deepSeekReasonerModel;
 
+  const cleanInstruction = instruction.replace(/\s+/g, " ").trim();
+
+  function parseDeterministicCommand(): z.infer<typeof EbookChangeSchema> | null {
+    const text = cleanInstruction;
+
+    const renameChapter = text.match(/^(?:rename|retitle|change\s+title\s+of)\s+chapter\s+(\d+)\s+(?:to|as)\s+(.+)$/i);
+    if (renameChapter) {
+      const chapterNumber = Number(renameChapter[1]);
+      const title = renameChapter[2].trim();
+      if (!title) return null;
+      return {
+        chapterPatches: [{ chapterNumber, title }],
+        summary: `Renamed Chapter ${chapterNumber} to "${title}".`,
+        confidence: "high",
+      };
+    }
+
+    const renameSection = text.match(/^(?:rename|retitle|change\s+title\s+of)\s+section\s+(\d+)[.\-](\d+)\s+(?:to|as)\s+(.+)$/i);
+    if (renameSection) {
+      const chapterNumber = Number(renameSection[1]);
+      const sectionNumber = Number(renameSection[2]);
+      const heading = renameSection[3].trim();
+      if (!heading) return null;
+      const chapter = manifest.chapters.find((ch) => ch.number === chapterNumber);
+      const section = chapter?.sections.find((s) => s.sectionNumber === sectionNumber);
+      if (!chapter || !section) {
+        return {
+          summary: `Could not find section ${chapterNumber}.${sectionNumber}.`,
+          confidence: "low",
+          clarificationNeeded: `I could not find section ${chapterNumber}.${sectionNumber}. Please confirm the chapter and section number.`,
+        };
+      }
+      return {
+        updatedSections: [{ ...section, chapterNumber, sectionNumber, heading }],
+        summary: `Renamed Section ${chapterNumber}.${sectionNumber} to "${heading}".`,
+        confidence: "high",
+      };
+    }
+
+    const bookTitle = text.match(/^(?:change|set|update)\s+(?:the\s+)?book\s+title\s+(?:to|as)\s+(.+)$/i)
+      || text.match(/^(?:change|set|update)\s+title\s+(?:to|as)\s+(.+)$/i);
+    if (bookTitle) {
+      const title = bookTitle[1].trim();
+      if (!title) return null;
+      return {
+        bookTitle: title,
+        summary: `Updated book title to "${title}".`,
+        confidence: "high",
+      };
+    }
+
+    const subtitle = text.match(/^(?:change|set|update)\s+(?:the\s+)?subtitle\s+(?:to|as)\s+(.+)$/i);
+    if (subtitle) {
+      const value = subtitle[1].trim();
+      if (!value) return null;
+      return {
+        subtitle: value,
+        summary: `Updated subtitle to "${value}".`,
+        confidence: "high",
+      };
+    }
+
+    const authorName = text.match(/^(?:change|set|update)\s+(?:the\s+)?author\s+name\s+(?:to|as)\s+(.+)$/i);
+    if (authorName) {
+      const value = authorName[1].trim();
+      if (!value) return null;
+      return {
+        authorName: value,
+        summary: `Updated author name to "${value}".`,
+        confidence: "high",
+      };
+    }
+
+    return null;
+  }
+
   // Track which sections are truncated so we can restore original content if the AI loses words
   const truncatedSections = new Set<string>();
 
-  // Build a rich book context — front matter in full, section bodies as excerpts
-  // (full body sent for short sections; excerpted for long ones to stay within token budget)
-  const bookSummary = {
-    bookTitle: manifest.bookTitle,
-    subtitle: manifest.subtitle,
-    authorName: manifest.authorName,
-    totalWordCount: manifest.totalWordCount,
-    frontMatter: {
-      preface: manifest.frontMatter.preface,
-      introduction: manifest.frontMatter.introduction,
-      conclusion: manifest.frontMatter.conclusion,
-      aboutAuthor: manifest.frontMatter.aboutAuthor,
-      resourcesList: manifest.frontMatter.resourcesList,
-    },
-    backMatter: manifest.backMatter
-      ? {
-          glossaryTermCount: (manifest.backMatter.glossary ?? []).length,
-          glossary: manifest.backMatter.glossary ?? [],
-          readingGroupGuide: (manifest.backMatter.readingGroupGuide ?? []).map((c) => ({
-            chapterNumber: c.chapterNumber,
-            chapterTitle: c.chapterTitle,
-            questions: c.questions,
-          })),
-          scriptureIndex: manifest.backMatter.scriptureIndex ?? [],
-          recommendedResources: manifest.backMatter.recommendedResources ?? [],
-        }
-      : null,
-    chapters: manifest.chapters.map((ch) => ({
-      number: ch.number,
-      title: ch.title,
-      intro: ch.intro,
-      conclusion: ch.conclusion,
-      keyTakeaways: ch.keyTakeaways,
-      reflectionQuestions: ch.reflectionQuestions,
-      totalWordCount: ch.totalWordCount,
-      sections: ch.sections.map((s) => {
-        const fullBody = s.body ?? "";
-        const isExplicit = explicitRefs.has(`${ch.number}:${s.sectionNumber}`);
-        // Explicit sections are always sent in full; others truncated only if they exceed 4000 chars
-        const isTruncated = !isExplicit && fullBody.length > 4000;
-        if (isTruncated) {
-          truncatedSections.add(`${ch.number}:${s.sectionNumber}`);
-        }
-        return {
-          sectionNumber: s.sectionNumber,
-          chapterNumber: ch.number,
-          heading: s.heading,
-          // Send full body for explicit/short sections; excerpt for long background sections
-          body: isTruncated
-            ? safeExcerpt(fullBody, 1200) + "\n…[TRUNCATED — DO NOT MODIFY THIS SECTION. Return its body field as an empty string so the original is preserved]"
-            : fullBody,
-          wordCount: s.wordCount,
-        };
-      }),
-    })),
-  };
+  function buildBookSummary(compact = false) {
+    return {
+      bookTitle: manifest.bookTitle,
+      subtitle: manifest.subtitle,
+      authorName: manifest.authorName,
+      totalWordCount: manifest.totalWordCount,
+      frontMatter: {
+        preface: compact ? safeExcerpt(manifest.frontMatter.preface, 800) : manifest.frontMatter.preface,
+        introduction: compact ? safeExcerpt(manifest.frontMatter.introduction, 800) : manifest.frontMatter.introduction,
+        conclusion: compact ? safeExcerpt(manifest.frontMatter.conclusion, 800) : manifest.frontMatter.conclusion,
+        aboutAuthor: compact ? safeExcerpt(manifest.frontMatter.aboutAuthor, 500) : manifest.frontMatter.aboutAuthor,
+        resourcesList: manifest.frontMatter.resourcesList,
+      },
+      backMatter: manifest.backMatter
+        ? {
+            glossaryTermCount: (manifest.backMatter.glossary ?? []).length,
+            glossary: compact ? (manifest.backMatter.glossary ?? []).slice(0, 40) : (manifest.backMatter.glossary ?? []),
+            readingGroupGuide: (manifest.backMatter.readingGroupGuide ?? []).map((c) => ({
+              chapterNumber: c.chapterNumber,
+              chapterTitle: c.chapterTitle,
+              questions: compact ? c.questions.slice(0, 3) : c.questions,
+            })),
+            scriptureIndex: compact ? (manifest.backMatter.scriptureIndex ?? []).slice(0, 60) : (manifest.backMatter.scriptureIndex ?? []),
+            recommendedResources: manifest.backMatter.recommendedResources ?? [],
+          }
+        : null,
+      chapters: manifest.chapters.map((ch) => ({
+        number: ch.number,
+        title: ch.title,
+        intro: compact ? safeExcerpt(ch.intro, 500) : ch.intro,
+        conclusion: compact ? safeExcerpt(ch.conclusion, 500) : ch.conclusion,
+        keyTakeaways: ch.keyTakeaways,
+        reflectionQuestions: ch.reflectionQuestions,
+        totalWordCount: ch.totalWordCount,
+        sections: ch.sections.map((s) => {
+          const fullBody = s.body ?? "";
+          const isExplicit = explicitRefs.has(`${ch.number}:${s.sectionNumber}`);
+          const limit = compact ? 2800 : 4000;
+          const excerptSize = compact ? 650 : 1200;
+          const isTruncated = !isExplicit && fullBody.length > limit;
+          if (isTruncated) {
+            truncatedSections.add(`${ch.number}:${s.sectionNumber}`);
+          }
+          return {
+            sectionNumber: s.sectionNumber,
+            chapterNumber: ch.number,
+            heading: s.heading,
+            body: isTruncated
+              ? safeExcerpt(fullBody, excerptSize) + "\n…[TRUNCATED — DO NOT MODIFY THIS SECTION. Return its body field as an empty string so the original is preserved]"
+              : fullBody,
+            wordCount: s.wordCount,
+          };
+        }),
+      })),
+    };
+  }
+
+  async function generateWithReasoner<T extends z.ZodTypeAny>(options: {
+    schema: T;
+    system: string;
+    historyLimit?: number;
+    compact?: boolean;
+    temperature?: number;
+  }): Promise<z.infer<T>> {
+    const selectedHistory = (history ?? []).slice(-(options.historyLimit ?? 14));
+    const prompt = [
+      "CURRENT BOOK STRUCTURE:",
+      JSON.stringify(buildBookSummary(options.compact ?? false), null, 2),
+      pipelineSummary ? ["CURRENT PIPELINE STATE:", JSON.stringify(pipelineSummary, null, 2)].join("\n") : "",
+      "",
+      ...(selectedHistory.length > 0
+        ? [
+            "CONVERSATION HISTORY (oldest first — use this to understand follow-up instructions):",
+            selectedHistory.map((m) => `${m.role === "user" ? "USER" : "DIRECTOR"}: ${m.content}`).join("\n"),
+            "",
+          ]
+        : []),
+      "CURRENT USER INSTRUCTION:",
+      instruction,
+    ].join("\n");
+
+    const { object } = await generateObject({
+      model: selectedModel,
+      schema: options.schema,
+      mode: "json",
+      maxTokens: 8000,
+      temperature: options.temperature ?? 0.15,
+      system: options.system,
+      prompt,
+    });
+
+    return object;
+  }
 
   const pipelineSummary = pipeline
     ? {
@@ -422,6 +535,11 @@ export async function POST(req: NextRequest) {
   }
 
   try {
+    const deterministic = parseDeterministicCommand();
+    if (deterministic && input.mode !== "critique") {
+      return NextResponse.json(applyChangeObject(deterministic, instruction, "r1"), { status: 200 });
+    }
+
     if (input.mode === "applyPatch") {
       if (!input.approvedPatch) {
         return NextResponse.json({ error: "No approved patch provided." }, { status: 400 });
@@ -429,30 +547,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(applyChangeObject(input.approvedPatch, `Approved amendment: ${instruction}`, "r1"), { status: 200 });
     }
 
-    const sharedPrompt = [
-      "CURRENT BOOK STRUCTURE:",
-      JSON.stringify(bookSummary, null, 2),
-      pipelineSummary ? ["CURRENT PIPELINE STATE:", JSON.stringify(pipelineSummary, null, 2)].join("\n") : "",
-      "",
-      ...(history && history.length > 0
-        ? [
-            "CONVERSATION HISTORY (oldest first — use this to understand follow-up instructions):",
-            history.map((m) => `${m.role === "user" ? "USER" : "DIRECTOR"}: ${m.content}`).join("\n"),
-            "",
-          ]
-        : []),
-      "CURRENT USER INSTRUCTION:",
-      instruction,
-    ].join("\n");
-
     if (input.mode === "critique") {
-      const { object } = await generateObject({
-        model: selectedModel,
-        schema: CritiqueResponseSchema,
-        mode: "json",
-        maxTokens: 8000,
-        temperature: 0.2,
-        system: `You are the Nexus Book Director in critical-reasoning mode.
+      const critiqueSystem = `You are the Nexus Book Director in critical-reasoning mode.
 
 Your job is to evaluate this book like a rigorous editorial strategist.
 
@@ -472,9 +568,26 @@ OUTPUT REQUIREMENTS:
 - approvalPrompt should tell the user to approve if they want the amendments applied.
 - Keep proposedPatch limited to high-confidence changes that preserve speaker fidelity.
 - If a chapter/section is thin because the book lacks evidence, set needsMoreSourceMaterial=true for that finding instead of faking an amendment.
-`,
-        prompt: sharedPrompt,
-      });
+`;
+
+      let object: z.infer<typeof CritiqueResponseSchema>;
+      try {
+        object = await generateWithReasoner({
+          schema: CritiqueResponseSchema,
+          system: critiqueSystem,
+          historyLimit: 14,
+          compact: false,
+          temperature: 0.2,
+        });
+      } catch {
+        object = await generateWithReasoner({
+          schema: CritiqueResponseSchema,
+          system: critiqueSystem,
+          historyLimit: 8,
+          compact: true,
+          temperature: 0.15,
+        });
+      }
 
       return NextResponse.json({
         mode: "critique",
@@ -488,13 +601,7 @@ OUTPUT REQUIREMENTS:
       }, { status: 200 });
     }
 
-    const { object } = await generateObject({
-      model: selectedModel,
-      schema: EbookChangeSchema,
-      mode: "json",
-      maxTokens: 8000,
-      temperature: 0.15,
-      system: `You are the Nexus Book Director — a precision ebook editor with MAXIMUM AUTHORITY over every part of this published teaching book. You receive the full book structure and can make any change the user requests.
+    const editSystem = `You are the Nexus Book Director — a precision ebook editor with MAXIMUM AUTHORITY over every part of this published teaching book. You receive the full book structure and can make any change the user requests.
 
 ════════════════════════════════════════════
 SPEAKER-FIDELITY LAW — NON-NEGOTIABLE
@@ -631,8 +738,26 @@ OUTPUT RULES
 - ALWAYS attempt the instruction — never refuse or treat instructions as comments
 - If you make ANY change, you MUST include the corresponding change fields (chapterPatches, updatedSections, chapters, frontMatter, etc.). Returning ONLY summary with no change fields = zero manuscript changes. The user will see your summary but the book will be IDENTICAL.
 - Only return empty change fields when the user is asking a question ("show me...", "explain...") — not for edit instructions`,
-      prompt: sharedPrompt,
-    });
+`;
+
+    let object: z.infer<typeof EbookChangeSchema>;
+    try {
+      object = await generateWithReasoner({
+        schema: EbookChangeSchema,
+        system: editSystem,
+        historyLimit: 14,
+        compact: false,
+        temperature: 0.15,
+      });
+    } catch {
+      object = await generateWithReasoner({
+        schema: EbookChangeSchema,
+        system: editSystem,
+        historyLimit: 8,
+        compact: true,
+        temperature: 0.1,
+      });
+    }
 
     // ── Dry-run: return the AI patch without applying it ────────────────────────
     // The client can diff this against the current manifest and show a preview
