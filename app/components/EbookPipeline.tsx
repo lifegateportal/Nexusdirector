@@ -24,6 +24,7 @@ import type {
   EbookJobState,
   EbookManifest,
 } from "@/lib/schemas/ebook";
+import { ChapterPlanResponseSchema } from "@/lib/schemas/ebook";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -64,6 +65,7 @@ const STAGE_ORDER: PipelineStage[] = [
 ];
 type SignalFilterState = "idle" | "applied" | "skipped";
 type QualityReport = { score: number; pass: boolean; issues: { severity: "warn" | "error"; message: string }[] };
+type ChapterPlanStep = { purpose: string; supportedExcerptNumbers: number[]; minExcerptNumber?: number };
 export type EbookPipelineSnapshot = {
   stage: PipelineStage;
   progress: { total: number; completed: number };
@@ -1824,6 +1826,38 @@ export function EbookPipeline({
       };
     });
 
+    const chapterPlans = (() => {
+      const rawPlans = raw.chapterPlans as unknown;
+      if (!rawPlans || typeof rawPlans !== "object") return {} as Record<string, Record<string, ChapterPlanStep[]>>;
+
+      const normalized: Record<string, Record<string, ChapterPlanStep[]>> = {};
+      for (const [chapterKey, chapterValue] of Object.entries(rawPlans as Record<string, unknown>)) {
+        if (!chapterValue || typeof chapterValue !== "object") continue;
+        const sectionPlans: Record<string, ChapterPlanStep[]> = {};
+
+        for (const [sectionKey, sectionValue] of Object.entries(chapterValue as Record<string, unknown>)) {
+          const entries = fixObjectArrays<Record<string, unknown>>(sectionValue).map((entry) => ({
+            purpose: fixStr(entry.purpose),
+            supportedExcerptNumbers: fixArrays<number>(entry.supportedExcerptNumbers)
+              .filter((n) => Number.isInteger(n) && n > 0)
+              .map((n) => Number(n)),
+            minExcerptNumber: typeof entry.minExcerptNumber === "number" && Number.isInteger(entry.minExcerptNumber) && entry.minExcerptNumber > 0
+              ? entry.minExcerptNumber
+              : undefined,
+          }));
+          if (entries.length > 0) {
+            sectionPlans[sectionKey] = entries;
+          }
+        }
+
+        if (Object.keys(sectionPlans).length > 0) {
+          normalized[chapterKey] = sectionPlans;
+        }
+      }
+
+      return normalized;
+    })();
+
     const chapters = fixObjectArrays<Record<string, unknown>>(raw.chapters as unknown).map((c) => ({
       ...c,
       intro:               fixStr(c.intro),
@@ -1848,6 +1882,7 @@ export function EbookPipeline({
       architecture,
       sections,
       sectionAssignments,
+      chapterPlans,
       chapters,
     } as EbookJobState;
   }
@@ -2075,6 +2110,7 @@ export function EbookPipeline({
           chapters: resume.chapters ?? [],
           sections: resume.sections ?? [],
           sectionAssignments: resume.sectionAssignments ?? [],
+          chapterPlans: resume.chapterPlans ?? {},
           transcripts: sanitizeTranscriptEntries(resume.transcripts),
           errorLog: resume.errorLog ?? [],
         }
@@ -2088,6 +2124,7 @@ export function EbookPipeline({
           contentMap: null,
           architecture: null,
           sectionAssignments: [],
+          chapterPlans: {},
           sections: [],
           chapters: [],
           frontMatter: null,
@@ -2481,15 +2518,33 @@ export function EbookPipeline({
             const chapterAssignments = assignments.filter(
               (a) => a.chapterNumber === assignment.chapterNumber
             );
+            const pendingSectionNumbers = chapterAssignments
+              .filter((a) => !completedSectionKeys.has(`${a.chapterNumber}-${a.sectionNumber}`))
+              .map((a) => a.sectionNumber);
             const incompleteCount = chapterAssignments.filter(
               (a) => !completedSectionKeys.has(`${a.chapterNumber}-${a.sectionNumber}`)
             ).length;
             if (incompleteCount > 0) {
-              addLog(`  📋 Planning Chapter ${assignment.chapterNumber} (${incompleteCount} sections remaining)…`);
-              try {
-                const chapterPlanResult = await postJson<{ sectionPlans: Array<{ sectionNumber: number; paragraphPlan: Array<{ purpose: string; supportedExcerptNumbers: number[]; minExcerptNumber?: number }> }> }>(
-                  "/api/ebook/chapter-plan",
-                  {
+              const chapterKey = String(assignment.chapterNumber);
+              const persistedPlansForChapter = acc.chapterPlans?.[chapterKey] ?? {};
+              for (const sectionNumber of pendingSectionNumbers) {
+                const persisted = persistedPlansForChapter[String(sectionNumber)] ?? [];
+                if (persisted.length > 0) {
+                  chapterPlanMap.set(sectionNumber, persisted);
+                }
+              }
+
+              const missingPendingFromPersisted = pendingSectionNumbers.filter((n) => {
+                const plan = chapterPlanMap.get(n);
+                return !plan || plan.length === 0;
+              });
+
+              if (missingPendingFromPersisted.length === 0) {
+                addLog(`  ♻ Reusing persisted Chapter ${assignment.chapterNumber} plan (${pendingSectionNumbers.length} pending sections)`);
+              } else {
+                addLog(`  📋 Planning Chapter ${assignment.chapterNumber} (${incompleteCount} sections remaining)…`);
+                try {
+                  const chapterPlanRequest = {
                     chapterNumber: assignment.chapterNumber,
                     chapterTitle: assignment.chapterTitle,
                     nextChapterTitle: (() => {
@@ -2528,19 +2583,72 @@ export function EbookPipeline({
                         return !next || next.chapterNumber !== a.chapterNumber;
                       })(),
                     })),
+                  };
+
+                  let accepted = false;
+                  for (let attempt = 1; attempt <= 2; attempt++) {
+                    const chapterPlanRaw = await postJson<unknown>("/api/ebook/chapter-plan", chapterPlanRequest);
+                    const parsedPlan = ChapterPlanResponseSchema.safeParse(chapterPlanRaw);
+                    if (!parsedPlan.success) {
+                      if (attempt < 2) {
+                        addLog(`  ↺ Chapter ${assignment.chapterNumber} plan response invalid — retrying…`);
+                        continue;
+                      }
+                      throw new Error(`Invalid chapter-plan response for Chapter ${assignment.chapterNumber}`);
+                    }
+
+                    chapterPlanMap.clear();
+                    for (const sectionNumber of pendingSectionNumbers) {
+                      const persisted = persistedPlansForChapter[String(sectionNumber)] ?? [];
+                      if (persisted.length > 0) {
+                        chapterPlanMap.set(sectionNumber, persisted);
+                      }
+                    }
+                    for (const sp of parsedPlan.data.sectionPlans ?? []) {
+                      if ((sp.paragraphPlan ?? []).length > 0) {
+                        chapterPlanMap.set(sp.sectionNumber, sp.paragraphPlan);
+                      }
+                    }
+
+                    const missingPending = pendingSectionNumbers.filter((n) => {
+                      const plan = chapterPlanMap.get(n);
+                      return !plan || plan.length === 0;
+                    });
+
+                    if (missingPending.length > 0) {
+                      if (attempt < 2) {
+                        addLog(`  ↺ Chapter ${assignment.chapterNumber} plan missing section(s) ${missingPending.join(", ")} — retrying…`);
+                        continue;
+                      }
+                      throw new Error(`Chapter ${assignment.chapterNumber} plan incomplete. Missing section plan(s): ${missingPending.join(", ")}`);
+                    }
+
+                    accepted = true;
+                    break;
                   }
-                );
-                for (const sp of chapterPlanResult.sectionPlans ?? []) {
-                  if ((sp.paragraphPlan ?? []).length > 0) {
-                    chapterPlanMap.set(sp.sectionNumber, sp.paragraphPlan);
+
+                  if (!accepted) {
+                    throw new Error(`Failed to produce a valid plan for Chapter ${assignment.chapterNumber}`);
                   }
+
+                  const persistedChapter: Record<string, ChapterPlanStep[]> = {};
+                  for (const [sectionNumber, plan] of chapterPlanMap.entries()) {
+                    if (plan.length > 0) {
+                      persistedChapter[String(sectionNumber)] = plan;
+                    }
+                  }
+                  acc.chapterPlans = {
+                    ...(acc.chapterPlans ?? {}),
+                    [chapterKey]: persistedChapter,
+                  };
+                  await checkpoint("writing");
+                  addLog(`  ✓ Chapter ${assignment.chapterNumber} plan ready and persisted (${chapterPlanMap.size} sections planned)`);
+                } catch (planErr) {
+                  const detail = planErr instanceof Error ? planErr.message : String(planErr);
+                  addLog(`  ✗ Chapter plan failed for Chapter ${assignment.chapterNumber}: ${detail}`);
+                  console.warn("[chapter-plan] failed:", planErr);
+                  throw new Error(`Chapter planning failed before writing Chapter ${assignment.chapterNumber}: ${detail}`);
                 }
-                addLog(`  ✓ Chapter ${assignment.chapterNumber} plan ready (${chapterPlanMap.size} sections planned)`);
-              } catch (planErr) {
-                addLog(`  ⚠ Chapter plan failed — pipeline will stop at write-section (Fix 2: no fallback planner)`);
-                console.warn("[chapter-plan] failed:", planErr);
-                // FIX 2: No fallback planner. Write-section will return 400 error.
-                // This forces the user to retry with a working chapter-plan.
               }
             }
           }
@@ -2713,6 +2821,12 @@ export function EbookPipeline({
           // Chapter-level pre-computed plan — skips per-section planner in write-section
           assignedPlan: chapterPlanMap.get(assignment.sectionNumber),
         };
+
+        if ((augmented.assignedPlan ?? []).length === 0) {
+          throw new Error(
+            `Missing chapter plan for Ch${assignment.chapterNumber} §${assignment.sectionNumber}. Resume will retry chapter-plan and continue once complete.`
+          );
+        }
         addLog(`Writing Ch ${assignment.chapterNumber} § ${assignment.sectionNumber}: ${assignment.heading}…`);
 
         // Update section status to "writing"

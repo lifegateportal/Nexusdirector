@@ -373,6 +373,19 @@ export const EbookJobStateSchema = z.object({
   contentMap: ContentMapSchema.nullable().default(null),
   architecture: BookArchitectureSchema.nullable().default(null),
   sectionAssignments: z.array(SectionAssignmentSchema).default([]),
+  // Persisted chapter-level paragraph plans keyed by chapterNumber -> sectionNumber.
+  // This lets resume continue writing without losing the plan contract.
+  chapterPlans: z.record(
+    z.string(),
+    z.record(
+      z.string(),
+      z.array(z.object({
+        purpose: z.string().default(""),
+        supportedExcerptNumbers: z.array(z.number().int().positive()).default([]),
+        minExcerptNumber: z.number().int().positive().optional(),
+      })).default([])
+    )
+  ).default({}),
   sections: z.array(SectionDraftSchema).default([]),
   chapters: z.array(ChapterDraftSchema).default([]),
   frontMatter: FrontBackMatterSchema.nullable().default(null),
