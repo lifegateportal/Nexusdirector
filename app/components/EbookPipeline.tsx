@@ -1763,12 +1763,12 @@ export function EbookPipeline({
     if (
       stage !== "complete" ||
       !completedManifest ||
-      !onSaveProject ||
+      !onAutoSaveProject ||
       autoSavedRef.current
     ) return;
     autoSavedRef.current = true;
     const name = completedManifest.bookTitle?.trim() || "My Ebook";
-    Promise.resolve(onSaveProject(name))
+    Promise.resolve(onAutoSaveProject(name))
       .then(() => {
         addLog(`✓ Auto-saved project: "${name}"`);
       })
@@ -1777,7 +1777,7 @@ export function EbookPipeline({
         const msg = err instanceof Error ? err.message : "unknown error";
         addLog(`⚠ Auto-save failed: ${msg}`);
       });
-  }, [stage, completedManifest, onSaveProject, addLog]);
+  }, [stage, completedManifest, onAutoSaveProject, addLog]);
 
   // ── Hydrate from localStorage (primary) or IndexedDB (fallback) on mount ──
 

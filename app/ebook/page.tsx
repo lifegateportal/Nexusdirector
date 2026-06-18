@@ -515,7 +515,7 @@ function EbookPageClient() {
 
   // ── Project handlers ──────────────────────────────────────────────────────
 
-  const handleSaveProject = useCallback(async (name: string, options?: { silent?: boolean }) => {
+  const handleSaveProject = useCallback(async (name: string, options?: { silent?: boolean; localOnly?: boolean }) => {
     if (saveInFlightRef.current) {
       if (!options?.silent) {
         setStatusMsg({ type: "success", text: "Save already in progress..." });
@@ -730,35 +730,39 @@ function EbookPageClient() {
           })),
       };
 
-      const cloudRes = await fetch("/api/projects", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          project: {
-            _version: EBOOK_PROJECT_SCHEMA_VERSION,
-            id: project.id,
-            name: project.name,
-            createdAt: project.createdAt,
-            updatedAt: project.updatedAt,
-            academy: null,
-            siteConfig: {},
-            deliveryInstructions: "",
-            chatHistory: [],
-            blueprint: null,
-            logicResult: null,
-            uiResult: null,
-            ebookManifest: toManifestFromJob(persistedJobState),
-            ebookJobState: cloudJobState,
-            publishedSlug: project.publishedSlug,
-            coverImageUrl: project.coverImageUrl,
-            authorImageUrl: project.authorImageUrl,
-          },
-        }),
-      }).catch(() => null);
-      const cloudPayload = cloudRes?.ok
-        ? await cloudRes.json().catch(() => null) as { workspaceSaved?: boolean; cloudSaved?: boolean } | null
-        : null;
-      const workspaceFileSaved = Boolean(cloudPayload?.workspaceSaved);
-      const cloudSaved = Boolean(cloudPayload?.cloudSaved);
+      let workspaceFileSaved = false;
+      let cloudSaved = false;
+      if (!options?.localOnly) {
+        const cloudRes = await fetch("/api/projects", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            project: {
+              _version: EBOOK_PROJECT_SCHEMA_VERSION,
+              id: project.id,
+              name: project.name,
+              createdAt: project.createdAt,
+              updatedAt: project.updatedAt,
+              academy: null,
+              siteConfig: {},
+              deliveryInstructions: "",
+              chatHistory: [],
+              blueprint: null,
+              logicResult: null,
+              uiResult: null,
+              ebookManifest: toManifestFromJob(persistedJobState),
+              ebookJobState: cloudJobState,
+              publishedSlug: project.publishedSlug,
+              coverImageUrl: project.coverImageUrl,
+              authorImageUrl: project.authorImageUrl,
+            },
+          }),
+        }).catch(() => null);
+        const cloudPayload = cloudRes?.ok
+          ? await cloudRes.json().catch(() => null) as { workspaceSaved?: boolean; cloudSaved?: boolean } | null
+          : null;
+        workspaceFileSaved = Boolean(cloudPayload?.workspaceSaved);
+        cloudSaved = Boolean(cloudPayload?.cloudSaved);
+      }
 
       if (!localSaved && !workspaceProjectSaved && !workspaceFileSaved && !cloudSaved) {
         setStatusMsg({ type: "error", text: "Save failed: no local or workspace persistence target completed." });
@@ -768,8 +772,8 @@ function EbookPageClient() {
       const savedTargets = [
         localSaved ? "projects" : null,
         workspaceProjectSaved ? "workspace panel" : null,
-        workspaceFileSaved ? "workspace file" : null,
-        cloudSaved ? "cloud backup" : null,
+        !options?.localOnly && workspaceFileSaved ? "workspace file" : null,
+        !options?.localOnly && cloudSaved ? "cloud backup" : null,
       ].filter((target): target is string => Boolean(target));
 
       if (!options?.silent) {
@@ -796,7 +800,7 @@ function EbookPageClient() {
   ]);
 
   const handleAutoSaveProject = useCallback((name: string) => {
-    void handleSaveProject(name, { silent: true });
+    void handleSaveProject(name, { silent: true, localOnly: true });
   }, [handleSaveProject]);
 
   const handleLoadProject = useCallback(async (id: string) => {
