@@ -117,6 +117,9 @@ function EbookPageClient() {
   const handleSaveProjectRef = useRef<(name: string, opts?: { silent?: boolean }) => Promise<void>>(
     async () => {},
   );
+  // Prevent overlapping save operations from allocating multiple project IDs.
+  const saveInFlightRef = useRef(false);
+  const pendingProjectIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     void (async () => {
@@ -518,6 +521,13 @@ function EbookPageClient() {
   // ── Project handlers ──────────────────────────────────────────────────────
 
   const handleSaveProject = useCallback(async (name: string, options?: { silent?: boolean }) => {
+    if (saveInFlightRef.current) {
+      if (!options?.silent) {
+        setStatusMsg({ type: "success", text: "Save already in progress..." });
+      }
+      return;
+    }
+    saveInFlightRef.current = true;
     try {
       const fallbackProject = currentProjectId
         ? projects.find((p) => p.id === currentProjectId)
@@ -621,7 +631,11 @@ function EbookPageClient() {
       const chapterCount = safeChapters.length;
       const totalWordCount = sumChapterWordCount(safeChapters);
 
-      const id = currentProjectId || generateEbookProjectId();
+      const id = currentProjectId || pendingProjectIdRef.current || generateEbookProjectId();
+      if (!currentProjectId) {
+        pendingProjectIdRef.current = id;
+        setCurrentProjectId(id);
+      }
       const existing = projects.find((p) => p.id === id);
       const existingChapters = sanitizeChapterDrafts(existing?.jobState.chapters);
       const shouldPreserveExisting = Boolean(existing && existingChapters.length > 0 && chapterCount === 0);
@@ -693,6 +707,7 @@ function EbookPageClient() {
         console.warn("[handleSaveProject] localStorage unavailable:", err);
       }
       setCurrentProjectId(id);
+      pendingProjectIdRef.current = null;
       if (localSaved) {
         setProjects(await listEbookProjects());
       } else {
@@ -772,6 +787,8 @@ function EbookPageClient() {
       if (!options?.silent) {
         setStatusMsg({ type: "error", text: err instanceof Error ? err.message : "Save failed." });
       }
+    } finally {
+      saveInFlightRef.current = false;
     }
   }, [
     currentProjectId,

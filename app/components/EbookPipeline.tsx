@@ -1768,8 +1768,15 @@ export function EbookPipeline({
     ) return;
     autoSavedRef.current = true;
     const name = completedManifest.bookTitle?.trim() || "My Ebook";
-    onSaveProject(name);
-    addLog(`✓ Auto-saved project: "${name}"`);
+    Promise.resolve(onSaveProject(name))
+      .then(() => {
+        addLog(`✓ Auto-saved project: "${name}"`);
+      })
+      .catch((err) => {
+        autoSavedRef.current = false;
+        const msg = err instanceof Error ? err.message : "unknown error";
+        addLog(`⚠ Auto-save failed: ${msg}`);
+      });
   }, [stage, completedManifest, onSaveProject, addLog]);
 
   // ── Hydrate from localStorage (primary) or IndexedDB (fallback) on mount ──
