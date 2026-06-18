@@ -1473,6 +1473,7 @@ export function EbookPipeline({
   onPipelineSnapshotChange,
   onJobStateChange,
   onSaveProject,
+  onAutoSaveProject,
 }: {
   ebookManifest?: EbookManifest | null;
   initialJobState?: EbookJobState | null;
@@ -1481,6 +1482,8 @@ export function EbookPipeline({
   onJobStateChange?: (jobState: EbookJobState | null) => void;
   /** Called when the user clicks Save inside the pipeline. Receives the chosen project name. */
   onSaveProject?: (name: string) => void;
+  /** Called for debounced silent autosave during editor changes. */
+  onAutoSaveProject?: (name: string) => void;
 } = {}) {
   const [audioFiles, setAudioFiles] = useState<(File | null)[]>([null, null, null, null, null, null]);
   const [transcriptFiles, setTranscriptFiles] = useState<(File | null)[]>([null, null, null, null, null, null]);
@@ -1522,6 +1525,8 @@ export function EbookPipeline({
   const autoDownloadedRef = useRef(false);
   // Prevent auto-save firing more than once per completed pipeline run
   const autoSavedRef = useRef(false);
+  // Debounce autosave during frequent editor changes.
+  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Track the ebookManifest prop at mount time so the restore effect can detect when an
   // externally-edited manifest was already provided and must NOT be overwritten by the
   // job-state reconstruction (which only knows about the original pipeline output).
@@ -1531,6 +1536,26 @@ export function EbookPipeline({
     const entry = `[${new Date().toLocaleTimeString()}] ${msg}`;
     logRef.current = [...logRef.current.slice(-80), entry];
     setLog([...logRef.current]);
+  }, []);
+
+  const scheduleAutoSave = useCallback((manifest: EbookManifest) => {
+    if (!onAutoSaveProject) return;
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current);
+    }
+    autoSaveTimerRef.current = setTimeout(() => {
+      const name = manifest.bookTitle?.trim() || "My Ebook";
+      onAutoSaveProject(name);
+      autoSaveTimerRef.current = null;
+    }, 900);
+  }, [onAutoSaveProject]);
+
+  useEffect(() => {
+    return () => {
+      if (autoSaveTimerRef.current) {
+        clearTimeout(autoSaveTimerRef.current);
+      }
+    };
   }, []);
 
   const recalculateManifestTotal = useCallback((manifest: EbookManifest): EbookManifest => {
@@ -1627,9 +1652,10 @@ export function EbookPipeline({
       setExportUrls(null);
       setQualityReport(null);
       onManifestReady?.(next);
+      scheduleAutoSave(next);
       return next;
     });
-  }, [onManifestReady, recalculateManifestTotal]);
+  }, [onManifestReady, recalculateManifestTotal, scheduleAutoSave]);
 
   const exportFinalBook = useCallback(async () => {
     if (!completedManifest || !reviewContext) return;

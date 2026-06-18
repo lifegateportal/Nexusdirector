@@ -112,6 +112,11 @@ function EbookPageClient() {
   // Direct prop to pass initial job state to pipeline on load (more reliable than localStorage-only)
   const [pipelineInitialJobState, setPipelineInitialJobState] = useState<EbookJobState | null>(null);
   const hydratedLoadRef = useRef<string | null>(null);
+  // Ref-stable pointer to handleSaveProject so the debounced auto-save
+  // effect does not re-register every time handleSaveProject recreates.
+  const handleSaveProjectRef = useRef<(name: string, opts?: { silent?: boolean }) => Promise<void>>(
+    async () => {},
+  );
 
   useEffect(() => {
     void (async () => {
@@ -512,7 +517,7 @@ function EbookPageClient() {
 
   // ── Project handlers ──────────────────────────────────────────────────────
 
-  const handleSaveProject = useCallback(async (name: string) => {
+  const handleSaveProject = useCallback(async (name: string, options?: { silent?: boolean }) => {
     try {
       const fallbackProject = currentProjectId
         ? projects.find((p) => p.id === currentProjectId)
@@ -547,8 +552,63 @@ function EbookPageClient() {
       }
 
       if (!jobState) {
-        setStatusMsg({ type: "error", text: "Nothing to save yet — start the pipeline first." });
-        return;
+        // Allow saving imported manifest-only sessions by synthesizing a complete job snapshot.
+        if (ebookManifest && ebookManifest.chapters.length > 0) {
+          const nowIso = new Date().toISOString();
+          const fallbackJob: EbookJobState = {
+            jobId: currentProjectId || `ebook-${Date.now()}`,
+            status: "complete",
+            audioFileNames: [],
+            transcripts: [],
+            masterTranscript: "",
+            filteredTranscript: "",
+            filterRemovedCount: 0,
+            voiceDNA: ebookManifest.voiceDNA ?? null,
+            contentMap: {
+              totalEstimatedWords: ebookManifest.totalWordCount,
+              overarchingThemes: [],
+              teachingArc: "",
+              coreThesis: "",
+              targetAudience: "",
+              uniqueVocabulary: [],
+              toneMap: "",
+              segments: [],
+              allQuotes: ebookManifest.allQuotes ?? [],
+            },
+            architecture: {
+              bookTitle: ebookManifest.bookTitle,
+              subtitle: ebookManifest.subtitle,
+              authorName: ebookManifest.authorName,
+              estimatedTotalWords: ebookManifest.totalWordCount,
+              chapters: [],
+              frontMatterNotes: "",
+              backMatterNotes: "",
+              seriesArc: [],
+              droppedSegments: [],
+            },
+            sectionAssignments: [],
+            chapterPlans: {},
+            sections: [],
+            chapters: ebookManifest.chapters,
+            frontMatter: ebookManifest.frontMatter,
+            backMatter: ebookManifest.backMatter ?? null,
+            exportUrls: null,
+            currentStage: "complete",
+            progress: {
+              total: ebookManifest.chapters.length,
+              completed: ebookManifest.chapters.length,
+            },
+            errorLog: [],
+            createdAt: nowIso,
+            updatedAt: nowIso,
+          };
+          jobState = fallbackJob;
+        } else {
+          if (!options?.silent) {
+            setStatusMsg({ type: "error", text: "Nothing to save yet — start the pipeline first." });
+          }
+          return;
+        }
       }
 
       const safeJobState = normalizeJobStateForSave(toJsonSafeValue(jobState));
@@ -702,12 +762,16 @@ function EbookPageClient() {
         cloudSaved ? "cloud backup" : null,
       ].filter((target): target is string => Boolean(target));
 
-      setStatusMsg({
-        type: "success",
-        text: `"${name}" saved to ${savedTargets.join(", ")}.`,
-      });
+      if (!options?.silent) {
+        setStatusMsg({
+          type: "success",
+          text: `"${name}" saved to ${savedTargets.join(", ")}.`,
+        });
+      }
     } catch (err) {
-      setStatusMsg({ type: "error", text: err instanceof Error ? err.message : "Save failed." });
+      if (!options?.silent) {
+        setStatusMsg({ type: "error", text: err instanceof Error ? err.message : "Save failed." });
+      }
     }
   }, [
     currentProjectId,
@@ -719,18 +783,49 @@ function EbookPageClient() {
     toJsonSafeValue,
   ]);
 
+  const handleAutoSaveProject = useCallback((name: string) => {
+    void handleSaveProject(name, { silent: true });
+  }, [handleSaveProject]);
+
+  // Keep the ref in sync with the latest version of handleSaveProject.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { handleSaveProjectRef.current = handleSaveProject; }, [handleSaveProject]);
+
+  // Debounced auto-save: fires 2 s after any manifest change when a project
+  // ID already exists.  This captures Source Map edits, Director AI edits,
+  // and any other in-session changes without requiring a manual save.
+  useEffect(() => {
+    if (!currentProjectId || !ebookManifest) return;
+    const name =
+      projects.find((pr) => pr.id === currentProjectId)?.name ??
+      ebookManifest.bookTitle ??
+      "My Ebook";
+    const t = window.setTimeout(() => {
+      void handleSaveProjectRef.current(name, { silent: true });
+    }, 2000);
+    return () => window.clearTimeout(t);
+  // Intentionally omit handleSaveProjectRef (ref-stable) and projects/name
+  // (secondary lookups) from deps to avoid cascading re-triggers.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ebookManifest, currentProjectId]);
+
   const handleLoadProject = useCallback(async (id: string) => {
     const p = projects.find((proj) => proj.id === id);
     if (!p) return;
 
     try {
-      const candidates: Array<EbookJobState | null> = [normalizeJobStateForSave(p.jobState)];
+      const projectJob = normalizeJobStateForSave(p.jobState);
+      const candidates: Array<EbookJobState | null> = [projectJob];
+      const expectedJobId = projectJob?.jobId ?? null;
 
       try {
         const raw = localStorage.getItem(JOB_STATE_KEY);
         if (raw) {
           const parsed = JSON.parse(raw) as unknown;
-          candidates.push(normalizeJobStateForSave(parsed));
+          const parsedCandidate = normalizeJobStateForSave(parsed);
+          if (!expectedJobId || parsedCandidate?.jobId === expectedJobId) {
+            candidates.push(parsedCandidate);
+          }
         }
       } catch {
         // localStorage may be unavailable
@@ -740,7 +835,10 @@ function EbookPageClient() {
         const savedJobId = localStorage.getItem(JOB_STORAGE_KEY);
         if (savedJobId) {
           const idbJob = await getEbookJob(savedJobId).catch(() => null);
-          candidates.push(normalizeJobStateForSave(idbJob));
+          const idbCandidate = normalizeJobStateForSave(idbJob);
+          if (!expectedJobId || idbCandidate?.jobId === expectedJobId) {
+            candidates.push(idbCandidate);
+          }
         }
       } catch {
         // IndexedDB may be unavailable
@@ -1280,6 +1378,7 @@ function EbookPageClient() {
                   onPipelineSnapshotChange={handlePipelineSnapshotChange}
                   onJobStateChange={setLiveJobState}
                   onSaveProject={(name) => void handleSaveProject(name)}
+                  onAutoSaveProject={handleAutoSaveProject}
                 />
               </div>
             </div>
@@ -1299,9 +1398,14 @@ function EbookPageClient() {
                   onUnpublish={handleUnpublish}
                   onUpdateImages={handleUpdateImages}
                   onManifestLoaded={(manifest) => {
+                    // Assign a stable project ID so subsequent saves
+                    // update the same record instead of creating a new one.
+                    if (!currentProjectId) {
+                      setCurrentProjectId(generateEbookProjectId());
+                    }
                     setEbookManifest(manifest);
                     setActiveTab("pipeline");
-                    setStatusMsg({ type: "success", text: `"${manifest.bookTitle}" loaded into pipeline.` });
+                    setStatusMsg({ type: "success", text: `"${manifest.bookTitle}" loaded — tap Save to keep it.` });
                   }}
                 />
               </div>

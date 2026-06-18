@@ -29,14 +29,34 @@ type EbookProjectsPanelProps = {
 };
 
 function exportProject(p: EbookProject) {
-  const json = JSON.stringify(p, null, 2);
+  const json     = JSON.stringify(p, null, 2);
+  const filename = `${p.name.replace(/[^a-z0-9]/gi, "_").toLowerCase()}_ebook.json`;
+
+  // iOS Safari does not honour <a download> on blob: URLs — use an
+  // application/octet-stream data URI which forces the native save dialog.
+  const isIOS = typeof navigator !== "undefined" &&
+    /ipad|iphone|ipod/i.test(navigator.userAgent);
+
+  if (isIOS) {
+    const dataUri = `data:application/octet-stream;charset=utf-8,${encodeURIComponent(json)}`;
+    const a = document.createElement("a");
+    a.setAttribute("href", dataUri);
+    a.setAttribute("download", filename);
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    return;
+  }
+
   const blob = new Blob([json], { type: "application/json" });
   const url  = URL.createObjectURL(blob);
   const a    = document.createElement("a");
   a.href     = url;
-  a.download = `${p.name.replace(/[^a-z0-9]/gi, "_").toLowerCase()}_ebook.json`;
+  a.download = filename;
+  document.body.appendChild(a);
   a.click();
-  URL.revokeObjectURL(url);
+  document.body.removeChild(a);
+  window.setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
 
 export function EbookProjectsPanel({
