@@ -96,28 +96,6 @@ For every scripture or quote mentioned:
 
 DO NOT reproduce large blocks of transcript text. Focus on structure and meaning.`;
 
-function firstSentence(text: string): string {
-  return text.split(/(?<=[.!?])\s+/).find((sentence) => sentence.trim().length > 0)?.trim() ?? "";
-}
-
-function makeFallbackSegments(chunkText: string, sourceAudio: string): z.infer<typeof SlotSegmentExtractSchema>[] {
-  const paragraphs = chunkText.split(/\n\n+/).map((p) => p.trim()).filter(Boolean);
-  const parts = paragraphs.length > 0 ? paragraphs.slice(0, 4) : [chunkText.trim()];
-  return parts
-    .map((part, index) => {
-      const sentence = firstSentence(part);
-      const words = part.split(/\s+/).filter(Boolean).length;
-      const topic = sentence ? sentence.slice(0, 120) : `${sourceAudio} teaching segment ${index + 1}`;
-      return {
-        topic,
-        keyPoints: sentence ? [sentence.slice(0, 180)] : [],
-        quotes: [],
-        estimatedWordCount: words,
-      };
-    })
-    .filter((segment) => segment.estimatedWordCount > 0);
-}
-
 async function withTimeout<T>(promise: Promise<T>, label: string, timeoutMs = 60000): Promise<T> {
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
   try {
@@ -179,10 +157,9 @@ export async function POST(req: NextRequest) {
       dedupedSegs: z.infer<typeof SlotSegmentExtractSchema>[];
     };
 
-    const slotResults: DedupedSlotResult[] = [];
-    for (const chunk of slotChunks) {
-      // A8: Isolate per-slot failures — a single bad LLM call must not abort the whole map
-      try {
+    const slotResults: DedupedSlotResult[] = await Promise.all(
+      slotChunks.map(async (chunk): Promise<DedupedSlotResult> => {
+        // A8: Isolate per-slot failures — a single bad LLM call must not abort the whole map
         const slotWords = chunk.text.split(/\s+/);
         const OVERLAP = 200;
         const chunkRanges: Array<{ start: number; end: number }> = [];
@@ -194,10 +171,9 @@ export async function POST(req: NextRequest) {
           start = end - OVERLAP;
         }
 
-        const rawSegmentsForSlot: z.infer<typeof SlotSegmentExtractSchema>[] = [];
-        for (const range of chunkRanges) {
-          const chunkText = slotWords.slice(range.start, range.end).join(" ");
-          try {
+        const chunkSegments = await Promise.all(
+          chunkRanges.map(async (range) => {
+            const chunkText = slotWords.slice(range.start, range.end).join(" ");
             const { object } = await withTimeout(
               generateObject({
                 model: deepSeekModel,
@@ -209,12 +185,11 @@ export async function POST(req: NextRequest) {
               }),
               `${chunk.sourceAudio} segment extraction`
             );
-            rawSegmentsForSlot.push(...(object.segments ?? []));
-          } catch (rangeErr) {
-            console.warn(`[content-map] ${chunk.sourceAudio} range fallback used:`, rangeErr instanceof Error ? rangeErr.message : rangeErr);
-            rawSegmentsForSlot.push(...makeFallbackSegments(chunkText, chunk.sourceAudio));
-          }
-        }
+            return object.segments;
+          })
+        );
+
+        const rawSegmentsForSlot = chunkSegments.flat();
 
         // Deduplicate segments that appeared in overlapping chunk windows.
         const seenSegTopics = new Set<string>();
@@ -225,16 +200,9 @@ export async function POST(req: NextRequest) {
           return true;
         });
 
-        slotResults.push({ chunk, slotWords, dedupedSegs: dedupedSegs.length > 0 ? dedupedSegs : makeFallbackSegments(chunk.text, chunk.sourceAudio) });
-      } catch (slotErr) {
-        console.error(`[content-map] Slot ${chunk.sourceAudio} failed — using fallback segments:`, slotErr);
-        slotResults.push({
-          chunk,
-          slotWords: chunk.text.split(/\s+/),
-          dedupedSegs: makeFallbackSegments(chunk.text, chunk.sourceAudio),
-        });
-      }
-    }
+        return { chunk, slotWords, dedupedSegs };
+      })
+    );
 
     // ── Assemble segments sequentially so IDs are deterministic ──────────────
     let segmentIdCounter = 1;
