@@ -737,8 +737,7 @@ OUTPUT RULES
 - If the instruction is ambiguous, make the most useful interpretation and describe what you did in summary
 - ALWAYS attempt the instruction — never refuse or treat instructions as comments
 - If you make ANY change, you MUST include the corresponding change fields (chapterPatches, updatedSections, chapters, frontMatter, etc.). Returning ONLY summary with no change fields = zero manuscript changes. The user will see your summary but the book will be IDENTICAL.
-- Only return empty change fields when the user is asking a question ("show me...", "explain...") — not for edit instructions`,
-`;
+- Only return empty change fields when the user is asking a question ("show me...", "explain...") — not for edit instructions`;
 
     let object: z.infer<typeof EbookChangeSchema>;
     try {
