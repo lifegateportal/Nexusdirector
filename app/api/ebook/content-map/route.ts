@@ -96,6 +96,42 @@ For every scripture or quote mentioned:
 
 DO NOT reproduce large blocks of transcript text. Focus on structure and meaning.`;
 
+function firstSentence(text: string): string {
+  return text.split(/(?<=[.!?])\s+/).find((sentence) => sentence.trim().length > 0)?.trim() ?? "";
+}
+
+function makeFallbackSegments(chunkText: string, sourceAudio: string): z.infer<typeof SlotSegmentExtractSchema>[] {
+  const paragraphs = chunkText.split(/\n\n+/).map((p) => p.trim()).filter(Boolean);
+  const parts = paragraphs.length > 0 ? paragraphs.slice(0, 4) : [chunkText.trim()];
+  return parts
+    .map((part, index) => {
+      const sentence = firstSentence(part);
+      const words = part.split(/\s+/).filter(Boolean).length;
+      const topic = sentence ? sentence.slice(0, 120) : `${sourceAudio} teaching segment ${index + 1}`;
+      return {
+        topic,
+        keyPoints: sentence ? [sentence.slice(0, 180)] : [],
+        quotes: [],
+        estimatedWordCount: words,
+      };
+    })
+    .filter((segment) => segment.estimatedWordCount > 0);
+}
+
+async function withTimeout<T>(promise: Promise<T>, label: string, timeoutMs = 60000): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs / 1000}s`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+}
+
 export async function POST(req: NextRequest) {
   const body = await req.json() as unknown;
   let input;
@@ -143,55 +179,62 @@ export async function POST(req: NextRequest) {
       dedupedSegs: z.infer<typeof SlotSegmentExtractSchema>[];
     };
 
-    const slotResults: DedupedSlotResult[] = await Promise.all(
-      slotChunks.map(async (chunk): Promise<DedupedSlotResult> => {
-        // A8: Isolate per-slot failures — a single bad LLM call must not abort the whole map
-        try {
-          const slotWords = chunk.text.split(/\s+/);
-          const OVERLAP = 200;
-          const chunkRanges: Array<{ start: number; end: number }> = [];
-          let start = 0;
-          while (start < slotWords.length) {
-            const end = Math.min(start + MAX_SLOT_WORDS, slotWords.length);
-            chunkRanges.push({ start, end });
-            if (end === slotWords.length) break;
-            start = end - OVERLAP;
-          }
+    const slotResults: DedupedSlotResult[] = [];
+    for (const chunk of slotChunks) {
+      // A8: Isolate per-slot failures — a single bad LLM call must not abort the whole map
+      try {
+        const slotWords = chunk.text.split(/\s+/);
+        const OVERLAP = 200;
+        const chunkRanges: Array<{ start: number; end: number }> = [];
+        let start = 0;
+        while (start < slotWords.length) {
+          const end = Math.min(start + MAX_SLOT_WORDS, slotWords.length);
+          chunkRanges.push({ start, end });
+          if (end === slotWords.length) break;
+          start = end - OVERLAP;
+        }
 
-          // Process all chunk ranges within this slot in parallel too.
-          const chunkSegments = await Promise.all(
-            chunkRanges.map(async (range) => {
-              const chunkText = slotWords.slice(range.start, range.end).join(" ");
-              const { object } = await generateObject({
+        const rawSegmentsForSlot: z.infer<typeof SlotSegmentExtractSchema>[] = [];
+        for (const range of chunkRanges) {
+          const chunkText = slotWords.slice(range.start, range.end).join(" ");
+          try {
+            const { object } = await withTimeout(
+              generateObject({
                 model: deepSeekModel,
                 schema: SlotSegmentsSchema,
                 mode: "tool",
                 temperature: 0.2,
                 system: SEGMENT_SYSTEM,
                 prompt: `Extract all teaching segments from this recording (${chunk.sourceAudio}):\n\n${chunkText}`,
-              });
-              return object.segments;
-            })
-          );
-
-          const rawSegmentsForSlot = chunkSegments.flat();
-
-          // Deduplicate segments that appeared in overlapping chunk windows.
-          const seenSegTopics = new Set<string>();
-          const dedupedSegs = rawSegmentsForSlot.filter((seg) => {
-            const key = seg.topic.toLowerCase().trim().slice(0, 60);
-            if (seenSegTopics.has(key)) return false;
-            seenSegTopics.add(key);
-            return true;
-          });
-
-          return { chunk, slotWords, dedupedSegs };
-        } catch (slotErr) {
-          console.error(`[content-map] Slot ${chunk.sourceAudio} failed — returning empty segments:`, slotErr);
-          return { chunk, slotWords: chunk.text.split(/\s+/), dedupedSegs: [] };
+              }),
+              `${chunk.sourceAudio} segment extraction`
+            );
+            rawSegmentsForSlot.push(...(object.segments ?? []));
+          } catch (rangeErr) {
+            console.warn(`[content-map] ${chunk.sourceAudio} range fallback used:`, rangeErr instanceof Error ? rangeErr.message : rangeErr);
+            rawSegmentsForSlot.push(...makeFallbackSegments(chunkText, chunk.sourceAudio));
+          }
         }
-      })
-    );
+
+        // Deduplicate segments that appeared in overlapping chunk windows.
+        const seenSegTopics = new Set<string>();
+        const dedupedSegs = rawSegmentsForSlot.filter((seg) => {
+          const key = seg.topic.toLowerCase().trim().slice(0, 60);
+          if (seenSegTopics.has(key)) return false;
+          seenSegTopics.add(key);
+          return true;
+        });
+
+        slotResults.push({ chunk, slotWords, dedupedSegs: dedupedSegs.length > 0 ? dedupedSegs : makeFallbackSegments(chunk.text, chunk.sourceAudio) });
+      } catch (slotErr) {
+        console.error(`[content-map] Slot ${chunk.sourceAudio} failed — using fallback segments:`, slotErr);
+        slotResults.push({
+          chunk,
+          slotWords: chunk.text.split(/\s+/),
+          dedupedSegs: makeFallbackSegments(chunk.text, chunk.sourceAudio),
+        });
+      }
+    }
 
     // ── Assemble segments sequentially so IDs are deterministic ──────────────
     let segmentIdCounter = 1;
