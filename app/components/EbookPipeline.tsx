@@ -1520,6 +1520,8 @@ export function EbookPipeline({
   const savedJobRef = useRef<EbookJobState | null>(null);
   // Prevent double-triggering the auto-download across re-renders
   const autoDownloadedRef = useRef(false);
+  // Prevent auto-save firing more than once per completed pipeline run
+  const autoSavedRef = useRef(false);
   // Track the ebookManifest prop at mount time so the restore effect can detect when an
   // externally-edited manifest was already provided and must NOT be overwritten by the
   // job-state reconstruction (which only knows about the original pipeline output).
@@ -1729,6 +1731,20 @@ export function EbookPipeline({
       // pop-up blocked — user can still open manually from the download button
     }
   }, [exportUrls]);
+
+  // ── Auto-save once when pipeline first reaches complete ──────────────────
+  useEffect(() => {
+    if (
+      stage !== "complete" ||
+      !completedManifest ||
+      !onSaveProject ||
+      autoSavedRef.current
+    ) return;
+    autoSavedRef.current = true;
+    const name = completedManifest.bookTitle?.trim() || "My Ebook";
+    onSaveProject(name);
+    addLog(`✓ Auto-saved project: "${name}"`);
+  }, [stage, completedManifest, onSaveProject, addLog]);
 
   // ── Hydrate from localStorage (primary) or IndexedDB (fallback) on mount ──
 
@@ -3746,6 +3762,7 @@ export function EbookPipeline({
                   setReviewTab("manuscript");
                   jobIdRef.current = newJobId();
                   autoDownloadedRef.current = false;
+                  autoSavedRef.current = false;
                   localStorage.removeItem(JOB_STORAGE_KEY);
                   localStorage.removeItem(JOB_STATE_KEY);
                 }}
