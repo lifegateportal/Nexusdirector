@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { z } from "zod";
 import { ProseEditor } from "@/app/components/ProseEditor";
 import type { ChapterDraft, SectionAssignment } from "@/lib/schemas/ebook";
@@ -17,6 +17,19 @@ const RewriteResponseSchema = z.object({
   body: z.string().default(""),
   excerptUsage: z.array(z.number().int().positive()).default([]),
 });
+
+const CritiqueResponseSchema = z.object({
+  summary: z.string().default(""),
+  strengths: z.array(z.string()).default([]),
+  issues: z.array(z.string()).default([]),
+  actions: z.array(z.string()).default([]),
+});
+
+type HistoryEntry = {
+  past: string[];
+  present: string;
+  future: string[];
+};
 
 function tokenize(text: string): string[] {
   return text
@@ -66,6 +79,11 @@ export function TranscriptSourceMapPanel({
   const [rewriteBusy, setRewriteBusy] = useState(false);
   const [rewriteError, setRewriteError] = useState<string | null>(null);
   const [activeExcerptNumber, setActiveExcerptNumber] = useState<number | null>(null);
+  const [selectedParagraphIndex, setSelectedParagraphIndex] = useState<number | null>(null);
+  const [showUnusedOnly, setShowUnusedOnly] = useState(false);
+  const [historyVersion, setHistoryVersion] = useState(0);
+  const [critique, setCritique] = useState<z.infer<typeof CritiqueResponseSchema> | null>(null);
+  const historyRef = useRef<Record<string, HistoryEntry>>({});
 
   const active = useMemo(() => {
     if (!activeKey) return null;
@@ -80,6 +98,26 @@ export function TranscriptSourceMapPanel({
     if (!chapter || !section || !assignment) return null;
     return { chapter, section, assignment };
   }, [activeKey, chapters, sectionAssignments]);
+
+  const ensureHistoryEntry = (key: string, currentBody: string): HistoryEntry => {
+    const existing = historyRef.current[key];
+    if (!existing) {
+      const created: HistoryEntry = { past: [], present: currentBody, future: [] };
+      historyRef.current[key] = created;
+      return created;
+    }
+    return existing;
+  };
+
+  useEffect(() => {
+    if (!active || !activeKey) return;
+    const body = active.section.body ?? "";
+    const entry = ensureHistoryEntry(activeKey, body);
+    if (entry.present !== body) {
+      entry.present = body;
+      setHistoryVersion((v) => v + 1);
+    }
+  }, [active, activeKey]);
 
   const paragraphToExcerpt = useMemo(() => {
     if (!active) return [] as number[];
@@ -115,6 +153,13 @@ export function TranscriptSourceMapPanel({
     return skipped;
   }, [active, usedExcerptNumbers]);
 
+  const visibleExcerptIndexes = useMemo(() => {
+    if (!active) return [] as number[];
+    const all = active.assignment.transcriptExcerpts.map((_, index) => index);
+    if (!showUnusedOnly) return all;
+    return all.filter((index) => !usedExcerptNumbers.has(index + 1));
+  }, [active, showUnusedOnly, usedExcerptNumbers]);
+
   const activeSlotLabel = useMemo(() => {
     if (!active) return "";
     const ids = active.assignment.sourceSegmentIds ?? [];
@@ -129,19 +174,72 @@ export function TranscriptSourceMapPanel({
     return transcriptEntries.find((entry) => entry.label === activeSlotLabel) ?? null;
   }, [activeSlotLabel, transcriptEntries]);
 
-  const applyRewrite = async () => {
+  const activeHistory = useMemo(() => {
+    if (!active || !activeKey) return null;
+    return ensureHistoryEntry(activeKey, active.section.body ?? "");
+  }, [active, activeKey, historyVersion]);
+
+  const canUndo = Boolean(activeHistory && activeHistory.past.length > 0);
+  const canRedo = Boolean(activeHistory && activeHistory.future.length > 0);
+
+  const commitBodyChange = (nextBody: string, pushHistory = true) => {
+    if (!active || !activeKey) return;
+    const entry = ensureHistoryEntry(activeKey, active.section.body ?? "");
+    if (entry.present === nextBody) return;
+    if (pushHistory) {
+      entry.past.push(entry.present);
+      if (entry.past.length > 120) entry.past.shift();
+      entry.future = [];
+    }
+    entry.present = nextBody;
+    onSectionBodyChange(active.chapter.number, active.section.sectionNumber, nextBody);
+    setHistoryVersion((v) => v + 1);
+  };
+
+  const handleUndo = () => {
+    if (!active || !activeKey) return;
+    const entry = ensureHistoryEntry(activeKey, active.section.body ?? "");
+    const previous = entry.past.pop();
+    if (typeof previous !== "string") return;
+    entry.future.push(entry.present);
+    entry.present = previous;
+    onSectionBodyChange(active.chapter.number, active.section.sectionNumber, previous);
+    setHistoryVersion((v) => v + 1);
+  };
+
+  const handleRedo = () => {
+    if (!active || !activeKey) return;
+    const entry = ensureHistoryEntry(activeKey, active.section.body ?? "");
+    const next = entry.future.pop();
+    if (typeof next !== "string") return;
+    entry.past.push(entry.present);
+    entry.present = next;
+    onSectionBodyChange(active.chapter.number, active.section.sectionNumber, next);
+    setHistoryVersion((v) => v + 1);
+  };
+
+  const applyAssistant = async (mode: "rewriteSection" | "refineParagraph" | "critiqueSection") => {
     if (!active) return;
+    if (mode === "refineParagraph" && selectedParagraphIndex === null) {
+      setRewriteError("Select a paragraph first before refining.");
+      return;
+    }
+
     setRewriteBusy(true);
     setRewriteError(null);
+    if (mode !== "critiqueSection") setCritique(null);
+
     try {
       const response = await fetch("/api/ebook/rewrite-section", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          mode,
           assignment: active.assignment,
           currentBody: active.section.body ?? "",
           instruction: rewriteInstruction,
           includeExcerptNumbers: Array.from(selectedExcerptNumbers),
+          paragraphIndex: selectedParagraphIndex,
           authorConfig,
         }),
       });
@@ -149,11 +247,18 @@ export function TranscriptSourceMapPanel({
       if (!response.ok) {
         throw new Error(typeof raw?.error === "string" ? raw.error : "Rewrite failed");
       }
+
+      if (mode === "critiqueSection") {
+        const parsedCritique = CritiqueResponseSchema.parse(raw);
+        setCritique(parsedCritique);
+        return;
+      }
+
       const parsed = RewriteResponseSchema.parse(raw);
       if (!parsed.body.trim()) {
         throw new Error("Rewrite returned empty text");
       }
-      onSectionBodyChange(active.chapter.number, active.section.sectionNumber, parsed.body.trim());
+      commitBodyChange(parsed.body.trim(), true);
       setSelectedExcerptNumbers(new Set());
       setActiveExcerptNumber(parsed.excerptUsage[0] ?? null);
     } catch (err) {
@@ -173,7 +278,9 @@ export function TranscriptSourceMapPanel({
             setActiveKey(e.target.value || null);
             setSelectedExcerptNumbers(new Set());
             setActiveExcerptNumber(null);
+            setSelectedParagraphIndex(null);
             setRewriteError(null);
+            setCritique(null);
           }}
           className="w-full min-h-[48px] rounded-xl border border-slate-700/60 bg-slate-950/70 px-3 py-2 text-base text-slate-100 outline-none focus:border-cyan-500/40"
         >
@@ -191,6 +298,26 @@ export function TranscriptSourceMapPanel({
             {usedExcerptNumbers.size} used • {skippedExcerptNumbers.length} skipped • {active.assignment.transcriptExcerpts.length} total excerpts
           </p>
         )}
+        {active && (
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={handleUndo}
+              disabled={!canUndo}
+              className="min-h-[48px] rounded-lg border border-slate-700/60 bg-slate-900/60 px-3 text-sm font-semibold text-slate-200 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Undo
+            </button>
+            <button
+              type="button"
+              onClick={handleRedo}
+              disabled={!canRedo}
+              className="min-h-[48px] rounded-lg border border-slate-700/60 bg-slate-900/60 px-3 text-sm font-semibold text-slate-200 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Redo
+            </button>
+          </div>
+        )}
       </div>
 
       {!active && (
@@ -204,15 +331,30 @@ export function TranscriptSourceMapPanel({
           <section className="rounded-xl border border-violet-500/20 bg-slate-900/50 p-3">
             <div className="mb-3 flex items-center justify-between gap-2">
               <p className="text-xs font-semibold uppercase tracking-widest text-violet-300">Transcript Source</p>
-              {transcriptPreview && (
-                <span className="rounded-full border border-violet-500/30 bg-violet-500/10 px-2 py-1 text-[10px] font-semibold text-violet-200">
-                  {transcriptPreview.label}
-                </span>
-              )}
+              <div className="flex items-center gap-2">
+                {transcriptPreview && (
+                  <span className="rounded-full border border-violet-500/30 bg-violet-500/10 px-2 py-1 text-[10px] font-semibold text-violet-200">
+                    {transcriptPreview.label}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setShowUnusedOnly((v) => !v)}
+                  className={[
+                    "min-h-[48px] rounded-lg border px-2.5 text-[10px] font-semibold uppercase tracking-wide",
+                    showUnusedOnly
+                      ? "border-amber-400/40 bg-amber-500/15 text-amber-200"
+                      : "border-slate-700/60 bg-slate-900/60 text-slate-300",
+                  ].join(" ")}
+                >
+                  {showUnusedOnly ? "Showing unused only" : "Highlight unused"}
+                </button>
+              </div>
             </div>
 
             <div className="max-h-[48dvh] space-y-2 overflow-y-auto pr-1 lg:max-h-[70dvh]">
-              {active.assignment.transcriptExcerpts.map((excerpt, index) => {
+              {visibleExcerptIndexes.map((index) => {
+                const excerpt = active.assignment.transcriptExcerpts[index];
                 const number = index + 1;
                 const isUsed = usedExcerptNumbers.has(number);
                 const isSkipped = !isUsed;
@@ -223,7 +365,11 @@ export function TranscriptSourceMapPanel({
                     key={number}
                     className={[
                       "rounded-xl border px-3 py-3",
-                      isActive ? "border-cyan-400/50 bg-cyan-500/10" : "border-slate-700/60 bg-slate-950/70",
+                      isSkipped
+                        ? "border-amber-400/45 bg-amber-500/10"
+                        : isActive
+                        ? "border-cyan-400/50 bg-cyan-500/10"
+                        : "border-slate-700/60 bg-slate-950/70",
                     ].join(" ")}
                   >
                     <div className="mb-2 flex flex-wrap items-center gap-2">
@@ -239,10 +385,10 @@ export function TranscriptSourceMapPanel({
                           "rounded-md px-2 py-1 text-[10px] font-semibold uppercase tracking-wide",
                           isUsed
                             ? "bg-emerald-500/20 text-emerald-300"
-                            : "bg-amber-500/20 text-amber-200",
+                            : "bg-amber-500/30 text-amber-100",
                         ].join(" ")}
                       >
-                        {isUsed ? "Used" : "Skipped"}
+                        {isUsed ? "Used" : "Unused source"}
                       </span>
                       {isSkipped && (
                         <button
@@ -280,15 +426,21 @@ export function TranscriptSourceMapPanel({
               {splitParagraphs(active.section.body ?? "").map((paragraph, index) => {
                 const mappedIdx = paragraphToExcerpt[index];
                 const mappedNumber = mappedIdx >= 0 ? mappedIdx + 1 : null;
+                const isSelectedParagraph = selectedParagraphIndex === index;
                 return (
                   <button
                     type="button"
                     key={`${index}-${mappedNumber ?? "none"}`}
-                    onClick={() => setActiveExcerptNumber(mappedNumber)}
+                    onClick={() => {
+                      setActiveExcerptNumber(mappedNumber);
+                      setSelectedParagraphIndex(index);
+                    }}
                     className={[
                       "w-full rounded-lg border p-2 text-left",
                       "min-h-[48px]",
-                      mappedNumber === null
+                      isSelectedParagraph
+                        ? "border-violet-400/50 bg-violet-500/10"
+                        : mappedNumber === null
                         ? "border-amber-500/30 bg-amber-500/10"
                         : activeExcerptNumber === mappedNumber
                         ? "border-cyan-400/50 bg-cyan-500/10"
@@ -310,30 +462,84 @@ export function TranscriptSourceMapPanel({
             <ProseEditor
               label="Edit section text"
               value={active.section.body ?? ""}
-              onChange={(next) => onSectionBodyChange(active.chapter.number, active.section.sectionNumber, next)}
+              onChange={(next) => commitBodyChange(next, true)}
               rows={14}
               placeholder="Edit this section..."
             />
 
             <div className="mt-3 space-y-2 rounded-xl border border-slate-700/60 bg-slate-950/70 p-3">
-              <label className="block text-[10px] font-bold uppercase tracking-widest text-slate-500">Rewrite instruction</label>
+              <label className="block text-[10px] font-bold uppercase tracking-widest text-slate-500">Editorial assistant instruction</label>
               <textarea
                 value={rewriteInstruction}
                 onChange={(e) => setRewriteInstruction(e.target.value)}
                 rows={4}
-                placeholder="Tell the model how to rewrite this section, e.g. tighten flow and include selected skipped excerpts."
+                placeholder="Ask for critique, refinement, flow fixes, or scope corrections."
                 className="w-full rounded-xl border border-slate-700/60 bg-slate-900/60 px-3 py-2 text-base text-slate-100 outline-none focus:border-cyan-500/40"
               />
-              <button
-                type="button"
-                disabled={rewriteBusy}
-                onClick={() => void applyRewrite()}
-                className="w-full min-h-[48px] rounded-xl bg-gradient-to-r from-cyan-500 to-violet-500 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {rewriteBusy
-                  ? "Rewriting section..."
-                  : `Rewrite Section${selectedExcerptNumbers.size > 0 ? ` (include ${selectedExcerptNumbers.size} skipped)` : ""}`}
-              </button>
+              <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
+                <button
+                  type="button"
+                  disabled={rewriteBusy}
+                  onClick={() => void applyAssistant("critiqueSection")}
+                  className="min-h-[48px] rounded-xl border border-violet-400/40 bg-violet-500/15 px-3 py-2 text-sm font-semibold text-violet-100 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {rewriteBusy ? "Working..." : "Critique Section"}
+                </button>
+                <button
+                  type="button"
+                  disabled={rewriteBusy || selectedParagraphIndex === null}
+                  onClick={() => void applyAssistant("refineParagraph")}
+                  className="min-h-[48px] rounded-xl border border-cyan-400/40 bg-cyan-500/15 px-3 py-2 text-sm font-semibold text-cyan-100 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {rewriteBusy
+                    ? "Working..."
+                    : selectedParagraphIndex === null
+                    ? "Select paragraph to refine"
+                    : `Refine Paragraph ${selectedParagraphIndex + 1}`}
+                </button>
+                <button
+                  type="button"
+                  disabled={rewriteBusy}
+                  onClick={() => void applyAssistant("rewriteSection")}
+                  className="min-h-[48px] rounded-xl bg-gradient-to-r from-cyan-500 to-violet-500 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {rewriteBusy
+                    ? "Working..."
+                    : `Rewrite Section${selectedExcerptNumbers.size > 0 ? ` (include ${selectedExcerptNumbers.size} unused)` : ""}`}
+                </button>
+              </div>
+
+              {critique && (
+                <div className="rounded-xl border border-violet-500/25 bg-violet-500/8 p-3">
+                  <p className="text-xs font-semibold uppercase tracking-widest text-violet-200">Editorial Critique</p>
+                  {critique.summary && <p className="mt-2 text-sm text-slate-200">{critique.summary}</p>}
+                  {critique.strengths.length > 0 && (
+                    <div className="mt-2">
+                      <p className="text-[10px] font-bold uppercase tracking-wide text-emerald-300">Strengths</p>
+                      <ul className="mt-1 space-y-1 text-xs text-slate-300">
+                        {critique.strengths.map((item, index) => <li key={`str-${index}`}>• {item}</li>)}
+                      </ul>
+                    </div>
+                  )}
+                  {critique.issues.length > 0 && (
+                    <div className="mt-2">
+                      <p className="text-[10px] font-bold uppercase tracking-wide text-amber-300">Issues</p>
+                      <ul className="mt-1 space-y-1 text-xs text-slate-300">
+                        {critique.issues.map((item, index) => <li key={`iss-${index}`}>• {item}</li>)}
+                      </ul>
+                    </div>
+                  )}
+                  {critique.actions.length > 0 && (
+                    <div className="mt-2">
+                      <p className="text-[10px] font-bold uppercase tracking-wide text-cyan-300">Recommended edits</p>
+                      <ul className="mt-1 space-y-1 text-xs text-slate-300">
+                        {critique.actions.map((item, index) => <li key={`act-${index}`}>• {item}</li>)}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {rewriteError && <p className="text-xs text-red-300">{rewriteError}</p>}
             </div>
           </section>

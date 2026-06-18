@@ -7,79 +7,6 @@ import { cleanTranscriptForBook } from "@/lib/editorial-style-bible";
 export const runtime = "nodejs";
 export const maxDuration = 120;
 
-const RemovedCategorySchema = z.enum([
-  "opening-prayer",
-  "closing-prayer",
-  "announcement",
-  "greeting",
-  "acknowledgement",
-  "series-recap",
-  "housekeeping",
-  "altar-call",
-  "offering-appeal",
-  "technical-break",
-]);
-
-const REMOVED_CATEGORY_LABELS: Record<z.infer<typeof RemovedCategorySchema>, string> = {
-  "opening-prayer": "Opening prayer",
-  "closing-prayer": "Closing prayer",
-  announcement: "Announcement",
-  greeting: "Greeting",
-  acknowledgement: "Acknowledgement",
-  "series-recap": "Series recap",
-  housekeeping: "Housekeeping",
-  "altar-call": "Altar call",
-  "offering-appeal": "Offering appeal",
-  "technical-break": "Technical break",
-};
-
-function normalizeRemovedCategory(value: string): z.infer<typeof RemovedCategorySchema> | null {
-  const normalized = value.toLowerCase().trim().replace(/[^a-z]+/g, "-");
-  switch (normalized) {
-    case "opening-prayer":
-    case "opening-prayers":
-    case "prayer-opening":
-      return "opening-prayer";
-    case "closing-prayer":
-    case "closing-prayers":
-    case "benediction":
-      return "closing-prayer";
-    case "announcement":
-    case "announcements":
-    case "event-notice":
-    case "event-notices":
-      return "announcement";
-    case "greeting":
-    case "greetings":
-      return "greeting";
-    case "acknowledgement":
-    case "acknowledgements":
-    case "acknowledgment":
-    case "acknowledgments":
-      return "acknowledgement";
-    case "series-recap":
-    case "monthly-theme-recap":
-    case "theme-recap":
-      return "series-recap";
-    case "housekeeping":
-    case "room-cues":
-    case "neighbor-cues":
-      return "housekeeping";
-    case "altar-call":
-    case "salvation-appeal":
-      return "altar-call";
-    case "offering-appeal":
-    case "tithing-appeal":
-    case "offering":
-      return "offering-appeal";
-    case "technical-break":
-    case "technical-breaks":
-      return "technical-break";
-    default:
-      return null;
-  }
-}
-
 const RequestSchema = z.object({
   masterTranscript: z.string().min(50),
 });
@@ -89,7 +16,9 @@ const RequestSchema = z.object({
 const MarkersSchema = z.object({
   teachingStartPhrase: z.string().default("").describe("First 80-120 chars of the sentence where core teaching begins (verbatim)"),
   teachingEndPhrase: z.string().default("").describe("Last 80-120 chars of the final teaching sentence before closing prayer/altar call (verbatim)"),
-  removedCategories: z.array(RemovedCategorySchema).default([]),
+  // Accept any strings — the LLM returns human-readable labels, not enum slugs,
+  // and these are only used as display text in the summary. No switch logic depends on them.
+  removedCategories: z.array(z.string()).default([]),
   summary: z.string().default(""),
 });
 
@@ -154,17 +83,6 @@ TEACHING content (preserve everything else):
 Return VERBATIM phrases (exact words from the transcript) so the server can locate them.
 If teaching starts at the very beginning, set teachingStartPhrase to the first sentence.
 If no closing non-teaching is found, set teachingEndPhrase to the last teaching sentence.
-Use only these exact removedCategories values when needed:
-- "opening-prayer"
-- "closing-prayer"
-- "announcement"
-- "greeting"
-- "acknowledgement"
-- "series-recap"
-- "housekeeping"
-- "altar-call"
-- "offering-appeal"
-- "technical-break"
 
 Respond with ONLY a valid JSON object — no markdown, no code blocks, no explanation:
 {"teachingStartPhrase":"...","teachingEndPhrase":"...","removedCategories":[],"summary":"..."}`,
@@ -177,17 +95,7 @@ Respond with ONLY a valid JSON object — no markdown, no code blocks, no explan
     } catch {
       _parsed = {};
     }
-    const normalizedParsed = _parsed && typeof _parsed === "object"
-      ? {
-          ...(_parsed as Record<string, unknown>),
-          removedCategories: Array.isArray((_parsed as Record<string, unknown>).removedCategories)
-            ? ((_parsed as Record<string, unknown>).removedCategories as unknown[])
-                .map((entry) => (typeof entry === "string" ? normalizeRemovedCategory(entry) : null))
-                .filter((entry): entry is z.infer<typeof RemovedCategorySchema> => entry !== null)
-            : [],
-        }
-      : _parsed;
-    const _result = MarkersSchema.safeParse(normalizedParsed);
+    const _result = MarkersSchema.safeParse(_parsed);
     const object = _result.success ? _result.data : MarkersSchema.parse({});
 
     // Reconstruct cleaned transcript using the markers (string-match, no LLM output of full text)
@@ -219,16 +127,13 @@ Respond with ONLY a valid JSON object — no markdown, no code blocks, no explan
     }
 
     const cleanedTranscript = cleanTranscriptForBook(cleaned || transcript);
-    const removedSegments = object.removedCategories.map((reason) => ({
-      reason: REMOVED_CATEGORY_LABELS[reason],
-      excerpt: "",
-    }));
+    const removedSegments = object.removedCategories.map((reason) => ({ reason, excerpt: "" }));
 
     return NextResponse.json({
       cleanedTranscript,
       removedSegments,
       summary: object.summary ||
-        (removedSegments.length > 0 ? `Removed: ${removedSegments.map((segment) => segment.reason).join(", ")}` : "No non-teaching content detected"),
+        (removedSegments.length > 0 ? `Removed: ${object.removedCategories.join(", ")}` : "No non-teaching content detected"),
     }, { status: 200 });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Signal filter failed";
