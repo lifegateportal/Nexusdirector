@@ -4,6 +4,7 @@ import { useState, useRef, useCallback, useId, useEffect } from "react";
 import { ProseEditor, ProseToolbarProvider, SharedProseToolbar } from "./ProseEditor";
 import { EbookProgressRing } from "@/app/components/EbookProgressRing";
 import { VoiceStudio } from "@/app/components/VoiceStudio";
+import { TranscriptSourceMapPanel } from "@/app/components/TranscriptSourceMapPanel";
 import {
   saveEbookJob,
   getEbookJob,
@@ -66,6 +67,7 @@ const STAGE_ORDER: PipelineStage[] = [
 type SignalFilterState = "idle" | "applied" | "skipped";
 type QualityReport = { score: number; pass: boolean; issues: { severity: "warn" | "error"; message: string }[] };
 type ChapterPlanStep = { purpose: string; supportedExcerptNumbers: number[]; minExcerptNumber?: number };
+type ReviewTab = "manuscript" | "source-map";
 export type EbookPipelineSnapshot = {
   stage: PipelineStage;
   progress: { total: number; completed: number };
@@ -1508,6 +1510,9 @@ export function EbookPipeline({
   const [showSaveBar, setShowSaveBar] = useState(false);
   const [saveName, setSaveName] = useState("");
   const [savedConfirm, setSavedConfirm] = useState(false);
+  const [reviewTab, setReviewTab] = useState<ReviewTab>("manuscript");
+  const [sectionAssignments, setSectionAssignments] = useState<SectionAssignment[]>([]);
+  const [sourceTranscripts, setSourceTranscripts] = useState<Array<{ label: string; text: string }>>([]);
   const jobIdRef = useRef<string>(newJobId());
   // Mirror of log in a ref so runPipeline (async) can read the current value for checkpoints
   const logRef = useRef<string[]>([]);
@@ -1927,6 +1932,8 @@ export function EbookPipeline({
       setLog(job.errorLog ?? []);
       setProgress(job.progress ?? { total: 0, completed: 0 });
       setChapters(job.chapters ?? []);
+      setSectionAssignments(job.sectionAssignments ?? []);
+      setSourceTranscripts(job.transcripts ?? []);
       // Restore error so the Resume button is visible after refresh
       if (job.status === "failed") {
         const lastErr = (job.errorLog ?? []).findLast?.((e) => e.includes("✗"));
@@ -2094,6 +2101,8 @@ export function EbookPipeline({
       setReviewContext(null);
       setQualityReport(null);
       setTotalWords(0);
+      setSectionAssignments([]);
+      setSourceTranscripts([]);
       autoDownloadedRef.current = false;
     }
     const jobId = resume?.jobId ?? jobIdRef.current;
@@ -2209,9 +2218,11 @@ export function EbookPipeline({
 
         acc.masterTranscript = masterTranscript;
         acc.transcripts = transcriptResults;
+        setSourceTranscripts(transcriptResults);
         await checkpoint("filtering");
       } else {
         addLog(`↩ Resuming — transcript available (${countWords(masterTranscript).toLocaleString()} words)`);
+        setSourceTranscripts(acc.transcripts ?? []);
       }
 
       // ── Stage 2: Signal Filter — final safety pass on the combined transcript
@@ -2336,9 +2347,11 @@ export function EbookPipeline({
         assignments = result.assignments;
         addLog(`✓ ${assignments.length} section assignments ready`);
         acc.sectionAssignments = assignments;
+        setSectionAssignments(assignments);
         await checkpoint("writing");
       } else {
         addLog(`↩ Resuming — ${assignments.length} section assignments available`);
+        setSectionAssignments(assignments);
       }
 
       // ── Stage 6: Write Sections (sequential with continuity) ─────────────
@@ -3463,17 +3476,46 @@ export function EbookPipeline({
               </div>
             </div>
 
-            {/* Shared word processor toolbar — one bar for all editors */}
-            <SharedProseToolbar className="sticky top-0 z-20" />
+            <div className="grid grid-cols-2 gap-2 rounded-xl border border-slate-700/40 bg-slate-900/50 p-1.5">
+              <button
+                type="button"
+                onClick={() => setReviewTab("manuscript")}
+                className={[
+                  "min-h-[48px] rounded-lg border px-3 py-2 text-sm font-semibold transition-colors",
+                  reviewTab === "manuscript"
+                    ? "border-cyan-400/40 bg-cyan-500/15 text-cyan-200"
+                    : "border-slate-700/50 bg-slate-900/60 text-slate-300",
+                ].join(" ")}
+              >
+                Manuscript
+              </button>
+              <button
+                type="button"
+                onClick={() => setReviewTab("source-map")}
+                className={[
+                  "min-h-[48px] rounded-lg border px-3 py-2 text-sm font-semibold transition-colors",
+                  reviewTab === "source-map"
+                    ? "border-violet-400/40 bg-violet-500/15 text-violet-200"
+                    : "border-slate-700/50 bg-slate-900/60 text-slate-300",
+                ].join(" ")}
+              >
+                Source Map
+              </button>
+            </div>
 
-            {/* Print Specification Toggle */}
-            <PrintSpecPanel
-              trimSize={printSpec.trimSize}
-              runningHeaders={printSpec.runningHeaders}
-              onChange={setPrintSpec}
-            />
+            {reviewTab === "manuscript" && (
+              <>
+                {/* Shared word processor toolbar — one bar for all editors */}
+                <SharedProseToolbar className="sticky top-0 z-20" />
 
-            {qualityReport && (
+                {/* Print Specification Toggle */}
+                <PrintSpecPanel
+                  trimSize={printSpec.trimSize}
+                  runningHeaders={printSpec.runningHeaders}
+                  onChange={setPrintSpec}
+                />
+
+                {qualityReport && (
               <div className={`rounded-xl border px-4 py-3 ${qualityReport.pass ? "border-emerald-400/20 bg-emerald-400/5" : "border-amber-400/20 bg-amber-400/5"}`}>
                 <div className="flex items-center justify-between gap-3">
                   <p className={`text-sm font-semibold ${qualityReport.pass ? "text-emerald-300" : "text-amber-300"}`}>
@@ -3491,9 +3533,9 @@ export function EbookPipeline({
                   </ul>
                 )}
               </div>
-            )}
+              )}
 
-            <div className="grid gap-3 md:grid-cols-3">
+              <div className="grid gap-3 md:grid-cols-3">
               <ProseEditor
                 label="Preface"
                 value={completedManifest.frontMatter.preface}
@@ -3515,9 +3557,9 @@ export function EbookPipeline({
                 rows={5}
                 placeholder="Book conclusion…"
               />
-            </div>
+              </div>
 
-            <div className="grid gap-3 md:grid-cols-2">
+              <div className="grid gap-3 md:grid-cols-2">
               <ProseEditor
                 label="About Author"
                 value={completedManifest.frontMatter.aboutAuthor ?? ""}
@@ -3540,10 +3582,10 @@ export function EbookPipeline({
                   className="w-full rounded-xl border border-slate-700/60 bg-slate-950/70 px-3 py-2 text-base text-slate-100 outline-none focus:border-cyan-500/40"
                 />
               </div>
-            </div>
+              </div>
 
-            {/* Back Matter — only shown when the back matter generation stage has completed */}
-            {completedManifest.backMatter && (
+                {/* Back Matter — only shown when the back matter generation stage has completed */}
+                {completedManifest.backMatter && (
               <div className="border-t border-slate-700/40 pt-4 space-y-3">
                 <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Back Matter</p>
 
@@ -3606,10 +3648,10 @@ export function EbookPipeline({
                   </div>
                 )}
               </div>
-            )}
+              )}
 
-            {/* Audit Results */}
-            {(auditReport || auditRunning) && (
+                {/* Audit Results */}
+                {(auditReport || auditRunning) && (
               <div className="border-t border-slate-700/40 pt-4 space-y-3">
                 <div className="flex items-center gap-2">
                   <p className="text-xs font-bold uppercase tracking-widest text-amber-300">Audit Results</p>
@@ -3634,10 +3676,10 @@ export function EbookPipeline({
                   />
                 )}
               </div>
-            )}
+              )}
 
-            {/* Chapter Cards — inside Final Review so everything is co-located */}
-            {chapters.length > 0 && (
+                {/* Chapter Cards — inside Final Review so everything is co-located */}
+                {chapters.length > 0 && (
               <div className="border-t border-slate-700/40 pt-4 space-y-2">
                 <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Chapters</p>
                 {chapters.map((ch) => (
@@ -3654,10 +3696,37 @@ export function EbookPipeline({
                   />
                 ))}
               </div>
+                )}
+
+                {/* Voice Studio — audiobook narration */}
+                <VoiceStudio manifest={completedManifest} slug={completedManifest.jobId} />
+              </>
             )}
 
-            {/* Voice Studio — audiobook narration */}
-            <VoiceStudio manifest={completedManifest} slug={completedManifest.jobId} />
+            {reviewTab === "source-map" && (
+              <TranscriptSourceMapPanel
+                chapters={chapters}
+                sectionAssignments={sectionAssignments}
+                transcriptEntries={sourceTranscripts}
+                authorConfig={{ instructions: authorInstructions, targetAudience }}
+                onSectionBodyChange={(chapterNumber, sectionNumber, body) => {
+                  updateCompletedManifest((current) => ({
+                    ...current,
+                    chapters: current.chapters.map((chapter) => {
+                      if (chapter.number !== chapterNumber) return chapter;
+                      return {
+                        ...chapter,
+                        sections: chapter.sections.map((section) => (
+                          section.sectionNumber === sectionNumber
+                            ? { ...section, body, wordCount: countWords(body) }
+                            : section
+                        )),
+                      };
+                    }),
+                  }));
+                }}
+              />
+            )}
 
             {/* Start new project */}
             <div className="border-t border-slate-700/40 pt-3 flex justify-end">
@@ -3672,6 +3741,9 @@ export function EbookPipeline({
                   setCompletedManifest(null);
                   setTotalWords(0);
                   setProgress({ total: 0, completed: 0 });
+                  setSectionAssignments([]);
+                  setSourceTranscripts([]);
+                  setReviewTab("manuscript");
                   jobIdRef.current = newJobId();
                   autoDownloadedRef.current = false;
                   localStorage.removeItem(JOB_STORAGE_KEY);
