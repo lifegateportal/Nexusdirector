@@ -112,11 +112,6 @@ function EbookPageClient() {
   // Direct prop to pass initial job state to pipeline on load (more reliable than localStorage-only)
   const [pipelineInitialJobState, setPipelineInitialJobState] = useState<EbookJobState | null>(null);
   const hydratedLoadRef = useRef<string | null>(null);
-  // Ref-stable pointer to handleSaveProject so the debounced auto-save
-  // effect does not re-register every time handleSaveProject recreates.
-  const handleSaveProjectRef = useRef<(name: string, opts?: { silent?: boolean }) => Promise<void>>(
-    async () => {},
-  );
   // Prevent overlapping save operations from allocating multiple project IDs.
   const saveInFlightRef = useRef(false);
   const pendingProjectIdRef = useRef<string | null>(null);
@@ -803,28 +798,6 @@ function EbookPageClient() {
   const handleAutoSaveProject = useCallback((name: string) => {
     void handleSaveProject(name, { silent: true });
   }, [handleSaveProject]);
-
-  // Keep the ref in sync with the latest version of handleSaveProject.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { handleSaveProjectRef.current = handleSaveProject; }, [handleSaveProject]);
-
-  // Debounced auto-save: fires 2 s after any manifest change when a project
-  // ID already exists.  This captures Source Map edits, Director AI edits,
-  // and any other in-session changes without requiring a manual save.
-  useEffect(() => {
-    if (!currentProjectId || !ebookManifest) return;
-    const name =
-      projects.find((pr) => pr.id === currentProjectId)?.name ??
-      ebookManifest.bookTitle ??
-      "My Ebook";
-    const t = window.setTimeout(() => {
-      void handleSaveProjectRef.current(name, { silent: true });
-    }, 2000);
-    return () => window.clearTimeout(t);
-  // Intentionally omit handleSaveProjectRef (ref-stable) and projects/name
-  // (secondary lookups) from deps to avoid cascading re-triggers.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ebookManifest, currentProjectId]);
 
   const handleLoadProject = useCallback(async (id: string) => {
     const p = projects.find((proj) => proj.id === id);
