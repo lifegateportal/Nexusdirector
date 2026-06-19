@@ -115,6 +115,7 @@ function EbookPageClient() {
   // Prevent overlapping save operations from allocating multiple project IDs.
   const saveInFlightRef = useRef(false);
   const pendingProjectIdRef = useRef<string | null>(null);
+  const autoSaveInFlightRef = useRef(false);
 
   useEffect(() => {
     void (async () => {
@@ -513,6 +514,173 @@ function EbookPageClient() {
     };
   }, []);
 
+  const buildCompleteJobFromManifest = useCallback((
+    manifest: EbookManifest,
+    base: EbookJobState | null,
+    projectId?: string,
+  ): EbookJobState => {
+    const nowIso = new Date().toISOString();
+    if (base) {
+      return {
+        ...base,
+        status: base.status === "failed" ? "failed" : "complete",
+        jobId: base.jobId,
+        chapters: manifest.chapters,
+        frontMatter: manifest.frontMatter,
+        backMatter: manifest.backMatter ?? base.backMatter ?? null,
+        architecture: base.architecture
+          ? {
+              ...base.architecture,
+              bookTitle: manifest.bookTitle,
+              subtitle: manifest.subtitle,
+              authorName: manifest.authorName,
+              estimatedTotalWords: manifest.totalWordCount,
+            }
+          : {
+              bookTitle: manifest.bookTitle,
+              subtitle: manifest.subtitle,
+              authorName: manifest.authorName,
+              estimatedTotalWords: manifest.totalWordCount,
+              chapters: [],
+              frontMatterNotes: "",
+              backMatterNotes: "",
+              seriesArc: [],
+              droppedSegments: [],
+            },
+        contentMap: base.contentMap
+          ? {
+              ...base.contentMap,
+              totalEstimatedWords: manifest.totalWordCount,
+              allQuotes: manifest.allQuotes ?? base.contentMap.allQuotes ?? [],
+            }
+          : {
+              totalEstimatedWords: manifest.totalWordCount,
+              overarchingThemes: [],
+              teachingArc: "",
+              coreThesis: "",
+              targetAudience: "",
+              uniqueVocabulary: [],
+              toneMap: "",
+              segments: [],
+              allQuotes: manifest.allQuotes ?? [],
+            },
+        progress: {
+          total: manifest.chapters.length,
+          completed: manifest.chapters.length,
+        },
+        currentStage: "complete",
+        updatedAt: nowIso,
+      };
+    }
+
+    return {
+      jobId: projectId || `ebook-${Date.now()}`,
+      status: "complete",
+      audioFileNames: [],
+      transcripts: [],
+      masterTranscript: "",
+      filteredTranscript: "",
+      filterRemovedCount: 0,
+      voiceDNA: manifest.voiceDNA ?? null,
+      contentMap: {
+        totalEstimatedWords: manifest.totalWordCount,
+        overarchingThemes: [],
+        teachingArc: "",
+        coreThesis: "",
+        targetAudience: "",
+        uniqueVocabulary: [],
+        toneMap: "",
+        segments: [],
+        allQuotes: manifest.allQuotes ?? [],
+      },
+      architecture: {
+        bookTitle: manifest.bookTitle,
+        subtitle: manifest.subtitle,
+        authorName: manifest.authorName,
+        estimatedTotalWords: manifest.totalWordCount,
+        chapters: [],
+        frontMatterNotes: "",
+        backMatterNotes: "",
+        seriesArc: [],
+        droppedSegments: [],
+      },
+      sectionAssignments: [],
+      chapterPlans: {},
+      sections: [],
+      chapters: manifest.chapters,
+      frontMatter: manifest.frontMatter,
+      backMatter: manifest.backMatter ?? null,
+      exportUrls: null,
+      currentStage: "complete",
+      progress: {
+        total: manifest.chapters.length,
+        completed: manifest.chapters.length,
+      },
+      errorLog: [],
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
+  }, []);
+
+  const syncProjectToWorkspaceAndCloud = useCallback((project: EbookProject) => {
+    void saveProject({
+      id: project.id,
+      name: project.name,
+      createdAt: project.createdAt,
+      updatedAt: project.updatedAt,
+      academy: null,
+      siteConfig: {},
+      deliveryInstructions: "",
+      chatHistory: [],
+      blueprint: null,
+      logicResult: null,
+      uiResult: null,
+      ebookManifest: null,
+      ebookJobState: project.jobState,
+      publishedSlug: project.publishedSlug,
+      coverImageUrl: project.coverImageUrl,
+      authorImageUrl: project.authorImageUrl,
+    }).catch(() => {});
+
+    const cloudJobState = {
+      ...project.jobState,
+      masterTranscript: "",
+      filteredTranscript: "",
+      transcripts: (project.jobState.transcripts ?? [])
+        .filter((t: unknown): t is { label?: unknown } => Boolean(t && typeof t === "object"))
+        .map((t) => ({
+          label: typeof t.label === "string" ? t.label : "",
+          text: "",
+        })),
+    };
+
+    const cloudProject = {
+      _version: EBOOK_PROJECT_SCHEMA_VERSION,
+      id: project.id,
+      name: project.name,
+      createdAt: project.createdAt,
+      updatedAt: project.updatedAt,
+      academy: null,
+      siteConfig: {},
+      deliveryInstructions: "",
+      chatHistory: [],
+      blueprint: null,
+      logicResult: null,
+      uiResult: null,
+      ebookManifest: toManifestFromJob(project.jobState),
+      ebookJobState: cloudJobState,
+      publishedSlug: project.publishedSlug,
+      coverImageUrl: project.coverImageUrl,
+      authorImageUrl: project.authorImageUrl,
+    };
+
+    void fetch("/api/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ project: cloudProject }),
+    }).catch(() => {});
+  }, [toManifestFromJob]);
+
   // ── Project handlers ──────────────────────────────────────────────────────
 
   const handleSaveProject = useCallback(async (name: string, options?: { silent?: boolean; localOnly?: boolean }) => {
@@ -799,9 +967,78 @@ function EbookPageClient() {
     toJsonSafeValue,
   ]);
 
-  const handleAutoSaveProject = useCallback((name: string) => {
-    void handleSaveProject(name, { silent: true });
-  }, [handleSaveProject]);
+  const handleAutoSaveProject = useCallback(async ({
+    name,
+    manifest,
+  }: {
+    name: string;
+    manifest: EbookManifest;
+  }) => {
+    if (autoSaveInFlightRef.current) return;
+    autoSaveInFlightRef.current = true;
+    try {
+      const existing = currentProjectId
+        ? projects.find((p) => p.id === currentProjectId)
+        : null;
+      const id = currentProjectId || pendingProjectIdRef.current || generateEbookProjectId();
+      if (!currentProjectId) {
+        pendingProjectIdRef.current = id;
+        setCurrentProjectId(id);
+      }
+
+      const candidateBase = normalizeJobStateForSave(toJsonSafeValue(liveJobState ?? existing?.jobState));
+      const jobState = buildCompleteJobFromManifest(manifest, candidateBase, id);
+      const safeJobState = normalizeJobStateForSave(toJsonSafeValue(jobState));
+      if (!safeJobState) throw new Error("Autosave failed: could not normalize job state.");
+
+      const safeChapters = sanitizeChapterDrafts(safeJobState.chapters);
+      const project: EbookProject = {
+        _version: EBOOK_PROJECT_SCHEMA_VERSION,
+        id,
+        name,
+        createdAt: existing?.createdAt ?? new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        bookTitle: manifest.bookTitle,
+        chapterCount: safeChapters.length,
+        totalWordCount: sumChapterWordCount(safeChapters),
+        status: safeJobState.status,
+        jobState: safeJobState,
+        publishedSlug: existing?.publishedSlug,
+        coverImageUrl: existing?.coverImageUrl,
+        authorImageUrl: existing?.authorImageUrl,
+      };
+
+      await saveEbookProject(project);
+
+      try {
+        localStorage.setItem(JOB_STATE_KEY, JSON.stringify(project.jobState));
+        localStorage.setItem(JOB_STORAGE_KEY, project.jobState.jobId);
+      } catch {
+        // localStorage unavailable; IndexedDB save already completed
+      }
+
+      setProjects((prev) => {
+        const idx = prev.findIndex((p) => p.id === project.id);
+        if (idx === -1) return [project, ...prev];
+        const next = [...prev];
+        next[idx] = project;
+        return next;
+      });
+
+      syncProjectToWorkspaceAndCloud(project);
+      pendingProjectIdRef.current = null;
+    } finally {
+      autoSaveInFlightRef.current = false;
+    }
+  }, [
+    buildCompleteJobFromManifest,
+    currentProjectId,
+    liveJobState,
+    normalizeJobStateForSave,
+    projects,
+    syncProjectToWorkspaceAndCloud,
+    toJsonSafeValue,
+  ]);
 
   const handleLoadProject = useCallback(async (id: string) => {
     const p = projects.find((proj) => proj.id === id);

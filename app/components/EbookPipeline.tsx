@@ -1483,7 +1483,7 @@ export function EbookPipeline({
   /** Called when the user clicks Save inside the pipeline. Receives the chosen project name. */
   onSaveProject?: (name: string) => void;
   /** Called for debounced silent autosave during editor changes. */
-  onAutoSaveProject?: (name: string) => void;
+  onAutoSaveProject?: (payload: { name: string; manifest: EbookManifest }) => Promise<void> | void;
 } = {}) {
   const [audioFiles, setAudioFiles] = useState<(File | null)[]>([null, null, null, null, null, null]);
   const [transcriptFiles, setTranscriptFiles] = useState<(File | null)[]>([null, null, null, null, null, null]);
@@ -1768,7 +1768,7 @@ export function EbookPipeline({
     ) return;
     autoSavedRef.current = true;
     const name = completedManifest.bookTitle?.trim() || "My Ebook";
-    Promise.resolve(onAutoSaveProject(name))
+    Promise.resolve(onAutoSaveProject({ name, manifest: completedManifest }))
       .then(() => {
         addLog(`✓ Auto-saved project: "${name}"`);
       })
