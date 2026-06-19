@@ -9,7 +9,7 @@ import { NexusNav } from "@/app/components/NexusNav";
 import { StatusBar } from "@/app/components/StatusBar";
 import { SiteConfigSchema } from "@/lib/schemas/site-config";
 import { EbookManifestSchema, EbookJobStateSchema } from "@/lib/schemas/ebook";
-import type { ChapterDraft, EbookManifest, EbookJobState } from "@/lib/schemas/ebook";
+import type { ChapterDraft, EbookManifest, EbookJobState, SectionAssignment } from "@/lib/schemas/ebook";
 import type { SiteConfig } from "@/lib/schemas/site-config";
 import type { EbookPipelineSnapshot } from "@/app/components/EbookPipeline";
 import {
@@ -43,6 +43,28 @@ function sanitizeChapterDrafts(chapters: unknown): ChapterDraft[] {
   return Array.isArray(chapters) ? chapters.filter(isChapterDraft) : [];
 }
 
+function sanitizeSectionAssignments(assignments: unknown): SectionAssignment[] {
+  if (!Array.isArray(assignments)) return [];
+
+  return assignments
+    .filter((assignment): assignment is Record<string, unknown> => Boolean(assignment && typeof assignment === "object"))
+    .map((assignment) => {
+      const chapterNumber = Number(assignment.chapterNumber);
+      const sectionNumber = Number(assignment.sectionNumber);
+      if (!Number.isFinite(chapterNumber) || !Number.isFinite(sectionNumber)) return null;
+
+      return {
+        ...assignment,
+        chapterNumber,
+        sectionNumber,
+        transcriptExcerpts: Array.isArray(assignment.transcriptExcerpts)
+          ? assignment.transcriptExcerpts.filter((excerpt): excerpt is string => typeof excerpt === "string")
+          : [],
+      } as SectionAssignment;
+    })
+    .filter((assignment): assignment is SectionAssignment => Boolean(assignment));
+}
+
 function sumChapterWordCount(chapters: ChapterDraft[]): number {
   return chapters.reduce((sum, chapter) => {
     const words = typeof chapter.totalWordCount === "number" ? chapter.totalWordCount : 0;
@@ -53,12 +75,15 @@ function sumChapterWordCount(chapters: ChapterDraft[]): number {
 function jobStrength(job: EbookJobState | null): number {
   if (!job) return -1;
   const safeChapters = sanitizeChapterDrafts(job.chapters);
+  const safeAssignments = sanitizeSectionAssignments(job.sectionAssignments);
   const chapters = safeChapters.length;
+  const assignments = safeAssignments.length;
+  const assignmentExcerpts = safeAssignments.reduce((sum, assignment) => sum + assignment.transcriptExcerpts.length, 0);
   const sections = job.sections?.length ?? 0;
   const words = sumChapterWordCount(safeChapters);
   const progress = job.progress?.completed ?? 0;
   const bonus = job.status === "complete" ? 100000 : 0;
-  return bonus + chapters * 2000 + sections * 200 + words + progress * 10;
+  return bonus + chapters * 2000 + assignments * 700 + assignmentExcerpts * 5 + sections * 200 + words + progress * 10;
 }
 
 function pickBestJobState(candidates: Array<EbookJobState | null>): EbookJobState | null {
@@ -547,6 +572,7 @@ function EbookPageClient() {
         : (storedJobId ?? `job-${Date.now()}`),
       status: (isValidStatus ? rawStatus : "idle") as any,
       chapters: sanitizeChapterDrafts(record.chapters),
+      sectionAssignments: sanitizeSectionAssignments(record.sectionAssignments),
       createdAt: toIso(record.createdAt),
       updatedAt: toIso(record.updatedAt),
     } as EbookJobState;
