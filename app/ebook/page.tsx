@@ -125,6 +125,7 @@ function EbookPageClient() {
   const [ebookManifest, setEbookManifest] = useState<EbookManifest | null>(null);
   const [ebookPipelineSnapshot, setEbookPipelineSnapshot] = useState<EbookPipelineSnapshot | null>(null);
   const [liveJobState, setLiveJobState] = useState<EbookJobState | null>(null);
+  const liveJobStateRef = useRef<EbookJobState | null>(null);
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [statusMsg, setStatusMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [siteConfig] = useState<SiteConfig>(() => SiteConfigSchema.parse({}));
@@ -160,6 +161,10 @@ function EbookPageClient() {
       // telemetry is best-effort
     }
   }, []);
+
+  useEffect(() => {
+    liveJobStateRef.current = liveJobState;
+  }, [liveJobState]);
 
   useEffect(() => {
     void (async () => {
@@ -484,6 +489,7 @@ function EbookPageClient() {
         storageUnavailable = true;
       }
       setPipelineInitialJobState(normalized);
+      liveJobStateRef.current = normalized;
       setLiveJobState(normalized);
       setCurrentProjectId(project.id);
       const manifest = toManifestFromJob(normalized);
@@ -1206,7 +1212,8 @@ function EbookPageClient() {
         setCurrentProjectId(id);
       }
 
-      const candidateBase = normalizeJobStateForSave(toJsonSafeValue(liveJobState ?? existing?.jobState));
+      const latestLiveJobState = liveJobStateRef.current;
+      const candidateBase = normalizeJobStateForSave(toJsonSafeValue(latestLiveJobState ?? existing?.jobState));
       const jobState = buildCompleteJobFromManifest(manifest, candidateBase, id);
       const safeJobState = normalizeJobStateForSave(toJsonSafeValue(jobState));
       if (!safeJobState) throw new Error("Autosave failed: could not normalize job state.");
@@ -1397,6 +1404,7 @@ function EbookPageClient() {
       // has the full job state (including sectionAssignments) as its base.
       // Without this, buildCompleteJobFromManifest receives null and creates
       // sectionAssignments: [] which overwrites IndexedDB on the first autosave.
+      liveJobStateRef.current = normalized;
       setLiveJobState(normalized);
       setCurrentProjectId(p.id);
       setEbookManifest(
@@ -1491,6 +1499,7 @@ function EbookPageClient() {
       storageUnavailable = true;
     }
     setPipelineInitialJobState(normalizedProject.jobState);
+    liveJobStateRef.current = normalizedProject.jobState;
     setLiveJobState(normalizedProject.jobState);
     setPipelineKey((k) => k + 1);
     const importRes = await fetch("/api/projects", {
@@ -1896,7 +1905,10 @@ function EbookPageClient() {
                   ebookManifest={ebookManifest}
                   onManifestReady={handleManifestReady}
                   onPipelineSnapshotChange={handlePipelineSnapshotChange}
-                  onJobStateChange={setLiveJobState}
+                  onJobStateChange={(job) => {
+                    liveJobStateRef.current = job;
+                    setLiveJobState(job);
+                  }}
                   onSaveProject={(name) => void handleSaveProject(name)}
                   onAutoSaveProject={handleAutoSaveProject}
                 />
