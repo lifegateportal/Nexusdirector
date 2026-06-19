@@ -484,6 +484,7 @@ function EbookPageClient() {
         storageUnavailable = true;
       }
       setPipelineInitialJobState(normalized);
+      setLiveJobState(normalized);
       setCurrentProjectId(project.id);
       const manifest = toManifestFromJob(normalized);
       setEbookManifest(
@@ -693,6 +694,13 @@ function EbookPageClient() {
     projectId?: string,
   ): EbookJobState => {
     const nowIso = new Date().toISOString();
+    // When no base is provided, rescue sectionAssignments from liveJobState
+    // so they are never overwritten with [] by the no-base fallback path.
+    const rescuedAssignments = base
+      ? undefined // base path uses ...base spread, no rescue needed
+      : (liveJobState?.sectionAssignments?.length ?? 0) > 0
+        ? liveJobState!.sectionAssignments
+        : [];
     if (base) {
       return {
         ...base,
@@ -777,7 +785,7 @@ function EbookPageClient() {
         seriesArc: [],
         droppedSegments: [],
       },
-      sectionAssignments: [],
+      sectionAssignments: rescuedAssignments ?? [],
       chapterPlans: {},
       sections: [],
       chapters: manifest.chapters,
@@ -793,7 +801,7 @@ function EbookPageClient() {
       createdAt: nowIso,
       updatedAt: nowIso,
     };
-  }, []);
+  }, [liveJobState]);
 
   const syncProjectToWorkspaceAndCloud = useCallback(async (project: EbookProject) => {
     const startedAt = Date.now();
@@ -1385,6 +1393,11 @@ function EbookPageClient() {
       
       // Set as initial state for pipeline to use directly (more reliable than localStorage-only)
       setPipelineInitialJobState(normalized);
+      // Populate liveJobState immediately so the first autosave after remount
+      // has the full job state (including sectionAssignments) as its base.
+      // Without this, buildCompleteJobFromManifest receives null and creates
+      // sectionAssignments: [] which overwrites IndexedDB on the first autosave.
+      setLiveJobState(normalized);
       setCurrentProjectId(p.id);
       setEbookManifest(
         manifest
@@ -1478,6 +1491,7 @@ function EbookPageClient() {
       storageUnavailable = true;
     }
     setPipelineInitialJobState(normalizedProject.jobState);
+    setLiveJobState(normalizedProject.jobState);
     setPipelineKey((k) => k + 1);
     const importRes = await fetch("/api/projects", {
       method: "POST", headers: { "Content-Type": "application/json" },
