@@ -14,6 +14,8 @@ import { z } from "zod";
 export const runtime    = "nodejs";
 export const maxDuration = 30;
 export const maxRequestBodySize = "50mb";
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 const WORKSPACE_PROJECTS_DIR = path.join(process.cwd(), ".nexusdirector", "projects");
 
@@ -30,25 +32,25 @@ function countChapters(value: unknown): number {
   return value.filter((item) => Boolean(item && typeof item === "object")).length;
 }
 
-function payloadSize(value: unknown): number {
-  try {
-    return JSON.stringify(value)?.length ?? 0;
-  } catch {
-    return 0;
-  }
-}
-
-function pickRicherValue<T>(incoming: T | undefined, existing: T | undefined, chapterAccessor: (value: T) => unknown): T | undefined {
+function pickValueByRecency<T>(
+  incoming: T | undefined,
+  existing: T | undefined,
+  chapterAccessor: (value: T) => unknown,
+  preferIncoming: boolean,
+): T | undefined {
   if (incoming === undefined) return existing;
   if (existing === undefined) return incoming;
 
   const incomingChapters = countChapters(chapterAccessor(incoming));
   const existingChapters = countChapters(chapterAccessor(existing));
-  if (incomingChapters !== existingChapters) {
-    return incomingChapters > existingChapters ? incoming : existing;
+
+  if (preferIncoming) {
+    if (incomingChapters === 0 && existingChapters > 0) return existing;
+    return incoming;
   }
 
-  return payloadSize(incoming) >= payloadSize(existing) ? incoming : existing;
+  if (existingChapters === 0 && incomingChapters > 0) return incoming;
+  return existing;
 }
 
 function makeS3(accountId: string, accessKey: string, secretKey: string) {
@@ -225,18 +227,24 @@ async function readR2Project(id: string): Promise<ProjectRecord | null> {
 function mergeProjectRecord(existing: ProjectRecord | null, incoming: ProjectRecord): ProjectRecord {
   if (!existing) return incoming;
 
+  const existingTs = Date.parse(existing.updatedAt ?? existing.createdAt ?? "");
+  const incomingTs = Date.parse(incoming.updatedAt ?? incoming.createdAt ?? "");
+  const preferIncoming = !Number.isFinite(existingTs) || (Number.isFinite(incomingTs) && incomingTs >= existingTs);
+
   const merged: ProjectRecord = {
-    ...existing,
-    ...incoming,
-    ebookJobState: pickRicherValue(
+    ...(preferIncoming ? existing : incoming),
+    ...(preferIncoming ? incoming : existing),
+    ebookJobState: pickValueByRecency(
       incoming.ebookJobState as ProjectRecord["ebookJobState"] | undefined,
       existing.ebookJobState as ProjectRecord["ebookJobState"] | undefined,
       (value) => (value && typeof value === "object" ? (value as Record<string, unknown>).chapters : undefined),
+      preferIncoming,
     ),
-    ebookManifest: pickRicherValue(
+    ebookManifest: pickValueByRecency(
       incoming.ebookManifest as ProjectRecord["ebookManifest"] | undefined,
       existing.ebookManifest as ProjectRecord["ebookManifest"] | undefined,
       (value) => (value && typeof value === "object" ? (value as Record<string, unknown>).chapters : undefined),
+      preferIncoming,
     ),
     publishedSlug: incoming.publishedSlug ?? existing.publishedSlug,
     coverImageUrl: incoming.coverImageUrl ?? existing.coverImageUrl,
@@ -276,7 +284,10 @@ export async function GET() {
       }),
     ]);
 
-    return NextResponse.json({ projects: mergeProjects([...workspaceProjects, ...r2Projects]) });
+    return NextResponse.json(
+      { projects: mergeProjects([...workspaceProjects, ...r2Projects]) },
+      { headers: { "Cache-Control": "no-store, max-age=0" } },
+    );
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to load projects";
     return NextResponse.json({ error: message }, { status: 500 });

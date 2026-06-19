@@ -1545,7 +1545,7 @@ export function EbookPipeline({
     }
     autoSaveTimerRef.current = setTimeout(() => {
       const name = manifest.bookTitle?.trim() || "My Ebook";
-      onAutoSaveProject(name);
+      void Promise.resolve(onAutoSaveProject({ name, manifest }));
       autoSaveTimerRef.current = null;
     }, 900);
   }, [onAutoSaveProject]);
