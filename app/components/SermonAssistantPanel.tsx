@@ -2116,7 +2116,7 @@ export function SermonAssistantPanel() {
   const openHistory = useCallback(async () => {
     setHistoryOpen(true);
     try {
-      const res = await fetch("/api/projects", { method: "GET" });
+      const res = await fetch("/api/projects?kind=sermon", { method: "GET" });
       if (!res.ok) throw new Error("load failed");
       const data = await res.json() as { projects?: Array<Record<string, unknown>> };
       const items = (data.projects ?? [])

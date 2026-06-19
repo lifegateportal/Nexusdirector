@@ -98,13 +98,18 @@ async function ensureWorkspaceProjectsDir() {
   await mkdir(WORKSPACE_PROJECTS_DIR, { recursive: true });
 }
 
-async function listWorkspaceProjects(): Promise<ProjectRecord[]> {
+async function listWorkspaceProjects(options?: { sermonOnly?: boolean }): Promise<ProjectRecord[]> {
   try {
+    const sermonOnly = options?.sermonOnly === true;
     await ensureWorkspaceProjectsDir();
     const entries = await readdir(WORKSPACE_PROJECTS_DIR, { withFileTypes: true });
     const settled = await Promise.allSettled(
       entries
-        .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+        .filter((entry) => {
+          if (!entry.isFile() || !entry.name.endsWith(".json")) return false;
+          if (!sermonOnly) return true;
+          return entry.name.startsWith("sermon-");
+        })
         .map(async (entry) => {
           const raw = await readFile(path.join(WORKSPACE_PROJECTS_DIR, entry.name), "utf8");
           return normalizeProject(JSON.parse(raw) as unknown);
@@ -135,16 +140,22 @@ async function deleteWorkspaceProject(id: string) {
   }
 }
 
-async function listR2Projects(): Promise<ProjectRecord[]> {
+async function listR2Projects(options?: { sermonOnly?: boolean }): Promise<ProjectRecord[]> {
   const r2 = r2Ready();
   if (!r2) return [];
+
+  const sermonOnly = options?.sermonOnly === true;
 
   const list = await r2.s3.send(
     new ListObjectsV2Command({ Bucket: r2.bucket, Prefix: "projects/" }),
   );
   const keys = (list.Contents ?? [])
     .map((o) => o.Key)
-    .filter((k): k is string => !!k && k.endsWith(".json"));
+    .filter((k): k is string => {
+      if (!k || !k.endsWith(".json")) return false;
+      if (!sermonOnly) return true;
+      return k.startsWith("projects/sermon-");
+    });
 
   if (keys.length === 0) return [];
 
@@ -274,18 +285,38 @@ async function deleteR2Project(id: string) {
 
 // ── GET /api/projects — return all saved ProjectSnapshots from R2 ─────────────
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
+    const requestKind = req.nextUrl.searchParams.get("kind");
+    const sermonOnly = requestKind === "sermon";
+
     const [workspaceProjects, r2Projects] = await Promise.all([
-      listWorkspaceProjects(),
-      listR2Projects().catch((err) => {
+      listWorkspaceProjects({ sermonOnly }),
+      listR2Projects({ sermonOnly }).catch((err) => {
         console.error("[api/projects] Failed to read R2 projects:", err);
         return [];
       }),
     ]);
 
+    const merged = mergeProjects([...workspaceProjects, ...r2Projects]);
+
+    // Optional lightweight sermon view to avoid sending large ebook payloads
+    // when the Sermon assistant only needs sermon history records.
+    const sermonProjects = merged
+      .filter((project) => {
+        const sermon = (project as Record<string, unknown>).sermonAssistant;
+        return Boolean(sermon) && (typeof sermon === "object" || typeof sermon === "string");
+      })
+      .map((project) => ({
+        id: project.id,
+        name: (project as Record<string, unknown>).name,
+        createdAt: project.createdAt,
+        updatedAt: project.updatedAt,
+        sermonAssistant: (project as Record<string, unknown>).sermonAssistant,
+      }));
+
     return NextResponse.json(
-      { projects: mergeProjects([...workspaceProjects, ...r2Projects]) },
+      { projects: sermonOnly ? sermonProjects : merged },
       { headers: { "Cache-Control": "no-store, max-age=0" } },
     );
   } catch (err) {
