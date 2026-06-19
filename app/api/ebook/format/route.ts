@@ -22,7 +22,6 @@ const FormatSectionSchema = z.object({
 
 const FormatChapterOutputSchema = z.object({
   intro: z.string(),
-  conclusion: z.string(),
   sections: z.array(FormatSectionSchema),
   summary: z.string(),
 });
@@ -134,7 +133,6 @@ export async function POST(req: NextRequest) {
         "",
         chapter.intro?.trim() ? `CHAPTER INTRO:\n${chapter.intro}` : null,
         ...sectionBlocks,
-        chapter.conclusion?.trim() ? `CHAPTER CONCLUSION:\n${chapter.conclusion}` : null,
       ].filter(Boolean).join("\n\n---\n\n"),
     });
 
@@ -142,7 +140,6 @@ export async function POST(req: NextRequest) {
     const mergedChapter = ChapterDraftSchema.parse({
       ...chapter,
       intro:      object.intro       || chapter.intro,
-      conclusion: object.conclusion  || chapter.conclusion,
       sections: chapter.sections.map((s) => {
         const formatted = object.sections.find((fs) => fs.sectionNumber === s.sectionNumber);
         // Safety: only apply if the returned body is non-empty and not dramatically shorter

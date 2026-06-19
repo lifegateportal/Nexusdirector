@@ -38,7 +38,7 @@ function extractHeadingIndex(architecture: z.infer<typeof BookArchitectureSchema
   for (const chapter of architecture.chapters ?? []) {
     lines.push(`Chapter ${chapter.number}: "${chapter.title}"`);
     for (const section of chapter.sections ?? []) {
-      lines.push(`  §${section.number} "${section.heading}"`);
+      lines.push(`  §${section.sectionNumber} "${section.heading}"`);
     }
   }
   return lines.join("\n");

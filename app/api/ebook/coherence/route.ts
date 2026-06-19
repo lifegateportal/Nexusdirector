@@ -69,7 +69,7 @@ export async function POST(req: NextRequest) {
     .join("\n\n");
 
   const chapterOpening = (chapter.intro ?? "").split(/(?<=[.!?])\s+/).filter(Boolean).slice(0, 3).join(" ");
-  const chapterClosing = (chapter.conclusion ?? "").split(/(?<=[.!?])\s+/).filter(Boolean).slice(-3).join(" ");
+  const chapterClosing = (chapter.forwardQuestion ?? "").split(/(?<=[.!?])\s+/).filter(Boolean).slice(-3).join(" ");
 
   const thesisBlock = coreThesis
     ? `\nBOOK CORE THESIS: "${coreThesis}"\nEvery chapter must advance this thesis. Flag any section that has no traceable connection to it as a filler section.`

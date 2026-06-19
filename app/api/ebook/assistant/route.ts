@@ -296,7 +296,6 @@ export async function POST(req: NextRequest) {
         number: ch.number,
         title: ch.title,
         intro: compact ? safeExcerpt(ch.intro, 500) : ch.intro,
-        conclusion: compact ? safeExcerpt(ch.conclusion, 500) : ch.conclusion,
         keyTakeaways: ch.keyTakeaways,
         reflectionQuestions: ch.reflectionQuestions,
         totalWordCount: ch.totalWordCount,
@@ -509,7 +508,7 @@ export async function POST(req: NextRequest) {
       return { noChanges: true as const, summary: object.summary };
     }
 
-    const harmonized = harmonizeBookManifest(updatedManifest);
+    const harmonized = harmonizeBookManifest(updatedManifest as typeof manifest);
     const changeLogEntry = {
       timestamp: new Date().toISOString(),
       instruction: auditInstruction.slice(0, 200),

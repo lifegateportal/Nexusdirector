@@ -169,8 +169,14 @@ function extractSegments(manifest: EbookManifest): SegmentMeta[] {
         });
       }
     }
-    if (chapter.conclusion?.trim().length ?? 0 > 80) {
-      segs.push({ id: `c${chapter.number}-conc`, chapterNumber: chapter.number, sectionNumber: null, location: `Ch ${chapter.number} conclusion`, text: chapter.conclusion! });
+    if (chapter.forwardQuestion?.trim().length ?? 0 > 80) {
+      segs.push({
+        id: `c${chapter.number}-forward`,
+        chapterNumber: chapter.number,
+        sectionNumber: null,
+        location: `Ch ${chapter.number} forward question`,
+        text: chapter.forwardQuestion!,
+      });
     }
   }
 
@@ -294,7 +300,7 @@ function findOverusedWords(manifest: EbookManifest): Omit<OverusedWord, "alterna
     manifest.frontMatter.preface ?? "",
     manifest.frontMatter.introduction ?? "",
     manifest.frontMatter.conclusion ?? "",
-    ...manifest.chapters.flatMap((c) => [c.intro ?? "", ...c.sections.map((s) => s.body ?? ""), c.conclusion ?? ""]),
+    ...manifest.chapters.flatMap((c) => [c.intro ?? "", ...c.sections.map((s) => s.body ?? ""), c.forwardQuestion ?? ""]),
   ].join(" ");
 
   const counts = new Map<string, number>();

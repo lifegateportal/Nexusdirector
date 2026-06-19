@@ -29,7 +29,7 @@ function fallbackPolishOutput(chapter: z.infer<typeof PolishChapterRequestSchema
   const lastBody = [...sections].reverse().map((section) => (section.body ?? "").trim()).find(Boolean) ?? "";
 
   const takeaways = sections
-    .flatMap((section) => [section.heading, ...(section.keyTakeaways ?? [])])
+    .map((section) => section.heading)
     .map((item) => item.trim())
     .filter(Boolean)
     .slice(0, 5);
@@ -54,7 +54,8 @@ function fallbackPolishOutput(chapter: z.infer<typeof PolishChapterRequestSchema
   return {
     intro: stripAudienceLanguage(fallbackIntro),
     forwardQuestion: "",
-
+    epigraph: "",
+    sectionTransitions: [],
     keyTakeaways: takeaways.length > 0 ? takeaways.map((item) => stripAudienceLanguage(item)) : [stripAudienceLanguage(chapter.title || "")].filter(Boolean),
     reflectionQuestions: reflectionQuestions.map((item) => stripAudienceLanguage(item)).filter(Boolean),
   };
@@ -80,8 +81,7 @@ export async function POST(req: NextRequest) {
     // Sending body prose caused the LLM to mirror the section-1 opening verbatim as the intro.
     const sectionsSummary = (chapter.sections ?? [])
       .map((s) => {
-        const kp = (s.keyTakeaways ?? []).slice(0, 3).join("; ");
-        return `Section ${s.sectionNumber} — ${s.heading}${kp ? `: ${kp}` : ""}`;
+        return `Section ${s.sectionNumber} — ${s.heading}`;
       })
       .join("\n");
 
@@ -190,7 +190,7 @@ Respond with ONLY a valid JSON object — no markdown, no code blocks, no explan
       try {
         object = fallbackPolishOutput(chapter);
       } catch {
-        object = { intro: "", forwardQuestion: "", keyTakeaways: [], reflectionQuestions: [] };
+        object = { intro: "", forwardQuestion: "", keyTakeaways: [], reflectionQuestions: [], epigraph: "", sectionTransitions: [] };
       }
     }
 
