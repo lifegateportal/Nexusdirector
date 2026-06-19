@@ -103,6 +103,15 @@ function EbookPageClient() {
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [statusMsg, setStatusMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [siteConfig] = useState<SiteConfig>(() => SiteConfigSchema.parse({}));
+  const isLikelyIOS = (() => {
+    if (typeof navigator === "undefined") return false;
+    const ua = navigator.userAgent || "";
+    const platform = navigator.platform || "";
+    const touchPoints = typeof navigator.maxTouchPoints === "number" ? navigator.maxTouchPoints : 0;
+    return /iPad|iPhone|iPod/i.test(ua)
+      || (/Mac/i.test(platform) && touchPoints > 1)
+      || /iPad|iPhone|iPod/i.test(platform);
+  })();
 
   // Project persistence
   const [projects, setProjects] = useState<EbookProject[]>([]);
@@ -339,11 +348,13 @@ function EbookPageClient() {
 
     void syncFromCloud();
 
+    const intervalMs = isLikelyIOS ? 15000 : 5000;
     const timer = setInterval(() => {
       void syncFromCloud();
-    }, 5000);
+    }, intervalMs);
 
     const onVisibleOrFocus = () => {
+      if (document.visibilityState === "hidden") return;
       void syncFromCloud();
     };
 
@@ -356,7 +367,7 @@ function EbookPageClient() {
       window.removeEventListener("focus", onVisibleOrFocus);
       document.removeEventListener("visibilitychange", onVisibleOrFocus);
     };
-  }, []);
+  }, [isLikelyIOS]);
 
   const requestedTab = searchParams.get("tab");
   const requestedLoad = searchParams.get("load");

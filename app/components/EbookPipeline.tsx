@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useCallback, useId, useEffect } from "react";
+import { useState, useRef, useCallback, useId, useEffect, useMemo } from "react";
 import { ProseEditor, ProseToolbarProvider, SharedProseToolbar } from "./ProseEditor";
 import { EbookProgressRing } from "@/app/components/EbookProgressRing";
 import { VoiceStudio } from "@/app/components/VoiceStudio";
@@ -1516,6 +1516,15 @@ export function EbookPipeline({
   const [reviewTab, setReviewTab] = useState<ReviewTab>("manuscript");
   const [sectionAssignments, setSectionAssignments] = useState<SectionAssignment[]>([]);
   const [sourceTranscripts, setSourceTranscripts] = useState<Array<{ label: string; text: string }>>([]);
+  const isLikelyIOS = useMemo(() => {
+    if (typeof navigator === "undefined") return false;
+    const ua = navigator.userAgent || "";
+    const platform = navigator.platform || "";
+    const touchPoints = typeof navigator.maxTouchPoints === "number" ? navigator.maxTouchPoints : 0;
+    return /iPad|iPhone|iPod/i.test(ua)
+      || (/Mac/i.test(platform) && touchPoints > 1)
+      || /iPad|iPhone|iPod/i.test(platform);
+  }, []);
   const jobIdRef = useRef<string>(newJobId());
   // Mirror of log in a ref so runPipeline (async) can read the current value for checkpoints
   const logRef = useRef<string[]>([]);
@@ -1543,12 +1552,13 @@ export function EbookPipeline({
     if (autoSaveTimerRef.current) {
       clearTimeout(autoSaveTimerRef.current);
     }
+    const debounceMs = isLikelyIOS ? 2600 : 900;
     autoSaveTimerRef.current = setTimeout(() => {
       const name = manifest.bookTitle?.trim() || "My Ebook";
       void Promise.resolve(onAutoSaveProject({ name, manifest }));
       autoSaveTimerRef.current = null;
-    }, 900);
-  }, [onAutoSaveProject]);
+    }, debounceMs);
+  }, [isLikelyIOS, onAutoSaveProject]);
 
   useEffect(() => {
     return () => {
@@ -1742,6 +1752,7 @@ export function EbookPipeline({
   useEffect(() => {
     if (!exportUrls?.pdfUrl || autoDownloadedRef.current) return;
     autoDownloadedRef.current = true;
+    if (isLikelyIOS) return;
     try {
       const popup = window.open(exportUrls.pdfUrl, "_blank", "noopener,noreferrer");
       if (!popup) {
@@ -1756,7 +1767,7 @@ export function EbookPipeline({
     } catch {
       // pop-up blocked — user can still open manually from the download button
     }
-  }, [exportUrls]);
+  }, [exportUrls, isLikelyIOS]);
 
   // ── Auto-save once when pipeline first reaches complete ──────────────────
   useEffect(() => {

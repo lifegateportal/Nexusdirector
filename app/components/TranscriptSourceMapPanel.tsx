@@ -65,6 +65,16 @@ export function TranscriptSourceMapPanel({
   onSectionBodyChange,
   authorConfig,
 }: Props) {
+  const isLikelyIOS = useMemo(() => {
+    if (typeof navigator === "undefined") return false;
+    const ua = navigator.userAgent || "";
+    const platform = navigator.platform || "";
+    const touchPoints = typeof navigator.maxTouchPoints === "number" ? navigator.maxTouchPoints : 0;
+    return /iPad|iPhone|iPod/i.test(ua)
+      || (/Mac/i.test(platform) && touchPoints > 1)
+      || /iPad|iPhone|iPod/i.test(platform);
+  }, []);
+
   const flatSections = useMemo(
     () => chapters.flatMap((chapter) => chapter.sections.map((section) => ({ chapter, section }))),
     [chapters]
@@ -83,6 +93,7 @@ export function TranscriptSourceMapPanel({
   const [showUnusedOnly, setShowUnusedOnly] = useState(false);
   const [historyVersion, setHistoryVersion] = useState(0);
   const [critique, setCritique] = useState<z.infer<typeof CritiqueResponseSchema> | null>(null);
+  const [mobileExcerptLimit, setMobileExcerptLimit] = useState(80);
   const historyRef = useRef<Record<string, HistoryEntry>>({});
 
   const active = useMemo(() => {
@@ -159,6 +170,11 @@ export function TranscriptSourceMapPanel({
     if (!showUnusedOnly) return all;
     return all.filter((index) => !usedExcerptNumbers.has(index + 1));
   }, [active, showUnusedOnly, usedExcerptNumbers]);
+
+  const renderedExcerptIndexes = useMemo(() => {
+    if (!isLikelyIOS) return visibleExcerptIndexes;
+    return visibleExcerptIndexes.slice(0, mobileExcerptLimit);
+  }, [isLikelyIOS, mobileExcerptLimit, visibleExcerptIndexes]);
 
   const activeSlotLabel = useMemo(() => {
     if (!active) return "";
@@ -353,7 +369,7 @@ export function TranscriptSourceMapPanel({
             </div>
 
             <div className="max-h-[48dvh] space-y-2 overflow-y-auto pr-1 lg:max-h-[70dvh]">
-              {visibleExcerptIndexes.map((index) => {
+              {renderedExcerptIndexes.map((index) => {
                 const excerpt = active.assignment.transcriptExcerpts[index];
                 const number = index + 1;
                 const isUsed = usedExcerptNumbers.has(number);
@@ -416,6 +432,15 @@ export function TranscriptSourceMapPanel({
                   </div>
                 );
               })}
+              {isLikelyIOS && renderedExcerptIndexes.length < visibleExcerptIndexes.length && (
+                <button
+                  type="button"
+                  onClick={() => setMobileExcerptLimit((v) => v + 80)}
+                  className="min-h-[48px] w-full rounded-xl border border-slate-600/60 bg-slate-900/70 px-3 py-2 text-sm font-semibold text-slate-200"
+                >
+                  Load more excerpts ({renderedExcerptIndexes.length}/{visibleExcerptIndexes.length})
+                </button>
+              )}
             </div>
           </section>
 
