@@ -800,7 +800,7 @@ function EbookPageClient() {
   ]);
 
   const handleAutoSaveProject = useCallback((name: string) => {
-    void handleSaveProject(name, { silent: true, localOnly: true });
+    void handleSaveProject(name, { silent: true });
   }, [handleSaveProject]);
 
   const handleLoadProject = useCallback(async (id: string) => {
