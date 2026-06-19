@@ -337,13 +337,24 @@ function EbookPageClient() {
       }
     };
 
+    void syncFromCloud();
+
     const timer = setInterval(() => {
       void syncFromCloud();
-    }, 15000);
+    }, 5000);
+
+    const onVisibleOrFocus = () => {
+      void syncFromCloud();
+    };
+
+    window.addEventListener("focus", onVisibleOrFocus);
+    document.addEventListener("visibilitychange", onVisibleOrFocus);
 
     return () => {
       cancelled = true;
       clearInterval(timer);
+      window.removeEventListener("focus", onVisibleOrFocus);
+      document.removeEventListener("visibilitychange", onVisibleOrFocus);
     };
   }, []);
 
@@ -747,30 +758,34 @@ function EbookPageClient() {
     };
   }, []);
 
-  const syncProjectToWorkspaceAndCloud = useCallback((project: EbookProject) => {
+  const syncProjectToWorkspaceAndCloud = useCallback(async (project: EbookProject) => {
     const startedAt = Date.now();
     emitSaveTelemetry("cloud-sync-start", { projectId: project.id, name: project.name });
 
-    void saveProject({
-      id: project.id,
-      name: project.name,
-      createdAt: project.createdAt,
-      updatedAt: project.updatedAt,
-      academy: null,
-      siteConfig: {},
-      deliveryInstructions: "",
-      chatHistory: [],
-      blueprint: null,
-      logicResult: null,
-      uiResult: null,
-      ebookManifest: null,
-      ebookJobState: project.jobState,
-      publishedSlug: project.publishedSlug,
-      coverImageUrl: project.coverImageUrl,
-      authorImageUrl: project.authorImageUrl,
-    }).catch(() => {
+    let workspaceSaved = false;
+    try {
+      await saveProject({
+        id: project.id,
+        name: project.name,
+        createdAt: project.createdAt,
+        updatedAt: project.updatedAt,
+        academy: null,
+        siteConfig: {},
+        deliveryInstructions: "",
+        chatHistory: [],
+        blueprint: null,
+        logicResult: null,
+        uiResult: null,
+        ebookManifest: null,
+        ebookJobState: project.jobState,
+        publishedSlug: project.publishedSlug,
+        coverImageUrl: project.coverImageUrl,
+        authorImageUrl: project.authorImageUrl,
+      });
+      workspaceSaved = true;
+    } catch {
       emitSaveTelemetry("workspace-sync-failed", { projectId: project.id });
-    });
+    }
 
     const cloudJobState = {
       ...project.jobState,
@@ -804,34 +819,37 @@ function EbookPageClient() {
       authorImageUrl: project.authorImageUrl,
     };
 
-    void fetch("/api/projects", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ project: cloudProject }),
-    })
-      .then(async (res) => {
-        if (!res.ok) {
-          emitSaveTelemetry("cloud-sync-failed", {
-            projectId: project.id,
-            status: res.status,
-            durationMs: Date.now() - startedAt,
-          });
-          return;
-        }
-        const payload = await res.json().catch(() => null) as { cloudSaved?: boolean; workspaceSaved?: boolean } | null;
-        emitSaveTelemetry("cloud-sync-finish", {
-          projectId: project.id,
-          cloudSaved: Boolean(payload?.cloudSaved),
-          workspaceSaved: Boolean(payload?.workspaceSaved),
-          durationMs: Date.now() - startedAt,
-        });
-      })
-      .catch(() => {
+    let cloudSaved = false;
+    try {
+      const res = await fetch("/api/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ project: cloudProject }),
+      });
+      if (!res.ok) {
         emitSaveTelemetry("cloud-sync-failed", {
           projectId: project.id,
+          status: res.status,
           durationMs: Date.now() - startedAt,
         });
+      } else {
+        const payload = await res.json().catch(() => null) as { cloudSaved?: boolean; workspaceSaved?: boolean } | null;
+        cloudSaved = Boolean(payload?.cloudSaved);
+        emitSaveTelemetry("cloud-sync-finish", {
+          projectId: project.id,
+          cloudSaved,
+          workspaceSaved,
+          durationMs: Date.now() - startedAt,
+        });
+      }
+    } catch {
+      emitSaveTelemetry("cloud-sync-failed", {
+        projectId: project.id,
+        durationMs: Date.now() - startedAt,
       });
+    }
+
+    return { workspaceSaved, cloudSaved };
   }, [emitSaveTelemetry, toManifestFromJob]);
 
   // ── Project handlers ──────────────────────────────────────────────────────
@@ -1165,14 +1183,29 @@ function EbookPageClient() {
         authorImageUrl: existing?.authorImageUrl,
       };
 
-      await saveEbookProject(project);
-      await saveEbookJob(safeJobState).catch(() => {});
+      let projectSaved = false;
+      try {
+        await saveEbookProject(project);
+        projectSaved = true;
+      } catch {
+        emitSaveTelemetry("autosave-indexeddb-project-failed", { projectId: project.id });
+      }
 
+      let jobSaved = false;
+      try {
+        await saveEbookJob(safeJobState);
+        jobSaved = true;
+      } catch {
+        emitSaveTelemetry("autosave-indexeddb-job-failed", { jobId: safeJobState.jobId });
+      }
+
+      let localStorageSaved = false;
       try {
         localStorage.setItem(JOB_STATE_KEY, JSON.stringify(project.jobState));
         localStorage.setItem(JOB_STORAGE_KEY, project.jobState.jobId);
+        localStorageSaved = true;
       } catch {
-        // localStorage unavailable; IndexedDB save already completed
+        // localStorage unavailable
       }
 
       setProjects((prev) => {
@@ -1183,12 +1216,22 @@ function EbookPageClient() {
         return next;
       });
 
-      syncProjectToWorkspaceAndCloud(project);
+      if (projectSaved || jobSaved || localStorageSaved) {
+        void syncProjectToWorkspaceAndCloud(project);
+      } else {
+        const syncResult = await syncProjectToWorkspaceAndCloud(project);
+        if (!syncResult.workspaceSaved && !syncResult.cloudSaved) {
+          throw new Error("Autosave failed: no persistence targets succeeded.");
+        }
+      }
       setLiveJobState(safeJobState);
       pendingProjectIdRef.current = null;
       emitSaveTelemetry("autosave-finish", {
         projectId: project.id,
         jobId: safeJobState.jobId,
+        projectSaved,
+        jobSaved,
+        localStorageSaved,
         durationMs: Date.now() - startedAt,
       });
     } catch (err) {
