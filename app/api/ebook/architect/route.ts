@@ -347,6 +347,7 @@ function normalizeArchitecture(
   // Deduplicate segment IDs globally — each segment must feed exactly one section.
   // First-come-first-served: whichever section claims a segment first keeps it.
   const globalUsedSegIds = new Set<string>();
+  const removedSegments: { chapterNum: number; sectionNum: number; segmentIds: string[] }[] = [];
 
   const chapters = (minimal.chapters ?? [])
     .map((chapter, chapterIndex) => ({
@@ -355,8 +356,17 @@ function normalizeArchitecture(
       keyTheme: (chapter.keyTheme || "").trim() || fallback.chapters[0].keyTheme,
       sections: (chapter.sections ?? [])
         .map((section, sectionIndex) => {
-          const uniqueIds = (section.sourceSegmentIds ?? [])
+          const requestedIds = (section.sourceSegmentIds ?? []);
+          const uniqueIds = requestedIds
             .filter((id) => validIds.has(id) && !globalUsedSegIds.has(id));
+          const removedIds = requestedIds.filter((id) => !uniqueIds.includes(id));
+          if (removedIds.length > 0) {
+            removedSegments.push({
+              chapterNum: Math.max(1, Math.trunc(chapter.number || chapterIndex + 1)),
+              sectionNum: Math.max(1, Math.trunc(section.sectionNumber || sectionIndex + 1)),
+              segmentIds: removedIds,
+            });
+          }
           uniqueIds.forEach((id) => globalUsedSegIds.add(id));
           return {
             sectionNumber: Math.max(1, Math.trunc(section.sectionNumber || sectionIndex + 1)),
@@ -368,6 +378,11 @@ function normalizeArchitecture(
         .filter((section) => section.sourceSegmentIds.length > 0),
     }))
     .filter((chapter) => chapter.sections.length > 0);
+  
+  // Log any segment loss for debugging
+  if (removedSegments.length > 0) {
+    console.warn("[architect] Segments removed during architecture normalization:", removedSegments);
+  }
 
   return {
     bookTitle: (minimal.bookTitle || "").trim() || fallback.bookTitle,

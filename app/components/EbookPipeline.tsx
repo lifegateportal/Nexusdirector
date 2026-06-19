@@ -149,8 +149,23 @@ async function streamSection(
   const result = await postJson<{ body: string; claimLedger?: Array<{ claim: string; excerptNumbers: number[] }>; passiveVoiceCount?: number; unfullfilledHook?: string | null; sequenceBreakCount?: number }>(
     "/api/ebook/write-section", { assignment, ...(authorConfig ? { authorConfig } : {}) }
   );
+  
+  // Validate response shape before using
+  if (!result || typeof result !== "object") {
+    throw new Error("Invalid write-section response: not an object");
+  }
+  if (typeof result.body !== "string" || !result.body.trim()) {
+    throw new Error("Invalid write-section response: missing or empty body");
+  }
+  if (result.claimLedger !== undefined && !Array.isArray(result.claimLedger)) {
+    throw new Error("Invalid write-section response: claimLedger must be an array");
+  }
+  if (result.passiveVoiceCount !== undefined && typeof result.passiveVoiceCount !== "number") {
+    throw new Error("Invalid write-section response: passiveVoiceCount must be a number");
+  }
+  
   return {
-    body: (result.body ?? "").trim(),
+    body: result.body.trim(),
     claimLedger: result.claimLedger ?? [],
     passiveVoiceCount: result.passiveVoiceCount ?? 0,
     unfullfilledHook: result.unfullfilledHook ?? null,
@@ -165,7 +180,7 @@ function countWords(text: string): number {
 // ─── Upgrade 4 (writer): Illustration / story label extractor ────────────────
 // Scans written prose for story-opening sentences and returns short labels
 // (first 100 chars) so later sections can be told not to retell the same story.
-const STORY_OPENERS = /\b(when i was|i remember|there was a|let me tell you|i once|one day|a man named|a woman named|i met a|i spoke to|i was in|years ago|i had a|the story of|he told me|she told me|they told me|i saw a|i witnessed)\b/i;
+const STORY_OPENERS = /\b(when i was|i remember|there was a|let me tell you|i once|one day|a man named|a woman named|i met a|i spoke to|i was in|years ago|i had a|the story of|he told me|she told me|they told me|i saw a|i witnessed)\b/gi;
 
 function extractIllustrationLabels(body: string): string[] {
   const labels: string[] = [];
@@ -328,7 +343,7 @@ function extractSequenceTurns(excerpts: string[]): string[] {
 // Finds story-opening sentences and the principle/payoff sentence that follows
 // within 4 sentences. Passed to the writer as ordered pairs: setup must come
 // before payoff — reversing them violates the speaker's teaching logic.
-const PRINCIPLE_SIGNALS = /\b(the (?:lesson|point|truth|key|principle|answer|secret) (?:is|here is)|what (?:this|that) (?:teaches|shows|tells|means)|(?:and )?(?:that'?s? why|that'?s? the|this is why|this means)|so the (?:point|truth|lesson)|here'?s? the truth|the moral (?:is|of)|what god (?:was|is) saying|what (?:he|she|they) (?:was|were|is) trying to say|the takeaway|the (?:real )?question is|the (?:real )?issue (?:is|here)|so what|and so|therefore)\b/i;
+const PRINCIPLE_SIGNALS = /\b(the (?:lesson|point|truth|key|principle|answer|secret) (?:is|here is)|what (?:this|that) (?:teaches|shows|tells|means)|(?:and )?(?:that'?s? why|that'?s? the|this is why|this means)|so the (?:point|truth|lesson)|here'?s? the truth|the moral (?:is|of)|what god (?:was|is) saying|what (?:he|she|they) (?:was|were|is) trying to say|the takeaway|the (?:real )?question is|the (?:real )?issue (?:is|here)|so what|and so|therefore)\b/gi;
 
 function extractStoryPayoffPairs(excerpts: string[]): { setup: string; principle: string }[] {
   const pairs: { setup: string; principle: string }[] = [];
