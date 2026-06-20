@@ -173,6 +173,19 @@ async function streamSection(
   };
 }
 
+function buildArchitectContentMap(contentMap: ContentMap, includeRawText: boolean): ContentMap {
+  if (includeRawText) return contentMap;
+  // Architect does not need transcript bodies unless oneChapterPerUpload is enabled.
+  // Stripping rawText keeps large projects under request-size/proxy limits.
+  return {
+    ...contentMap,
+    segments: contentMap.segments.map((segment) => ({
+      ...segment,
+      rawText: "",
+    })),
+  };
+}
+
 function countWords(text: string): number {
   return text.trim().split(/\s+/).filter(Boolean).length;
 }
@@ -2466,7 +2479,12 @@ export function EbookPipeline({
       if (!architecture) {
         setStage("architecting");
         addLog("Designing chapter structure…");
-        architecture = await postJson<BookArchitecture>("/api/ebook/architect", { contentMap, voiceDNA, oneChapterPerUpload });
+        const architectContentMap = buildArchitectContentMap(contentMap, oneChapterPerUpload);
+        architecture = await postJson<BookArchitecture>("/api/ebook/architect", {
+          contentMap: architectContentMap,
+          voiceDNA,
+          oneChapterPerUpload,
+        });
         const totalSections = architecture.chapters.reduce((a, c) => a + c.sections.length, 0);
         addLog(`✓ Architecture: "${architecture.bookTitle}" — ${architecture.chapters.length} chapters, ${totalSections} sections`);
         acc.architecture = architecture;
