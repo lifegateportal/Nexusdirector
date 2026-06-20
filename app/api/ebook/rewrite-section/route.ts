@@ -77,6 +77,41 @@ function paragraphExcerptUsage(paragraph: string, excerpts: string[]): number {
   return bestScore >= 0.08 ? best : 0;
 }
 
+function paragraphGroundingScore(paragraph: string, excerpts: string[]): { score: number; shared: number } {
+  const paraTokens = new Set(
+    paragraph
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, " ")
+      .split(/\s+/)
+      .filter((w) => w.length > 3)
+  );
+  if (paraTokens.size === 0 || excerpts.length === 0) {
+    return { score: 0, shared: 0 };
+  }
+
+  let bestScore = 0;
+  let bestShared = 0;
+  for (const excerpt of excerpts) {
+    const excerptTokens = new Set(
+      excerpt
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, " ")
+        .split(/\s+/)
+        .filter((w) => w.length > 3)
+    );
+    let shared = 0;
+    for (const token of paraTokens) {
+      if (excerptTokens.has(token)) shared += 1;
+    }
+    const score = shared / Math.max(paraTokens.size, 1);
+    if (score > bestScore || (score === bestScore && shared > bestShared)) {
+      bestScore = score;
+      bestShared = shared;
+    }
+  }
+  return { score: bestScore, shared: bestShared };
+}
+
 export async function POST(req: NextRequest) {
   const body = (await req.json().catch(() => null)) as unknown;
   const parsed = RequestSchema.safeParse(body);
@@ -234,11 +269,20 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Rewrite returned empty output" }, { status: 422 });
     }
 
-    const computedUsage = paragraphs.map((paragraph) => paragraphExcerptUsage(paragraph, assignment.transcriptExcerpts));
+    const groundedParagraphs = paragraphs.filter((paragraph) => {
+      const words = paragraph.split(/\s+/).filter(Boolean).length;
+      const grounding = paragraphGroundingScore(paragraph, assignment.transcriptExcerpts);
+      return grounding.score >= 0.06 || grounding.shared >= 6 || words <= 14;
+    });
+    if (groundedParagraphs.length === 0) {
+      return NextResponse.json({ error: "Rewrite produced content not grounded in assigned transcript excerpts" }, { status: 422 });
+    }
+
+    const computedUsage = groundedParagraphs.map((paragraph) => paragraphExcerptUsage(paragraph, assignment.transcriptExcerpts));
 
     return NextResponse.json(
       {
-        body: paragraphs.join("\n\n"),
+        body: groundedParagraphs.join("\n\n"),
         excerptUsage: (object.excerptUsage ?? computedUsage).filter((n) => n > 0),
       },
       { status: 200 }

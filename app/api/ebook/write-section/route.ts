@@ -264,6 +264,53 @@ function excerptOverlapScore(para: string, excerpt: string, n = 4): number {
   return shared / paraGrams.size;
 }
 
+function paragraphGroundingScore(
+  paragraph: string,
+  excerpts: string[]
+): { score: number; shared: number } {
+  const paraTokens = new Set(
+    paragraph
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, " ")
+      .split(/\s+/)
+      .filter((w) => w.length > 3)
+  );
+  if (paraTokens.size === 0 || excerpts.length === 0) {
+    return { score: 0, shared: 0 };
+  }
+
+  let bestScore = 0;
+  let bestShared = 0;
+
+  for (const excerpt of excerpts) {
+    const excerptTokens = new Set(
+      excerpt
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, " ")
+        .split(/\s+/)
+        .filter((w) => w.length > 3)
+    );
+    let shared = 0;
+    for (const token of paraTokens) {
+      if (excerptTokens.has(token)) shared++;
+    }
+    const score = shared / Math.max(paraTokens.size, 1);
+    if (score > bestScore || (score === bestScore && shared > bestShared)) {
+      bestScore = score;
+      bestShared = shared;
+    }
+  }
+
+  return { score: bestScore, shared: bestShared };
+}
+
+function buildStrictBodyFromExcerpts(excerpts: string[]): string {
+  return excerpts
+    .map((e) => e.replace(/\r\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim())
+    .filter(Boolean)
+    .join("\n\n");
+}
+
 function filterConsumedExcerpts(
   excerpts: string[],
   alreadyCoveredPoints: string[],
@@ -961,7 +1008,29 @@ Now write the section prose:`;
       }
     }
 
-    const rawBody = finalParagraphs.join("\n\n") || await fallbackSectionBody(assignment);
+    // Hard grounding gate: remove any paragraph that cannot be traced to assigned excerpts.
+    // This prevents source-map drift where section prose contains content from adjacent segments.
+    const groundedParagraphs: string[] = [];
+    let droppedUngrounded = 0;
+    for (const paragraph of finalParagraphs) {
+      const words = paragraph.split(/\s+/).filter(Boolean).length;
+      const grounding = paragraphGroundingScore(paragraph, effectiveExcerpts);
+      const grounded = grounding.score >= 0.06 || grounding.shared >= 6;
+      const transitionalShort = words <= 14 && groundedParagraphs.length > 0;
+      if (grounded || transitionalShort) {
+        groundedParagraphs.push(paragraph);
+      } else {
+        droppedUngrounded++;
+      }
+    }
+    if (droppedUngrounded > 0) {
+      console.warn(`[write-section] Grounding gate dropped ${droppedUngrounded} ungrounded paragraph(s) in Ch${assignment.chapterNumber} §${assignment.sectionNumber}`);
+    }
+    if (groundedParagraphs.length > 0) {
+      finalParagraphs = groundedParagraphs;
+    }
+
+    const rawBody = finalParagraphs.join("\n\n") || buildStrictBodyFromExcerpts(effectiveExcerpts) || await fallbackSectionBody(assignment);
     const body = stripAudienceLanguage(normalizeReaderFacingProse(rawBody));
     // ── Upgrade 8: Passive voice detection ───────────────────────────────
     const passiveHits = detectPassiveVoice(body);
@@ -983,7 +1052,10 @@ Now write the section prose:`;
       sequenceBreakCount,
     }, { status: 200 });
   } catch (err) {
-    const fallbackBody = stripAudienceLanguage(normalizeReaderFacingProse(await fallbackSectionBody(assignment)));
+    const strictFallback = buildStrictBodyFromExcerpts(assignment.transcriptExcerpts ?? []);
+    const fallbackBody = stripAudienceLanguage(
+      normalizeReaderFacingProse(strictFallback || await fallbackSectionBody(assignment))
+    );
     return NextResponse.json({
       body: fallbackBody,
       claimLedger: [],
