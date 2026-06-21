@@ -110,6 +110,26 @@ async function withTimeout<T>(promise: Promise<T>, label: string, timeoutMs = 60
   }
 }
 
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  label: string,
+  retries = 2,
+): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastError = err;
+      if (attempt >= retries) break;
+      const backoffMs = Math.min(8000, 1200 * Math.pow(2, attempt));
+      await new Promise<void>((resolve) => setTimeout(resolve, backoffMs));
+    }
+  }
+  const detail = lastError instanceof Error ? lastError.message : String(lastError ?? "unknown error");
+  throw new Error(`${label} failed after retries: ${detail}`);
+}
+
 export async function POST(req: NextRequest) {
   const body = await req.json() as unknown;
   let input;
@@ -146,10 +166,9 @@ export async function POST(req: NextRequest) {
       slotChunks.push({ sourceAudio: "audio-1", text: input.masterTranscript });
     }
 
-    // ── 2. Extract segments per slot — all slots processed in parallel ───────
-    // Processing slots sequentially caused reverse-proxy timeouts on large projects
-    // (6 slots × 5 chunks × ~4s/call ≈ 120 s). Parallel execution cuts wall-clock
-    // time to roughly that of the single slowest slot (~20–30 s).
+    // ── 2. Extract segments per slot — slots in parallel, chunks retried ─────
+    // Keep slot-level parallelism for throughput while retrying each chunk call
+    // to reduce transient provider/proxy failures on long projects.
 
     type DedupedSlotResult = {
       chunk: { sourceAudio: string; text: string };
@@ -159,7 +178,6 @@ export async function POST(req: NextRequest) {
 
     const slotResults: DedupedSlotResult[] = await Promise.all(
       slotChunks.map(async (chunk): Promise<DedupedSlotResult> => {
-        // A8: Isolate per-slot failures — a single bad LLM call must not abort the whole map
         const slotWords = chunk.text.split(/\s+/);
         const OVERLAP = 200;
         const chunkRanges: Array<{ start: number; end: number }> = [];
@@ -171,23 +189,27 @@ export async function POST(req: NextRequest) {
           start = end - OVERLAP;
         }
 
-        const chunkSegments = await Promise.all(
-          chunkRanges.map(async (range) => {
+        const chunkSegments: z.infer<typeof SlotSegmentExtractSchema>[][] = [];
+        for (let chunkIndex = 0; chunkIndex < chunkRanges.length; chunkIndex++) {
+          const range = chunkRanges[chunkIndex];
             const chunkText = slotWords.slice(range.start, range.end).join(" ");
-            const { object } = await withTimeout(
-              generateObject({
-                model: deepSeekModel,
-                schema: SlotSegmentsSchema,
-                mode: "tool",
-                temperature: 0.2,
-                system: SEGMENT_SYSTEM,
-                prompt: `Extract all teaching segments from this recording (${chunk.sourceAudio}):\n\n${chunkText}`,
-              }),
-              `${chunk.sourceAudio} segment extraction`
+            const { object } = await withRetry(
+              () => withTimeout(
+                generateObject({
+                  model: deepSeekModel,
+                  schema: SlotSegmentsSchema,
+                  mode: "tool",
+                  temperature: 0.2,
+                  system: SEGMENT_SYSTEM,
+                  prompt: `Extract all teaching segments from this recording (${chunk.sourceAudio}, chunk ${chunkIndex + 1}/${chunkRanges.length}):\n\n${chunkText}`,
+                }),
+                `${chunk.sourceAudio} segment extraction chunk ${chunkIndex + 1}/${chunkRanges.length}`
+              ),
+              `${chunk.sourceAudio} chunk ${chunkIndex + 1}/${chunkRanges.length}`,
+              2
             );
-            return object.segments;
-          })
-        );
+            chunkSegments.push(object.segments);
+        }
 
         const rawSegmentsForSlot = chunkSegments.flat();
 
@@ -266,12 +288,13 @@ export async function POST(req: NextRequest) {
       .map((s) => `- [${s.sourceAudio}] ${s.topic}: ${s.keyPoints.join("; ")}`)
       .join("\n");
 
-    const { object: synthesis } = await generateObject({
-      model: deepSeekModel,
-      schema: SynthesisSchema,
-      mode: "tool",
-      temperature: 0.2,
-      system: `You are a senior editor identifying the overarching message of a multi-part teaching series.
+    const { object: synthesis } = await withRetry(
+      () => generateObject({
+        model: deepSeekModel,
+        schema: SynthesisSchema,
+        mode: "tool",
+        temperature: 0.2,
+        system: `You are a senior editor identifying the overarching message of a multi-part teaching series.
     Base your synthesis ONLY on what the speaker explicitly taught — do not add external theological context.
 
     Your job is to perform the sermon-to-book "Narrative North Star" pass:
@@ -280,12 +303,15 @@ export async function POST(req: NextRequest) {
     - Capture the speaker's unique vocabulary, metaphors, and repeated conceptual language.
     - Describe the tone map for the eventual book.
     - Organize recurring ideas into a coherent flow, treating repeated series recaps or monthly-theme refreshers as support material rather than fresh chapters.`,
-      prompt: `Based on these teaching segment topics, identify the overall themes, teaching arc, core thesis, target audience, unique vocabulary, and tone map.
+        prompt: `Based on these teaching segment topics, identify the overall themes, teaching arc, core thesis, target audience, unique vocabulary, and tone map.
 
     Group repeated themes together conceptually so the eventual book reads contiguously instead of repeating sermon-series refreshers.
 
     ${topicSummary}`,
-    });
+      }),
+      "content-map synthesis",
+      2
+    );
 
     const contentMap = {
       ...synthesis,

@@ -25,7 +25,7 @@ import type {
   EbookJobState,
   EbookManifest,
 } from "@/lib/schemas/ebook";
-import { ChapterPlanResponseSchema, SectionAssignmentSchema } from "@/lib/schemas/ebook";
+import { ChapterPlanResponseSchema } from "@/lib/schemas/ebook";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -121,9 +121,10 @@ async function postJson<T>(url: string, body: unknown, retries = 1): Promise<T> 
         err = rawText ? { details: rawText } : {};
       }
       const msg = err.error || `HTTP ${res.status} error from ${route}`;
-      // Retry once on transient gateway/auth errors (Codespaces proxy warm-up or LLM timeout)
-      if (attempt < retries && (res.status === 401 || res.status === 502 || res.status === 503 || res.status === 504)) {
-        await new Promise<void>((r) => setTimeout(r, 3000));
+      // Retry transient upstream/proxy/rate-limit failures with bounded exponential backoff.
+      if (attempt < retries && (res.status === 401 || res.status === 429 || res.status === 500 || res.status === 502 || res.status === 503 || res.status === 504)) {
+        const backoffMs = Math.min(9000, 1500 * Math.pow(2, attempt));
+        await new Promise<void>((r) => setTimeout(r, backoffMs));
         continue;
       }
       // Surface a helpful message for persistent 401s
@@ -170,19 +171,6 @@ async function streamSection(
     passiveVoiceCount: result.passiveVoiceCount ?? 0,
     unfullfilledHook: result.unfullfilledHook ?? null,
     sequenceBreakCount: result.sequenceBreakCount ?? 0,
-  };
-}
-
-function buildArchitectContentMap(contentMap: ContentMap, includeRawText: boolean): ContentMap {
-  if (includeRawText) return contentMap;
-  // Architect does not need transcript bodies unless oneChapterPerUpload is enabled.
-  // Stripping rawText keeps large projects under request-size/proxy limits.
-  return {
-    ...contentMap,
-    segments: contentMap.segments.map((segment) => ({
-      ...segment,
-      rawText: "",
-    })),
   };
 }
 
@@ -1544,7 +1532,6 @@ export function EbookPipeline({
   const [reviewTab, setReviewTab] = useState<ReviewTab>("manuscript");
   const [sectionAssignments, setSectionAssignments] = useState<SectionAssignment[]>([]);
   const [sourceTranscripts, setSourceTranscripts] = useState<Array<{ label: string; text: string }>>([]);
-  const sourceMapImportRef = useRef<HTMLInputElement | null>(null);
   const isLikelyIOS = useMemo(() => {
     if (typeof navigator === "undefined") return false;
     const ua = navigator.userAgent || "";
@@ -1629,101 +1616,6 @@ export function EbookPipeline({
     setExportUrls(null);
     onManifestReady?.(normalized);
   }, [onManifestReady, recalculateManifestTotal]);
-
-  const persistSourceMapState = useCallback(async (
-    assignments: SectionAssignment[],
-    transcripts?: Array<{ label: string; text: string }>,
-  ) => {
-    const nextTranscripts = transcripts ?? sourceTranscripts;
-    const base = (() => {
-      try {
-        const raw = localStorage.getItem(JOB_STATE_KEY);
-        if (!raw) return savedJobRef.current;
-        return JSON.parse(raw) as EbookJobState;
-      } catch {
-        return savedJobRef.current;
-      }
-    })();
-
-    if (!base) return;
-    const updated: EbookJobState = {
-      ...base,
-      sectionAssignments: assignments,
-      transcripts: nextTranscripts,
-      updatedAt: new Date().toISOString(),
-    };
-    savedJobRef.current = updated;
-    onJobStateChange?.(updated);
-    try { localStorage.setItem(JOB_STATE_KEY, JSON.stringify(updated)); } catch {}
-    try { await saveEbookJob(updated); } catch {}
-  }, [onJobStateChange, sourceTranscripts]);
-
-  const downloadSourceMap = useCallback(() => {
-    if (sectionAssignments.length === 0) {
-      addLog("⚠ Source Map export skipped — no section assignments available");
-      return;
-    }
-    const payload = {
-      version: 1,
-      exportedAt: new Date().toISOString(),
-      jobId: jobIdRef.current,
-      sectionAssignments,
-      transcripts: sourceTranscripts,
-    };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `source-map-${jobIdRef.current}.json`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-    addLog(`✓ Source Map exported — ${sectionAssignments.length} section assignments`);
-  }, [addLog, sectionAssignments, sourceTranscripts]);
-
-  const handleSourceMapUpload = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0] ?? null;
-    if (!file) return;
-    try {
-      const text = await file.text();
-      const parsed = JSON.parse(text) as {
-        sectionAssignments?: unknown;
-        assignments?: unknown;
-        transcripts?: unknown;
-      };
-
-      const assignmentCandidate = parsed.sectionAssignments ?? parsed.assignments ?? [];
-      const assignmentsParsed = SectionAssignmentSchema.array().safeParse(assignmentCandidate);
-      if (!assignmentsParsed.success) {
-        throw new Error("Invalid Source Map file: assignment payload is malformed.");
-      }
-
-      const transcriptEntries = Array.isArray(parsed.transcripts)
-        ? parsed.transcripts
-          .filter((entry): entry is { label?: unknown; text?: unknown } => Boolean(entry && typeof entry === "object"))
-          .map((entry) => ({
-            label: typeof entry.label === "string" ? entry.label : "",
-            text: typeof entry.text === "string" ? entry.text : "",
-          }))
-          .filter((entry) => entry.text.length > 0)
-        : undefined;
-
-      setSectionAssignments(assignmentsParsed.data);
-      if (transcriptEntries && transcriptEntries.length > 0) {
-        setSourceTranscripts(transcriptEntries);
-      }
-      await persistSourceMapState(assignmentsParsed.data, transcriptEntries);
-      setReviewTab("source-map");
-      addLog(`✓ Source Map imported — ${assignmentsParsed.data.length} section assignments`);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Failed to import Source Map";
-      setError(message);
-      addLog(`✗ Source Map import failed: ${message}`);
-    } finally {
-      event.target.value = "";
-    }
-  }, [addLog, persistSourceMapState]);
 
   useEffect(() => {
   if (!ebookManifest && !completedManifest) {
@@ -2466,7 +2358,7 @@ export function EbookPipeline({
       if (!contentMap) {
         setStage("mapping");
         addLog("Mapping content segments…");
-        contentMap = await postJson<ContentMap>("/api/ebook/content-map", { masterTranscript: teachingTranscript, voiceDNA });
+        contentMap = await postJson<ContentMap>("/api/ebook/content-map", { masterTranscript: teachingTranscript, voiceDNA }, 3);
         addLog(`✓ Content mapped — ${contentMap.segments.length} segments, ${contentMap.allQuotes.length} scriptures/quotes`);
         acc.contentMap = contentMap;
         await checkpoint("architecting");
@@ -2479,12 +2371,7 @@ export function EbookPipeline({
       if (!architecture) {
         setStage("architecting");
         addLog("Designing chapter structure…");
-        const architectContentMap = buildArchitectContentMap(contentMap, oneChapterPerUpload);
-        architecture = await postJson<BookArchitecture>("/api/ebook/architect", {
-          contentMap: architectContentMap,
-          voiceDNA,
-          oneChapterPerUpload,
-        });
+        architecture = await postJson<BookArchitecture>("/api/ebook/architect", { contentMap, voiceDNA, oneChapterPerUpload }, 2);
         const totalSections = architecture.chapters.reduce((a, c) => a + c.sections.length, 0);
         addLog(`✓ Architecture: "${architecture.bookTitle}" — ${architecture.chapters.length} chapters, ${totalSections} sections`);
         acc.architecture = architecture;
@@ -3893,63 +3780,28 @@ export function EbookPipeline({
             )}
 
             {reviewTab === "source-map" && (
-              <>
-                <div className="rounded-xl border border-slate-700/40 bg-slate-900/45 p-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <p className="text-xs text-slate-300">
-                      Source Map fallback tools
-                    </p>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={downloadSourceMap}
-                        className="min-h-[48px] rounded-xl border border-violet-400/35 bg-violet-500/10 px-3 py-2 text-sm font-semibold text-violet-100"
-                      >
-                        Download Source Map
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => sourceMapImportRef.current?.click()}
-                        className="min-h-[48px] rounded-xl border border-cyan-400/35 bg-cyan-500/10 px-3 py-2 text-sm font-semibold text-cyan-100"
-                      >
-                        Upload Source Map
-                      </button>
-                      <input
-                        ref={sourceMapImportRef}
-                        type="file"
-                        accept="application/json,.json"
-                        className="sr-only"
-                        onChange={(event) => {
-                          void handleSourceMapUpload(event);
-                        }}
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                <TranscriptSourceMapPanel
-                  chapters={chapters}
-                  sectionAssignments={sectionAssignments}
-                  transcriptEntries={sourceTranscripts}
-                  authorConfig={{ instructions: authorInstructions, targetAudience }}
-                  onSectionBodyChange={(chapterNumber, sectionNumber, body) => {
-                    updateCompletedManifest((current) => ({
-                      ...current,
-                      chapters: current.chapters.map((chapter) => {
-                        if (chapter.number !== chapterNumber) return chapter;
-                        return {
-                          ...chapter,
-                          sections: chapter.sections.map((section) => (
-                            section.sectionNumber === sectionNumber
-                              ? { ...section, body, wordCount: countWords(body) }
-                              : section
-                          )),
-                        };
-                      }),
-                    }));
-                  }}
-                />
-              </>
+              <TranscriptSourceMapPanel
+                chapters={chapters}
+                sectionAssignments={sectionAssignments}
+                transcriptEntries={sourceTranscripts}
+                authorConfig={{ instructions: authorInstructions, targetAudience }}
+                onSectionBodyChange={(chapterNumber, sectionNumber, body) => {
+                  updateCompletedManifest((current) => ({
+                    ...current,
+                    chapters: current.chapters.map((chapter) => {
+                      if (chapter.number !== chapterNumber) return chapter;
+                      return {
+                        ...chapter,
+                        sections: chapter.sections.map((section) => (
+                          section.sectionNumber === sectionNumber
+                            ? { ...section, body, wordCount: countWords(body) }
+                            : section
+                        )),
+                      };
+                    }),
+                  }));
+                }}
+              />
             )}
 
             {/* Start new project */}
