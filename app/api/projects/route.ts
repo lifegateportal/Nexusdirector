@@ -289,6 +289,7 @@ export async function GET(req: NextRequest) {
   try {
     const requestKind = req.nextUrl.searchParams.get("kind");
     const sermonOnly = requestKind === "sermon";
+    const ebookOnly = requestKind === "ebook";
 
     const [workspaceProjects, r2Projects] = await Promise.all([
       listWorkspaceProjects({ sermonOnly }),
@@ -315,8 +316,30 @@ export async function GET(req: NextRequest) {
         sermonAssistant: (project as Record<string, unknown>).sermonAssistant,
       }));
 
+    // Lightweight ebook payload: avoid returning large academy/blueprint/manifest
+    // blobs to the ebook workspace polling loop.
+    const ebookProjects = merged
+      .filter((project) => {
+        const record = project as Record<string, unknown>;
+        return Boolean(record.ebookJobState ?? record.jobState ?? record.ebookManifest);
+      })
+      .map((project) => {
+        const record = project as Record<string, unknown>;
+        return {
+          id: project.id,
+          name: record.name,
+          createdAt: project.createdAt,
+          updatedAt: project.updatedAt,
+          ebookJobState: record.ebookJobState,
+          jobState: record.jobState,
+          publishedSlug: record.publishedSlug,
+          coverImageUrl: record.coverImageUrl,
+          authorImageUrl: record.authorImageUrl,
+        };
+      });
+
     return NextResponse.json(
-      { projects: sermonOnly ? sermonProjects : merged },
+      { projects: sermonOnly ? sermonProjects : ebookOnly ? ebookProjects : merged },
       { headers: { "Cache-Control": "no-store, max-age=0" } },
     );
   } catch (err) {

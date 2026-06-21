@@ -152,6 +152,7 @@ function EbookPageClient() {
   const pendingProjectIdRef = useRef<string | null>(null);
   const autoSaveInFlightRef = useRef(false);
   const queuedAutoSaveRef = useRef<{ name: string; manifest: EbookManifest } | null>(null);
+  const lastCloudSyncAtRef = useRef(0);
 
   const emitSaveTelemetry = useCallback((event: string, data?: Record<string, unknown>) => {
     try {
@@ -170,104 +171,6 @@ function EbookPageClient() {
     void (async () => {
       const localProjects = await listEbookProjects().catch(() => []);
       setProjects(localProjects);
-
-      try {
-        const res = await fetch(`/api/projects?t=${Date.now()}`, { cache: "no-store" });
-        if (!res.ok) return;
-
-        const payload = await res.json() as {
-          projects?: Array<{
-            id?: string;
-            name?: string;
-            createdAt?: string;
-            updatedAt?: string;
-            ebookJobState?: unknown;
-            jobState?: unknown;
-            publishedSlug?: string;
-            coverImageUrl?: string;
-            authorImageUrl?: string;
-          }>;
-        };
-
-        const remote = Array.isArray(payload.projects) ? payload.projects : [];
-        const localById = new Map(localProjects.map((p) => [p.id, p]));
-        let changed = false;
-
-        for (const item of remote) {
-          if (!item.id || !item.name) continue;
-          const sourceJobState = item.ebookJobState ?? item.jobState;
-          if (!sourceJobState) continue;
-
-          const rawState = typeof sourceJobState === "string"
-            ? (() => {
-                try {
-                  return JSON.parse(sourceJobState) as unknown;
-                } catch {
-                  return null;
-                }
-              })()
-            : sourceJobState;
-          if (!rawState || typeof rawState !== "object") continue;
-
-          const record = rawState as Record<string, unknown>;
-          const rawStatus = typeof record.status === "string" ? record.status : "idle";
-          const normalizedState = {
-            ...record,
-            jobId: typeof record.jobId === "string" && record.jobId ? record.jobId : item.id,
-            status: VALID_JOB_STATUSES.has(rawStatus) ? rawStatus : "idle",
-            createdAt: (() => {
-              const source = typeof record.createdAt === "string" ? record.createdAt : item.createdAt;
-              const ts = source ? Date.parse(source) : NaN;
-              return Number.isFinite(ts) ? new Date(ts).toISOString() : new Date().toISOString();
-            })(),
-            updatedAt: (() => {
-              const source = typeof record.updatedAt === "string" ? record.updatedAt : item.updatedAt;
-              const ts = source ? Date.parse(source) : NaN;
-              return Number.isFinite(ts) ? new Date(ts).toISOString() : new Date().toISOString();
-            })(),
-          };
-
-          const parsed = EbookJobStateSchema.safeParse(normalizedState);
-          if (!parsed.success) continue;
-
-          const existing = localById.get(item.id);
-          const localTs = existing ? new Date(existing.updatedAt).getTime() : 0;
-          const remoteTs = new Date(item.updatedAt ?? item.createdAt ?? 0).getTime();
-          const hasRemoteImageUpdates = Boolean(
-            (item.coverImageUrl && !existing?.coverImageUrl) ||
-            (item.authorImageUrl && !existing?.authorImageUrl) ||
-            (item.publishedSlug && !existing?.publishedSlug)
-          );
-          if (existing && localTs >= remoteTs && !hasRemoteImageUpdates) continue;
-
-          const job = parsed.data;
-          const safeChapters = sanitizeChapterDrafts(job.chapters);
-          const normalized: EbookProject = {
-            _version: EBOOK_PROJECT_SCHEMA_VERSION,
-            id: item.id,
-            name: item.name,
-            createdAt: item.createdAt ?? new Date().toISOString(),
-            updatedAt: item.updatedAt ?? new Date().toISOString(),
-            bookTitle: job.architecture?.bookTitle ?? item.name,
-            chapterCount: safeChapters.length,
-            totalWordCount: sumChapterWordCount(safeChapters),
-            status: job.status,
-            jobState: { ...job, chapters: safeChapters },
-            publishedSlug: item.publishedSlug ?? existing?.publishedSlug,
-            coverImageUrl: item.coverImageUrl ?? existing?.coverImageUrl,
-            authorImageUrl: item.authorImageUrl ?? existing?.authorImageUrl,
-          };
-
-          await saveEbookProject(normalized).catch(() => {});
-          changed = true;
-        }
-
-        if (changed) {
-          setProjects(await listEbookProjects());
-        }
-      } catch {
-        // Cloud sync is best-effort; local projects remain usable offline.
-      }
     })();
   }, []);
 
@@ -277,7 +180,7 @@ function EbookPageClient() {
     const syncFromCloud = async () => {
       try {
         const localProjects = await listEbookProjects().catch(() => []);
-        const res = await fetch(`/api/projects?t=${Date.now()}`, { cache: "no-store" });
+        const res = await fetch(`/api/projects?kind=ebook&t=${Date.now()}`, { cache: "no-store" });
         if (!res.ok) return;
 
         const payload = await res.json() as {
@@ -378,7 +281,7 @@ function EbookPageClient() {
 
     void syncFromCloud();
 
-    const intervalMs = isLikelyIOS ? 15000 : 5000;
+    const intervalMs = isLikelyIOS ? 30000 : 12000;
     const timer = setInterval(() => {
       void syncFromCloud();
     }, intervalMs);
@@ -1268,9 +1171,19 @@ function EbookPageClient() {
         return next;
       });
 
+      const now = Date.now();
+      const shouldSyncCloudNow =
+        safeJobState.status === "complete" ||
+        safeJobState.status === "failed" ||
+        now - lastCloudSyncAtRef.current >= 60000;
+
       if (projectSaved || jobSaved || localStorageSaved) {
-        void syncProjectToWorkspaceAndCloud(project);
+        if (shouldSyncCloudNow) {
+          lastCloudSyncAtRef.current = now;
+          void syncProjectToWorkspaceAndCloud(project);
+        }
       } else {
+        lastCloudSyncAtRef.current = now;
         const syncResult = await syncProjectToWorkspaceAndCloud(project);
         if (!syncResult.workspaceSaved && !syncResult.cloudSaved) {
           throw new Error("Autosave failed: no persistence targets succeeded.");
