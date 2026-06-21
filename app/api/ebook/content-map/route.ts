@@ -11,7 +11,8 @@ export const maxDuration = 300;
 // 12 000 covers the vast majority of sermon recordings (~60–90 min) without
 // hitting DeepSeek's context limit, and prevents the truncation that was causing
 // the last ~37 % of each slot to be invisble to segment extraction.
-const MAX_SLOT_WORDS = 12000;
+const MAX_SLOT_WORDS = 9000;
+const SLOT_CONCURRENCY = 2;
 
 // Per-slot extraction schema — NO rawText (LLM must not copy back large text blobs)
 const SlotSegmentExtractSchema = z.object({
@@ -96,7 +97,7 @@ For every scripture or quote mentioned:
 
 DO NOT reproduce large blocks of transcript text. Focus on structure and meaning.`;
 
-async function withTimeout<T>(promise: Promise<T>, label: string, timeoutMs = 60000): Promise<T> {
+async function withTimeout<T>(promise: Promise<T>, label: string, timeoutMs = 90000): Promise<T> {
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
   try {
     return await Promise.race([
@@ -128,6 +129,29 @@ async function withRetry<T>(
   }
   const detail = lastError instanceof Error ? lastError.message : String(lastError ?? "unknown error");
   throw new Error(`${label} failed after retries: ${detail}`);
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  if (items.length === 0) return [];
+  const safeLimit = Math.max(1, Math.min(limit, items.length));
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+
+  const runWorker = async () => {
+    while (true) {
+      const current = nextIndex;
+      if (current >= items.length) return;
+      nextIndex++;
+      results[current] = await worker(items[current], current);
+    }
+  };
+
+  await Promise.all(Array.from({ length: safeLimit }, () => runWorker()));
+  return results;
 }
 
 export async function POST(req: NextRequest) {
@@ -176,8 +200,10 @@ export async function POST(req: NextRequest) {
       dedupedSegs: z.infer<typeof SlotSegmentExtractSchema>[];
     };
 
-    const slotResults: DedupedSlotResult[] = await Promise.all(
-      slotChunks.map(async (chunk): Promise<DedupedSlotResult> => {
+    const slotResults: DedupedSlotResult[] = await mapWithConcurrency(
+      slotChunks,
+      SLOT_CONCURRENCY,
+      async (chunk): Promise<DedupedSlotResult> => {
         const slotWords = chunk.text.split(/\s+/);
         const OVERLAP = 200;
         const chunkRanges: Array<{ start: number; end: number }> = [];
@@ -206,7 +232,7 @@ export async function POST(req: NextRequest) {
                 `${chunk.sourceAudio} segment extraction chunk ${chunkIndex + 1}/${chunkRanges.length}`
               ),
               `${chunk.sourceAudio} chunk ${chunkIndex + 1}/${chunkRanges.length}`,
-              2
+              3
             );
             chunkSegments.push(object.segments);
         }
@@ -223,7 +249,7 @@ export async function POST(req: NextRequest) {
         });
 
         return { chunk, slotWords, dedupedSegs };
-      })
+      }
     );
 
     // ── Assemble segments sequentially so IDs are deterministic ──────────────
