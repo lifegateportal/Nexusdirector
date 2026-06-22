@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { generateObject, generateText } from "ai";
+import { generateObject } from "ai";
 import { z } from "zod";
 import { deepSeekModel } from "@/lib/ai-providers";
 import { WriteSectionRequestSchema } from "@/lib/schemas/ebook";
@@ -8,42 +8,6 @@ import { stripAudienceLanguage } from "@/lib/editorial-style-bible";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
-
-/** Emergency rewrite fallback — fires when the primary structured call fails or returns
- *  empty paragraphs. Uses a simple generateText call to produce clean book prose from
- *  the raw excerpts rather than dumping unedited transcript into the book. */
-async function fallbackSectionBody(input: z.infer<typeof WriteSectionRequestSchema>["assignment"]): Promise<string> {
-  const rawExcerpts = input.transcriptExcerpts
-    .map((e) => e.replace(/\r\n/g, "\n").replace(/\n{3,}/g, "\n\n").replace(/[ \t]{2,}/g, " ").trim())
-    .filter(Boolean)
-    .join("\n\n");
-
-  if (!rawExcerpts) {
-    return (input.keyPoints.filter(Boolean).join(" ") || input.heading).trim();
-  }
-
-  try {
-    const { text } = await generateText({
-      model: deepSeekModel,
-      temperature: 0.5,
-      maxTokens: 1200,
-      system: `You are a professional book editor. Rewrite the raw spoken transcript below into clean, polished book prose.
-
-RULES:
-- Every idea must come from the transcript — zero fabrication
-- Remove all spoken-language artifacts: stutters, false starts ("I mean", "you know", "uh"), repeated words, filler phrases
-- Fix broken grammar and incomplete sentences into proper prose
-- Remove all live-event language: "look at your neighbor", "say amen", "here in this church"
-- Output 3–6 prose paragraphs separated by blank lines — no headings, no markdown
-- Write shorter output rather than invent content`,
-      prompt: `SECTION HEADING: ${input.heading}\n\nRAW TRANSCRIPT:\n${rawExcerpts.slice(0, 4000)}`,
-    });
-    return text.trim() || rawExcerpts;
-  } catch {
-    // Last resort: return the raw excerpts stripped of obvious live-event language
-    return rawExcerpts;
-  }
-}
 
 function normalizeReaderFacingProse(text: string): string {
   return text
@@ -1030,7 +994,10 @@ Now write the section prose:`;
       finalParagraphs = groundedParagraphs;
     }
 
-    const rawBody = finalParagraphs.join("\n\n") || buildStrictBodyFromExcerpts(effectiveExcerpts) || await fallbackSectionBody(assignment);
+    const rawBody = finalParagraphs.join("\n\n") || buildStrictBodyFromExcerpts(effectiveExcerpts);
+    if (!rawBody.trim()) {
+      throw new Error(`No grounded prose produced for Ch${assignment.chapterNumber} §${assignment.sectionNumber}`);
+    }
     const body = stripAudienceLanguage(normalizeReaderFacingProse(rawBody));
     // ── Upgrade 8: Passive voice detection ───────────────────────────────
     const passiveHits = detectPassiveVoice(body);
@@ -1052,15 +1019,9 @@ Now write the section prose:`;
       sequenceBreakCount,
     }, { status: 200 });
   } catch (err) {
-    const strictFallback = buildStrictBodyFromExcerpts(assignment.transcriptExcerpts ?? []);
-    const fallbackBody = stripAudienceLanguage(
-      normalizeReaderFacingProse(strictFallback || await fallbackSectionBody(assignment))
-    );
-    return NextResponse.json({
-      body: fallbackBody,
-      claimLedger: [],
-      fallback: true,
-      error: err instanceof Error && err.message.trim() ? err.message : "Section write used transcript fallback",
-    }, { status: 200 });
+    const message = err instanceof Error && err.message.trim()
+      ? err.message
+      : `Section write failed for Ch${assignment.chapterNumber} §${assignment.sectionNumber}`;
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

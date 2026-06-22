@@ -31,24 +31,8 @@ type HistoryEntry = {
   future: string[];
 };
 
-function tokenize(text: string): string[] {
-  return text
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, " ")
-    .split(/\s+/)
-    .filter((t) => t.length > 2);
-}
-
-function overlapScore(a: string, b: string): number {
-  const ta = tokenize(a);
-  const tb = tokenize(b);
-  if (ta.length === 0 || tb.length === 0) return 0;
-  const bSet = new Set(tb);
-  let hits = 0;
-  for (const token of ta) {
-    if (bSet.has(token)) hits += 1;
-  }
-  return hits / Math.max(ta.length, 1);
+function normalizeForExactMatch(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
 }
 
 function splitParagraphs(body: string): string[] {
@@ -90,7 +74,6 @@ export function TranscriptSourceMapPanel({
   const [rewriteError, setRewriteError] = useState<string | null>(null);
   const [activeExcerptNumber, setActiveExcerptNumber] = useState<number | null>(null);
   const [selectedParagraphIndex, setSelectedParagraphIndex] = useState<number | null>(null);
-  const [showUnusedOnly, setShowUnusedOnly] = useState(false);
   const [historyVersion, setHistoryVersion] = useState(0);
   const [critique, setCritique] = useState<z.infer<typeof CritiqueResponseSchema> | null>(null);
   const [mobileExcerptLimit, setMobileExcerptLimit] = useState(80);
@@ -130,65 +113,27 @@ export function TranscriptSourceMapPanel({
     }
   }, [active, activeKey]);
 
-  const paragraphToExcerpt = useMemo(() => {
-    if (!active) return [] as number[];
-    const paragraphs = splitParagraphs(active.section.body ?? "");
-    return paragraphs.map((paragraph) => {
-      let best = -1;
-      let score = 0;
-      active.assignment.transcriptExcerpts.forEach((excerpt, index) => {
-        const next = overlapScore(paragraph, excerpt);
-        if (next > score) {
-          score = next;
-          best = index;
-        }
-      });
-      return score >= 0.08 ? best : -1;
-    });
-  }, [active]);
-
-  const usedExcerptNumbers = useMemo(() => {
-    const used = new Set<number>();
-    for (const idx of paragraphToExcerpt) {
-      if (idx >= 0) used.add(idx + 1);
-    }
-    return used;
-  }, [paragraphToExcerpt]);
-
-  const skippedExcerptNumbers = useMemo(() => {
-    if (!active) return [] as number[];
-    const skipped: number[] = [];
-    for (let i = 1; i <= active.assignment.transcriptExcerpts.length; i++) {
-      if (!usedExcerptNumbers.has(i)) skipped.push(i);
-    }
-    return skipped;
-  }, [active, usedExcerptNumbers]);
-
   const visibleExcerptIndexes = useMemo(() => {
     if (!active) return [] as number[];
-    const all = active.assignment.transcriptExcerpts.map((_, index) => index);
-    if (!showUnusedOnly) return all;
-    return all.filter((index) => !usedExcerptNumbers.has(index + 1));
-  }, [active, showUnusedOnly, usedExcerptNumbers]);
+    return active.assignment.transcriptExcerpts.map((_, index) => index);
+  }, [active]);
 
   const renderedExcerptIndexes = useMemo(() => {
     if (!isLikelyIOS) return visibleExcerptIndexes;
     return visibleExcerptIndexes.slice(0, mobileExcerptLimit);
   }, [isLikelyIOS, mobileExcerptLimit, visibleExcerptIndexes]);
 
-  const activeSlotLabel = useMemo(() => {
-    if (!active) return "";
-    const ids = active.assignment.sourceSegmentIds ?? [];
-    const inferred = ids.find((id) => id.includes("audio-"));
-    if (!inferred) return "";
-    const match = inferred.match(/audio-\d/);
-    return match ? match[0].replace("audio-", "Slot-") : "";
-  }, [active]);
-
-  const transcriptPreview = useMemo(() => {
-    if (!activeSlotLabel) return null;
-    return transcriptEntries.find((entry) => entry.label === activeSlotLabel) ?? null;
-  }, [activeSlotLabel, transcriptEntries]);
+  const transcriptPreviewByExcerpt = useMemo(() => {
+    if (!active) return [] as Array<string | null>;
+    return active.assignment.transcriptExcerpts.map((excerpt) => {
+      const normalizedExcerpt = normalizeForExactMatch(excerpt);
+      if (!normalizedExcerpt) return null;
+      const hit = transcriptEntries.find((entry) =>
+        normalizeForExactMatch(entry.text).includes(normalizedExcerpt)
+      );
+      return hit?.label ?? null;
+    });
+  }, [active, transcriptEntries]);
 
   const activeHistory = useMemo(() => {
     if (!active || !activeKey) return null;
@@ -311,7 +256,7 @@ export function TranscriptSourceMapPanel({
         </select>
         {active && (
           <p className="mt-2 text-xs text-slate-400">
-            {usedExcerptNumbers.size} used • {skippedExcerptNumbers.length} skipped • {active.assignment.transcriptExcerpts.length} total excerpts
+            {selectedExcerptNumbers.size} selected for rewrite • {active.assignment.transcriptExcerpts.length} total excerpts
           </p>
         )}
         {active && (
@@ -372,18 +317,15 @@ export function TranscriptSourceMapPanel({
               {renderedExcerptIndexes.map((index) => {
                 const excerpt = active.assignment.transcriptExcerpts[index];
                 const number = index + 1;
-                const isUsed = usedExcerptNumbers.has(number);
-                const isSkipped = !isUsed;
                 const isSelected = selectedExcerptNumbers.has(number);
                 const isActive = activeExcerptNumber === number;
+                const exactSlotLabel = transcriptPreviewByExcerpt[index];
                 return (
                   <div
                     key={number}
                     className={[
                       "rounded-xl border px-3 py-3",
-                      isSkipped
-                        ? "border-amber-400/45 bg-amber-500/10"
-                        : isActive
+                      isActive
                         ? "border-cyan-400/50 bg-cyan-500/10"
                         : "border-slate-700/60 bg-slate-950/70",
                     ].join(" ")}
@@ -396,37 +338,34 @@ export function TranscriptSourceMapPanel({
                       >
                         Excerpt {number}
                       </button>
-                      <span
+                      {exactSlotLabel ? (
+                        <span className="rounded-md bg-emerald-500/20 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-emerald-300">
+                          Exact source: {exactSlotLabel}
+                        </span>
+                      ) : (
+                        <span className="rounded-md bg-amber-500/25 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-amber-200">
+                          Exact source not found in transcript entries
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedExcerptNumbers((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(number)) next.delete(number);
+                            else next.add(number);
+                            return next;
+                          });
+                        }}
                         className={[
-                          "rounded-md px-2 py-1 text-[10px] font-semibold uppercase tracking-wide",
-                          isUsed
-                            ? "bg-emerald-500/20 text-emerald-300"
-                            : "bg-amber-500/30 text-amber-100",
+                          "min-h-[48px] rounded-lg border px-2.5 text-xs font-semibold",
+                          isSelected
+                            ? "border-cyan-400/50 bg-cyan-500/15 text-cyan-200"
+                            : "border-slate-600/60 text-slate-200",
                         ].join(" ")}
                       >
-                        {isUsed ? "Used" : "Unused source"}
-                      </span>
-                      {isSkipped && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setSelectedExcerptNumbers((prev) => {
-                              const next = new Set(prev);
-                              if (next.has(number)) next.delete(number);
-                              else next.add(number);
-                              return next;
-                            });
-                          }}
-                          className={[
-                            "min-h-[48px] rounded-lg border px-2.5 text-xs font-semibold",
-                            isSelected
-                              ? "border-cyan-400/50 bg-cyan-500/15 text-cyan-200"
-                              : "border-slate-600/60 text-slate-200",
-                          ].join(" ")}
-                        >
-                          {isSelected ? "Will include" : "Include in rewrite"}
-                        </button>
-                      )}
+                        {isSelected ? "Will include" : "Include in rewrite"}
+                      </button>
                     </div>
                     <p className="text-sm leading-relaxed text-slate-300">{excerpt}</p>
                   </div>
@@ -449,15 +388,12 @@ export function TranscriptSourceMapPanel({
 
             <div className="mb-3 max-h-[30dvh] space-y-2 overflow-y-auto rounded-xl border border-slate-700/60 bg-slate-950/70 p-3 lg:max-h-[24dvh]">
               {splitParagraphs(active.section.body ?? "").map((paragraph, index) => {
-                const mappedIdx = paragraphToExcerpt[index];
-                const mappedNumber = mappedIdx >= 0 ? mappedIdx + 1 : null;
                 const isSelectedParagraph = selectedParagraphIndex === index;
                 return (
                   <button
                     type="button"
-                    key={`${index}-${mappedNumber ?? "none"}`}
+                    key={`${index}`}
                     onClick={() => {
-                      setActiveExcerptNumber(mappedNumber);
                       setSelectedParagraphIndex(index);
                     }}
                     className={[
@@ -465,18 +401,11 @@ export function TranscriptSourceMapPanel({
                       "min-h-[48px]",
                       isSelectedParagraph
                         ? "border-violet-400/50 bg-violet-500/10"
-                        : mappedNumber === null
-                        ? "border-amber-500/30 bg-amber-500/10"
-                        : activeExcerptNumber === mappedNumber
-                        ? "border-cyan-400/50 bg-cyan-500/10"
                         : "border-slate-700/60 bg-slate-900/60",
                     ].join(" ")}
                   >
                     <div className="mb-1 flex items-center justify-between gap-2">
                       <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Paragraph {index + 1}</span>
-                      <span className="text-[10px] font-semibold text-cyan-200">
-                        {mappedNumber ? `Uses excerpt ${mappedNumber}` : "No clear source match"}
-                      </span>
                     </div>
                     <p className="line-clamp-3 text-sm leading-relaxed text-slate-300">{paragraph}</p>
                   </button>
