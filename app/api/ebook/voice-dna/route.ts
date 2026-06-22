@@ -6,6 +6,40 @@ import { VoiceDNARequestSchema, VoiceDNASchema } from "@/lib/schemas/ebook";
 export const runtime = "nodejs";
 export const maxDuration = 120;
 
+async function withTimeout<T>(promise: Promise<T>, label: string, timeoutMs = 70000): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs / 1000}s`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+}
+
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  label: string,
+  retries = 2,
+): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastError = err;
+      if (attempt >= retries) break;
+      const backoffMs = Math.min(7000, 1000 * Math.pow(2, attempt));
+      await new Promise<void>((resolve) => setTimeout(resolve, backoffMs));
+    }
+  }
+  const detail = lastError instanceof Error ? lastError.message : String(lastError ?? "unknown error");
+  throw new Error(`${label} failed after retries: ${detail}`);
+}
+
 export async function POST(req: NextRequest) {
   const body = await req.json() as unknown;
   let input;
@@ -31,11 +65,12 @@ export async function POST(req: NextRequest) {
   ].join("\n\n---\n\n");
 
   try {
-    const { text } = await generateText({
-      model: deepSeekModel,
-      temperature: 0.2,
-      maxTokens: 5120,
-      system: `You are a master linguist and voice analyst who profiles published authors for professional ghostwriting engagements.
+    const { text } = await withRetry(
+      () => withTimeout(generateText({
+        model: deepSeekModel,
+        temperature: 0.2,
+        maxTokens: 3200,
+        system: `You are a master linguist and voice analyst who profiles published authors for professional ghostwriting engagements.
 Your task: extract a precise, multi-dimensional Voice DNA from the provided transcript sample.
 
 CARDINAL RULE: Extract ONLY patterns directly evidenced in this transcript.
@@ -132,8 +167,11 @@ Respond with ONLY a valid JSON object — no markdown fences, no commentary — 
   "openingPattern": "...",
   "closingPattern": "..."
 }`,
-      prompt: `Extract the author's Voice DNA from this transcript sample:\n\n${sampleTranscript}`,
-    });
+        prompt: `Extract the author's Voice DNA from this transcript sample:\n\n${sampleTranscript}`,
+      }), "voice-dna generation"),
+      "voice-dna extraction",
+      2
+    );
 
     // Extract the first {...} JSON block — handles leading text, code fences, or truncation artifacts
     const jsonMatch = text.match(/\{[\s\S]*\}/);

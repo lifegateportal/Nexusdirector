@@ -11,8 +11,10 @@ export const maxDuration = 300;
 // 12 000 covers the vast majority of sermon recordings (~60–90 min) without
 // hitting DeepSeek's context limit, and prevents the truncation that was causing
 // the last ~37 % of each slot to be invisble to segment extraction.
-const MAX_SLOT_WORDS = 9000;
+const MAX_SLOT_WORDS = 7000;
 const SLOT_CONCURRENCY = 2;
+const MAX_SYNTHESIS_LINES = 90;
+const MAX_SYNTHESIS_CHARS = 18000;
 
 // Per-slot extraction schema — NO rawText (LLM must not copy back large text blobs)
 const SlotSegmentExtractSchema = z.object({
@@ -310,9 +312,13 @@ export async function POST(req: NextRequest) {
       (s) => !s.topic.includes("[NON-TEACHING") && s.estimatedWordCount > 0
     );
 
-    const topicSummary = teachingSegments
+    const topicLines = teachingSegments
       .map((s) => `- [${s.sourceAudio}] ${s.topic}: ${s.keyPoints.join("; ")}`)
-      .join("\n");
+      .slice(0, MAX_SYNTHESIS_LINES);
+    let topicSummary = topicLines.join("\n");
+    if (topicSummary.length > MAX_SYNTHESIS_CHARS) {
+      topicSummary = topicSummary.slice(0, MAX_SYNTHESIS_CHARS);
+    }
 
     const { object: synthesis } = await withRetry(
       () => generateObject({

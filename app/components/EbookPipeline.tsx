@@ -110,6 +110,11 @@ async function postJson<T>(url: string, body: unknown, retries = 1): Promise<T> 
       });
     } catch (err) {
       const cause = err instanceof Error ? err.message : "Unknown network failure";
+      if (attempt < retries) {
+        const backoffMs = Math.min(9000, 1500 * Math.pow(2, attempt));
+        await new Promise<void>((r) => setTimeout(r, backoffMs));
+        continue;
+      }
       throw new Error([`Request failed: ${route}`, `Cause: ${cause}`].join("\n"));
     }
     if (!res.ok) {
@@ -2320,29 +2325,14 @@ export function EbookPipeline({
       let filteredTranscript = (acc as EbookJobState & { filteredTranscript?: string }).filteredTranscript ?? "";
       if (!filteredTranscript) {
         setStage("filtering");
-        addLog("Running final combined signal filter pass…");
-        try {
-          type FilterResult = { cleanedTranscript: string; removedSegments: { reason: string; excerpt: string }[]; summary: string };
-          const filterResult = await postJson<FilterResult>("/api/ebook/filter-signal", { masterTranscript });
-          filteredTranscript = filterResult.cleanedTranscript || masterTranscript;
-          const removedCount = filterResult.removedSegments.length;
-          if (removedCount > 0) {
-            addLog(`✓ Final filter — removed ${removedCount} additional block${removedCount !== 1 ? "s" : ""}: ${filterResult.summary}`);
-          } else {
-            addLog("✓ Final filter pass — no additional non-teaching content found");
-          }
-          setSignalFilterState("applied");
-          setSignalFilterDetail(filterResult.summary || null);
-          (acc as EbookJobState & { filteredTranscript: string; filterRemovedCount: number }).filteredTranscript = filteredTranscript;
-          (acc as EbookJobState & { filteredTranscript: string; filterRemovedCount: number }).filterRemovedCount = removedCount;
-        } catch (filterErr) {
-          // Non-fatal: if filtering fails, proceed with the per-slot-filtered transcript
-          filteredTranscript = masterTranscript;
-          const detail = filterErr instanceof Error ? filterErr.message : "unknown error";
-          setSignalFilterState("skipped");
-          setSignalFilterDetail(detail);
-          addLog(`⚠ Final signal filter unavailable — using per-slot filtered transcript (${detail})`);
-        }
+        // Per-slot filtering already ran above. Re-running a full combined pass
+        // adds latency and duplicate LLM calls; use the assembled transcript here.
+        filteredTranscript = masterTranscript;
+        setSignalFilterState("applied");
+        setSignalFilterDetail("Per-slot signal filter applied");
+        (acc as EbookJobState & { filteredTranscript: string; filterRemovedCount: number }).filteredTranscript = filteredTranscript;
+        (acc as EbookJobState & { filteredTranscript: string; filterRemovedCount: number }).filterRemovedCount = 0;
+        addLog("✓ Signal filter complete (per-slot pass)");
         await checkpoint("analyzing");
       } else {
         setSignalFilterState("applied");
