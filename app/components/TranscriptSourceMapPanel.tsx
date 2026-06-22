@@ -76,6 +76,7 @@ export function TranscriptSourceMapPanel({
   const [selectedParagraphIndex, setSelectedParagraphIndex] = useState<number | null>(null);
   const [historyVersion, setHistoryVersion] = useState(0);
   const [critique, setCritique] = useState<z.infer<typeof CritiqueResponseSchema> | null>(null);
+  const [showUnusedOnly, setShowUnusedOnly] = useState(false);
   const [mobileExcerptLimit, setMobileExcerptLimit] = useState(80);
   const historyRef = useRef<Record<string, HistoryEntry>>({});
 
@@ -118,10 +119,25 @@ export function TranscriptSourceMapPanel({
     return active.assignment.transcriptExcerpts.map((_, index) => index);
   }, [active]);
 
+  const excerptUsedByIndex = useMemo(() => {
+    if (!active) return [] as boolean[];
+    const normalizedBody = normalizeForExactMatch(active.section.body ?? "");
+    if (!normalizedBody) return active.assignment.transcriptExcerpts.map(() => false);
+    return active.assignment.transcriptExcerpts.map((excerpt) => {
+      const normalizedExcerpt = normalizeForExactMatch(excerpt);
+      return normalizedExcerpt ? normalizedBody.includes(normalizedExcerpt) : false;
+    });
+  }, [active]);
+
+  const filteredExcerptIndexes = useMemo(() => {
+    if (!showUnusedOnly) return visibleExcerptIndexes;
+    return visibleExcerptIndexes.filter((index) => !excerptUsedByIndex[index]);
+  }, [excerptUsedByIndex, showUnusedOnly, visibleExcerptIndexes]);
+
   const renderedExcerptIndexes = useMemo(() => {
-    if (!isLikelyIOS) return visibleExcerptIndexes;
-    return visibleExcerptIndexes.slice(0, mobileExcerptLimit);
-  }, [isLikelyIOS, mobileExcerptLimit, visibleExcerptIndexes]);
+    if (!isLikelyIOS) return filteredExcerptIndexes;
+    return filteredExcerptIndexes.slice(0, mobileExcerptLimit);
+  }, [filteredExcerptIndexes, isLikelyIOS, mobileExcerptLimit]);
 
   const transcriptPreviewByExcerpt = useMemo(() => {
     if (!active) return [] as Array<string | null>;
@@ -134,6 +150,14 @@ export function TranscriptSourceMapPanel({
       return hit?.label ?? null;
     });
   }, [active, transcriptEntries]);
+
+  const transcriptPreview = useMemo(() => {
+    if (activeExcerptNumber === null) return null;
+    const excerptIndex = activeExcerptNumber - 1;
+    const label = transcriptPreviewByExcerpt[excerptIndex];
+    if (!label) return null;
+    return { label };
+  }, [activeExcerptNumber, transcriptPreviewByExcerpt]);
 
   const activeHistory = useMemo(() => {
     if (!active || !activeKey) return null;
@@ -371,13 +395,18 @@ export function TranscriptSourceMapPanel({
                   </div>
                 );
               })}
-              {isLikelyIOS && renderedExcerptIndexes.length < visibleExcerptIndexes.length && (
+              {renderedExcerptIndexes.length === 0 && (
+                <p className="rounded-xl border border-slate-700/60 bg-slate-950/70 px-3 py-2 text-sm text-slate-400">
+                  {showUnusedOnly ? "No unused excerpts found for this section." : "No excerpts available for this section."}
+                </p>
+              )}
+              {isLikelyIOS && renderedExcerptIndexes.length < filteredExcerptIndexes.length && (
                 <button
                   type="button"
                   onClick={() => setMobileExcerptLimit((v) => v + 80)}
                   className="min-h-[48px] w-full rounded-xl border border-slate-600/60 bg-slate-900/70 px-3 py-2 text-sm font-semibold text-slate-200"
                 >
-                  Load more excerpts ({renderedExcerptIndexes.length}/{visibleExcerptIndexes.length})
+                  Load more excerpts ({renderedExcerptIndexes.length}/{filteredExcerptIndexes.length})
                 </button>
               )}
             </div>
