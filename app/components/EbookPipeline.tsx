@@ -105,6 +105,8 @@ async function postJson<T>(url: string, body: unknown, retries = 1): Promise<T> 
   const route = routeLabel(url);
   for (let attempt = 0; attempt <= retries; attempt++) {
     let res: Response;
+    const skippedFilterSlots: string[] = [];
+
     try {
       res = await fetch(url, {
         method: "POST",
@@ -2403,7 +2405,6 @@ export function EbookPipeline({
       if (!masterTranscript) {
         type FilterResult = { cleanedTranscript: string; removedSegments: { reason: string; excerpt: string }[]; summary: string };
         const transcriptResults: { label: string; text: string }[] = [];
-        const skippedFilterSlots: string[] = [];
         setStage("filtering");
         for (let i = 0; i < 6; i++) {
           if (!audioFiles[i] && !transcriptFiles[i]) continue;
@@ -4040,7 +4041,15 @@ export function EbookPipeline({
             <button
               type="button"
               onClick={() => {
-                const saved = savedJobRef.current!;
+                const saved = (() => {
+                  try {
+                    const raw = localStorage.getItem(JOB_STATE_KEY);
+                    if (!raw) return savedJobRef.current!;
+                    return normalizeJob(JSON.parse(raw) as EbookJobState);
+                  } catch {
+                    return savedJobRef.current!;
+                  }
+                })();
                 setError(null);
                 setSignalFilterState(parseSignalFilterLog(saved.errorLog ?? []).state);
                 setSignalFilterDetail(parseSignalFilterLog(saved.errorLog ?? []).detail);
