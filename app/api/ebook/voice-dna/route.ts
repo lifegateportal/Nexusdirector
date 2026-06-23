@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { generateObject, generateText } from "ai";
+import { generateText } from "ai";
 import { deepSeekModel } from "@/lib/ai-providers";
 import { VoiceDNARequestSchema, VoiceDNASchema } from "@/lib/schemas/ebook";
 
@@ -7,25 +7,62 @@ export const runtime = "nodejs";
 export const maxDuration = 120;
 
 function parseVoiceDnaJson(text: string): Record<string, unknown> {
-  const match = text.match(/\{[\s\S]*\}/);
+  // Remove markdown code fences if present
+  let cleaned = text.replace(/```json\s*/gi, "").replace(/```\s*/g, "").trim();
+  
+  const match = cleaned.match(/\{[\s\S]*\}/);
   if (!match) {
     throw new Error("Voice DNA response contained no JSON object");
   }
-  const rawBlock = match[0];
+  
+  let rawBlock = match[0];
+  
   try {
     return JSON.parse(rawBlock) as Record<string, unknown>;
-  } catch {
-    let partial = rawBlock;
-    const openArrays = (partial.match(/\[/g) ?? []).length - (partial.match(/\]/g) ?? []).length;
-    const openObjects = (partial.match(/\{/g) ?? []).length - (partial.match(/\}/g) ?? []).length;
-    partial = partial.replace(/,\s*$/, "").replace(/,\s*"[^"]*$/, "");
-    partial += "]".repeat(Math.max(0, openArrays)) + "}".repeat(Math.max(0, openObjects));
-    return JSON.parse(partial) as Record<string, unknown>;
+  } catch (parseErr) {
+    // Attempt repair for truncated JSON
+    try {
+      const openArrays = (rawBlock.match(/\[/g) ?? []).length - (rawBlock.match(/\]/g) ?? []).length;
+      const openObjects = (rawBlock.match(/\{/g) ?? []).length - (rawBlock.match(/\}/g) ?? []).length;
+      
+      // Remove trailing incomplete tokens
+      rawBlock = rawBlock.replace(/,\s*$/, "").replace(/,\s*"[^"]*$/, "").replace(/:\s*"[^"]*$/, ": \"\"");
+      
+      // Close unclosed structures
+      rawBlock += "]".repeat(Math.max(0, openArrays)) + "}".repeat(Math.max(0, openObjects));
+      
+      return JSON.parse(rawBlock) as Record<string, unknown>;
+    } catch {
+      // If repair fails, throw original error
+      throw parseErr;
+    }
   }
 }
 
 function normalizeVoiceDna(raw: Record<string, unknown>) {
-  const normalized = { ...raw };
+  const normalized: Record<string, unknown> = {
+    signaturePhrases: [],
+    preferredTerminology: [],
+    toneProfile: "conversational, direct",
+    sentencePattern: "mixed",
+    rhetoricalPatterns: [],
+    teachingStyle: "Builds teaching points from scripture and practical application.",
+    avoidWords: [
+      "In conclusion", "delve into", "tapestry", "navigating", "Furthermore",
+      "Moreover", "It is crucial", "At the end of the day", "Game-changer",
+      "Paradigm shift", "Deep dive", "Unpack", "Moving forward", "Robust",
+      "Leverage", "Synergy", "profoundly", "transformative"
+    ],
+    vocabularyLevel: "conversational",
+    pacingFingerprint: "Alternates between explanation and direct application.",
+    narrativeDevice: "Uses examples to illustrate principles.",
+    emotionalArc: "Builds from challenge to encouragement.",
+    vernacularMarkers: [],
+    avoidStructures: [],
+    openingPattern: "Opens with direct claim or question.",
+    closingPattern: "Closes with practical application.",
+    ...raw,
+  };
 
   if (typeof normalized.sentencePattern === "string") {
     const sp = normalized.sentencePattern.toLowerCase();
@@ -45,45 +82,13 @@ function normalizeVoiceDna(raw: Record<string, unknown>) {
   if (Array.isArray(normalized.signaturePhrases)) normalized.signaturePhrases = normalized.signaturePhrases.slice(0, 8);
   if (Array.isArray(normalized.preferredTerminology)) normalized.preferredTerminology = normalized.preferredTerminology.slice(0, 10);
   if (Array.isArray(normalized.rhetoricalPatterns)) normalized.rhetoricalPatterns = normalized.rhetoricalPatterns.slice(0, 6);
-  if (Array.isArray(normalized.avoidWords)) normalized.avoidWords = normalized.avoidWords.slice(0, 30);
+  if (Array.isArray(normalized.avoidWords)) {
+    normalized.avoidWords = normalized.avoidWords.slice(0, 30);
+  }
   if (Array.isArray(normalized.vernacularMarkers)) normalized.vernacularMarkers = normalized.vernacularMarkers.slice(0, 10);
   if (Array.isArray(normalized.avoidStructures)) normalized.avoidStructures = normalized.avoidStructures.slice(0, 10);
 
   return VoiceDNASchema.parse(normalized);
-}
-
-async function withTimeout<T>(promise: Promise<T>, label: string, timeoutMs = 70000): Promise<T> {
-  let timeoutId: ReturnType<typeof setTimeout> | null = null;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<T>((_, reject) => {
-        timeoutId = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs / 1000}s`)), timeoutMs);
-      }),
-    ]);
-  } finally {
-    if (timeoutId) clearTimeout(timeoutId);
-  }
-}
-
-async function withRetry<T>(
-  fn: () => Promise<T>,
-  label: string,
-  retries = 2,
-): Promise<T> {
-  let lastError: unknown;
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    try {
-      return await fn();
-    } catch (err) {
-      lastError = err;
-      if (attempt >= retries) break;
-      const backoffMs = Math.min(7000, 1000 * Math.pow(2, attempt));
-      await new Promise<void>((resolve) => setTimeout(resolve, backoffMs));
-    }
-  }
-  const detail = lastError instanceof Error ? lastError.message : String(lastError ?? "unknown error");
-  throw new Error(`${label} failed after retries: ${detail}`);
 }
 
 export async function POST(req: NextRequest) {
@@ -110,62 +115,30 @@ export async function POST(req: NextRequest) {
     "[END]\n" + endSample,
   ].join("\n\n---\n\n");
 
-  const compactPrompt = `Extract Voice DNA from transcript evidence only.
-Return JSON with keys:
-signaturePhrases, preferredTerminology, toneProfile, sentencePattern, rhetoricalPatterns,
-teachingStyle, avoidWords, vocabularyLevel, pacingFingerprint, narrativeDevice,
-emotionalArc, vernacularMarkers, avoidStructures, openingPattern, closingPattern.
-Rules:
-- sentencePattern must be one of: short-punchy, long-explanatory, mixed
-- vocabularyLevel must be one of: conversational, pastoral, academic, technical
-- Max items: signaturePhrases 8, preferredTerminology 10, rhetoricalPatterns 6, avoidWords 30, vernacularMarkers 10, avoidStructures 10
-- JSON only.`;
-
   try {
-    const { object } = await withRetry(
-      () => withTimeout(
-        generateObject({
-          model: deepSeekModel,
-          schema: VoiceDNASchema,
-          mode: "json",
-          temperature: 0.15,
-          maxTokens: 1400,
-          prompt: `${compactPrompt}\n\nTranscript sample:\n${sampleTranscript}`,
-        }),
-        "voice-dna generateObject"
-      ),
-      "voice-dna generateObject",
-      1
-    );
-    return NextResponse.json(VoiceDNASchema.parse(object), { status: 200 });
+    const { text } = await generateText({
+      model: deepSeekModel,
+      temperature: 0.2,
+      maxTokens: 2000,
+      system: `Extract voice profile from transcript. Return JSON only.
+Required fields: signaturePhrases (array, max 8), preferredTerminology (array, max 10), toneProfile (string), sentencePattern (must be: "short-punchy" or "long-explanatory" or "mixed"), rhetoricalPatterns (array, max 6), teachingStyle (string), avoidWords (array, max 30), vocabularyLevel (must be: "conversational" or "pastoral" or "academic" or "technical"), pacingFingerprint (string), narrativeDevice (string), emotionalArc (string), vernacularMarkers (array, max 10), avoidStructures (array, max 10), openingPattern (string), closingPattern (string).
+Extract only from evidence in transcript. No markdown, no explanation.`,
+      prompt: `Transcript sample:\n\n${sampleTranscript}`,
+    });
+
+    const parsed = parseVoiceDnaJson(text);
+    const validated = normalizeVoiceDna(parsed);
+    return NextResponse.json(validated, { status: 200 });
   } catch (err) {
-    try {
-      const { text } = await withRetry(
-        () => withTimeout(
-          generateText({
-            model: deepSeekModel,
-            temperature: 0.15,
-            maxTokens: 1600,
-            prompt: `${compactPrompt}\n\nTranscript sample:\n${sampleTranscript}`,
-          }),
-          "voice-dna generateText"
-        ),
-        "voice-dna generateText",
-        1
-      );
-      const parsed = parseVoiceDnaJson(text);
-      return NextResponse.json(normalizeVoiceDna(parsed), { status: 200 });
-    } catch (fallbackErr) {
-      const primary = err instanceof Error ? err.message : String(err);
-      const secondary = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
-      return NextResponse.json(
-        {
-          route: "ebook/voice-dna",
-          error: "Voice DNA extraction failed",
-          details: `Primary path: ${primary} | Fallback path: ${secondary}`,
-        },
-        { status: 502 }
-      );
-    }
+    const message = err instanceof Error ? err.message : "Voice DNA extraction failed";
+    console.error("[voice-dna] Error:", message);
+    return NextResponse.json(
+      {
+        route: "ebook/voice-dna",
+        error: "Voice DNA extraction failed",
+        details: message,
+      },
+      { status: 502 }
+    );
   }
 }
