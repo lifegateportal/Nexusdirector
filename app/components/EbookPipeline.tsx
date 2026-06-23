@@ -105,7 +105,6 @@ async function postJson<T>(url: string, body: unknown, retries = 1): Promise<T> 
   const route = routeLabel(url);
   for (let attempt = 0; attempt <= retries; attempt++) {
     let res: Response;
-    const skippedFilterSlots: string[] = [];
 
     try {
       res = await fetch(url, {
@@ -2399,6 +2398,8 @@ export function EbookPipeline({
     // Persist immediately so Save Project works from the first running stage.
     await checkpoint("transcribing");
 
+    const skippedFilterSlots: string[] = [];
+
     try {
       // ── Stage 1: Transcribe (skip if resuming with existing transcript) ────
       let masterTranscript = acc.masterTranscript;
@@ -3426,17 +3427,28 @@ export function EbookPipeline({
   // ─── Render ──────────────────────────────────────────────────────────────
 
   const isRunning = stage !== "idle" && stage !== "complete" && stage !== "failed";
+  const resumeCandidate = (() => {
+    if (savedJobRef.current) return savedJobRef.current;
+    if (typeof window === "undefined") return null;
+    try {
+      const raw = localStorage.getItem(JOB_STATE_KEY);
+      if (!raw) return null;
+      return normalizeJob(JSON.parse(raw) as EbookJobState);
+    } catch {
+      return null;
+    }
+  })();
   const hasResumableState = Boolean(
-    savedJobRef.current && (
-      savedJobRef.current.masterTranscript ||
-      savedJobRef.current.transcripts.length > 0 ||
-      savedJobRef.current.voiceDNA ||
-      savedJobRef.current.contentMap ||
-      savedJobRef.current.architecture ||
-      savedJobRef.current.sectionAssignments.length > 0 ||
-      savedJobRef.current.sections.length > 0 ||
-      savedJobRef.current.chapters.length > 0 ||
-      savedJobRef.current.frontMatter
+    resumeCandidate && (
+      resumeCandidate.masterTranscript ||
+      (resumeCandidate.transcripts?.length ?? 0) > 0 ||
+      resumeCandidate.voiceDNA ||
+      resumeCandidate.contentMap ||
+      resumeCandidate.architecture ||
+      (resumeCandidate.sectionAssignments?.length ?? 0) > 0 ||
+      (resumeCandidate.sections?.length ?? 0) > 0 ||
+      (resumeCandidate.chapters?.length ?? 0) > 0 ||
+      resumeCandidate.frontMatter
     )
   );
 
@@ -4041,15 +4053,8 @@ export function EbookPipeline({
             <button
               type="button"
               onClick={() => {
-                const saved = (() => {
-                  try {
-                    const raw = localStorage.getItem(JOB_STATE_KEY);
-                    if (!raw) return savedJobRef.current!;
-                    return normalizeJob(JSON.parse(raw) as EbookJobState);
-                  } catch {
-                    return savedJobRef.current!;
-                  }
-                })();
+                const saved = resumeCandidate;
+                if (!saved) return;
                 setError(null);
                 setSignalFilterState(parseSignalFilterLog(saved.errorLog ?? []).state);
                 setSignalFilterDetail(parseSignalFilterLog(saved.errorLog ?? []).detail);
@@ -4063,7 +4068,8 @@ export function EbookPipeline({
               className="w-full min-h-[48px] rounded-xl bg-gradient-to-r from-amber-500/80 to-orange-500/80 text-white font-semibold text-sm active:scale-[0.98] transition-all"
             >
               {(() => {
-                const saved = savedJobRef.current!;
+                const saved = resumeCandidate;
+                if (!saved) return "Resume pipeline";
                 if (!saved.voiceDNA) return "Resume — retry from Voice DNA";
                 if (!saved.contentMap) return "Resume — retry from Content Map";
                 if (!saved.architecture) return "Resume — retry from Chapter Design";
