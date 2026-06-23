@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { generateText } from "ai";
+import { generateObject } from "ai";
 import { deepSeekModel } from "@/lib/ai-providers";
 import { z } from "zod";
 import { PolishChapterRequestSchema } from "@/lib/schemas/ebook";
@@ -23,42 +23,34 @@ const PolishOutputSchema = z.object({
   })).default([]),
 });
 
-function fallbackPolishOutput(chapter: z.infer<typeof PolishChapterRequestSchema>["input"]): z.infer<typeof PolishOutputSchema> {
-  const sections = chapter.sections ?? [];
-  const firstBody = sections.map((section) => (section.body ?? "").trim()).find(Boolean) ?? "";
-  const lastBody = [...sections].reverse().map((section) => (section.body ?? "").trim()).find(Boolean) ?? "";
+async function withTimeout<T>(promise: Promise<T>, label: string, timeoutMs = 80000): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs / 1000}s`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+}
 
-  const takeaways = sections
-    .map((section) => section.heading)
-    .map((item) => item.trim())
-    .filter(Boolean)
-    .slice(0, 5);
-
-  const reflectionQuestions = takeaways.length > 0
-    ? takeaways.slice(0, 3).map((item) => `How does ${item.replace(/[.?!]+$/g, "")} shape the chapter's message?`)
-    : [
-        `What is the main message of chapter ${chapter.number}?`,
-        `How do the section themes build on each other in chapter ${chapter.number}?`,
-        `What should the reader carry forward from this chapter?`,
-      ];
-
-  // Intro: derive from headings and key points — never copy the body prose.
-  const headingsSummary = sections
-    .map((s) => s.heading?.trim())
-    .filter(Boolean)
-    .join(", ");
-  const fallbackIntro = headingsSummary
-    ? `This chapter examines: ${headingsSummary}.`
-    : chapter.title || "";
-
-  return {
-    intro: stripAudienceLanguage(fallbackIntro),
-    forwardQuestion: "",
-    epigraph: "",
-    sectionTransitions: [],
-    keyTakeaways: takeaways.length > 0 ? takeaways.map((item) => stripAudienceLanguage(item)) : [stripAudienceLanguage(chapter.title || "")].filter(Boolean),
-    reflectionQuestions: reflectionQuestions.map((item) => stripAudienceLanguage(item)).filter(Boolean),
-  };
+async function withRetry<T>(fn: () => Promise<T>, label: string, retries = 2): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastError = err;
+      if (attempt >= retries) break;
+      const backoffMs = Math.min(9000, 1200 * Math.pow(2, attempt));
+      await new Promise<void>((resolve) => setTimeout(resolve, backoffMs));
+    }
+  }
+  const detail = lastError instanceof Error ? lastError.message : String(lastError ?? "unknown error");
+  throw new Error(`${label} failed after retries: ${detail}`);
 }
 
 export async function POST(req: NextRequest) {
@@ -128,10 +120,11 @@ export async function POST(req: NextRequest) {
         }).join("\n")}`
       : "";
 
-    let object: z.infer<typeof PolishOutputSchema>;
-    try {
-      const { text } = await generateText({
+    const { object } = await withRetry(
+      () => withTimeout(generateObject({
         model: deepSeekModel,
+        schema: PolishOutputSchema,
+        mode: "tool",
         temperature: 0.2,
         system: `You are an editorial assistant finalizing a chapter of a published teaching book.
 
@@ -183,16 +176,10 @@ ${PREMIUM_BOOK_STYLE_RULES}${authorConfigBlock}
 Respond with ONLY a valid JSON object — no markdown, no code blocks, no explanation:
 {"intro":"...","forwardQuestion":"...","keyTakeaways":["..."],"reflectionQuestions":["..."],"epigraph":"...","sectionTransitions":[{"sectionNumber":1,"revisedLastSentence":"..."}]}`,
         prompt: `Finalize this chapter.\n\nCHAPTER ${chapter.number}: ${chapter.title}\n\nVOICE DNA:\n${JSON.stringify(voiceDNASlim)}\n\nSECTION SUMMARIES:\n${sectionsSummary}${epigraphCandidates ? `\n\nSCRIPTURE CANDIDATES FOR EPIGRAPH (pick the most resonant ONE, or return empty string if none fits):\n${epigraphCandidates}` : ""}${prevChapterBlock}${chapterPremiseBlock}${seriesArcBlock}${sectionBoundariesBlock}`,
-      });
-      const _jsonMatch = text.match(/\{[\s\S]*\}/);
-      object = PolishOutputSchema.parse(_jsonMatch ? JSON.parse(_jsonMatch[0]) : {});
-    } catch {
-      try {
-        object = fallbackPolishOutput(chapter);
-      } catch {
-        object = { intro: "", forwardQuestion: "", keyTakeaways: [], reflectionQuestions: [], epigraph: "", sectionTransitions: [] };
-      }
-    }
+      }), "chapter polish generation"),
+      "chapter polish",
+      2
+    );
 
     // Merge: preserve section bodies that were already written
     // ── Upgrade 14: Epigraph source credibility flag ─────────────────────
@@ -242,6 +229,10 @@ Respond with ONLY a valid JSON object — no markdown, no code blocks, no explan
     return NextResponse.json(merged, { status: 200 });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Chapter polish failed";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return NextResponse.json({
+      route: "ebook/polish",
+      error: "Chapter polish failed",
+      details: message,
+    }, { status: 502 });
   }
 }

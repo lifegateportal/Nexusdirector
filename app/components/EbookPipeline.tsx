@@ -2415,7 +2415,7 @@ export function EbookPipeline({
           let slotText = rawText;
           try {
             addLog(`  Filtering ${label} signal…`);
-            const slotFilter = await postJson<FilterResult>("/api/ebook/filter-signal", { masterTranscript: rawText });
+            const slotFilter = await postJson<FilterResult>("/api/ebook/filter-signal", { masterTranscript: rawText }, 2);
             slotText = slotFilter.cleanedTranscript || rawText;
             const rawWords = countWords(rawText);
             const cleanWords = countWords(slotText);
@@ -2500,7 +2500,7 @@ export function EbookPipeline({
       if (!voiceDNA) {
         setStage("analyzing");
         addLog("Extracting Voice DNA…");
-        voiceDNA = await postJson<VoiceDNA>("/api/ebook/voice-dna", { masterTranscript: teachingTranscript });
+        voiceDNA = await postJson<VoiceDNA>("/api/ebook/voice-dna", { masterTranscript: teachingTranscript }, 2);
         addLog(`✓ Voice DNA captured — tone: ${voiceDNA.toneProfile}`);
         acc.voiceDNA = voiceDNA;
         await checkpoint("mapping");
@@ -2527,7 +2527,7 @@ export function EbookPipeline({
         setStage("architecting");
         addLog("Designing chapter structure…");
         const architectContentMap = buildArchitectContentMap(contentMap, oneChapterPerUpload);
-        architecture = await postJson<BookArchitecture>("/api/ebook/architect", { contentMap: architectContentMap, voiceDNA, oneChapterPerUpload }, 2);
+        architecture = await postJson<BookArchitecture>("/api/ebook/architect", { contentMap: architectContentMap, voiceDNA, oneChapterPerUpload }, 3);
         const totalSections = architecture.chapters.reduce((a, c) => a + c.sections.length, 0);
         addLog(`✓ Architecture: "${architecture.bookTitle}" — ${architecture.chapters.length} chapters, ${totalSections} sections`);
         acc.architecture = architecture;
@@ -2574,7 +2574,8 @@ export function EbookPipeline({
         addLog("Assigning transcript segments to sections…");
         const result = await postJson<{ assignments: SectionAssignment[] }>(
           "/api/ebook/assign-segments",
-          { architecture, contentMap, voiceDNA }
+          { architecture, contentMap, voiceDNA },
+          2
         );
         assignments = result.assignments;
         addLog(`✓ ${assignments.length} section assignments ready`);
@@ -3290,7 +3291,7 @@ export function EbookPipeline({
             })(),
           },
           ...((authorInstructions || targetAudience) ? { authorConfig: { instructions: authorInstructions, targetAudience } } : {}),
-        });
+        }, 2);
 
         // Restore full section bodies that were stripped for the request
         const fullPolished: ChapterDraft = {
@@ -3333,7 +3334,7 @@ export function EbookPipeline({
           architecture,
           voiceDNA,
           ...((authorInstructions || targetAudience) ? { authorConfig: { instructions: authorInstructions, targetAudience } } : {}),
-        });
+        }, 2);
         addLog("✓ Front and back matter complete");
         acc.frontMatter = frontMatter;
         await checkpoint("complete");
@@ -3364,7 +3365,7 @@ export function EbookPipeline({
       // ── Back Matter: glossary, reading group guide, scripture index ─────
       addLog("Generating back matter (glossary, discussion guide, scripture index)…");
       try {
-        const backMatter = await postJson<BackMatter>("/api/ebook/backmatter", { manifest: harmonizedManifest });
+        const backMatter = await postJson<BackMatter>("/api/ebook/backmatter", { manifest: harmonizedManifest }, 2);
         harmonizedManifest.backMatter = backMatter;
         acc.backMatter = backMatter;
         await checkpoint("complete");
