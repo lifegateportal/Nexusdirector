@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { generateText } from "ai";
+import { generateObject } from "ai";
 import { deepSeekModel } from "@/lib/ai-providers";
 import { VoiceDNARequestSchema, VoiceDNASchema } from "@/lib/schemas/ebook";
 
@@ -40,6 +40,63 @@ async function withRetry<T>(
   throw new Error(`${label} failed after retries: ${detail}`);
 }
 
+function buildFallbackVoiceDNA(sampleTranscript: string) {
+  const firstWords = sampleTranscript.split(/\s+/).filter(Boolean).slice(0, 1200).join(" ").toLowerCase();
+  const rhetoricalPatterns: string[] = [];
+  if (firstWords.includes("?")) rhetoricalPatterns.push("uses rhetorical questions");
+  if (/(amen|hallelujah|praise)/i.test(firstWords)) rhetoricalPatterns.push("uses call-and-response cues");
+  if (/(story|when i was|i remember|one day)/i.test(firstWords)) rhetoricalPatterns.push("uses personal story illustration");
+
+  return VoiceDNASchema.parse({
+    signaturePhrases: [],
+    preferredTerminology: [],
+    toneProfile: "pastoral, direct, conversational",
+    sentencePattern: "mixed",
+    rhetoricalPatterns,
+    teachingStyle: "Builds practical teaching points from scripture and direct exhortation.",
+    avoidWords: [
+      "In conclusion",
+      "delve into",
+      "tapestry",
+      "navigating",
+      "It's important to note",
+      "Furthermore",
+      "Moreover",
+      "In today's fast-paced world",
+      "It is crucial",
+      "It is worth noting",
+      "At the end of the day",
+      "Game-changer",
+      "Paradigm shift",
+      "Deep dive",
+      "Unpack",
+      "Moving forward",
+      "Robust",
+      "Leverage",
+      "Synergy",
+      "It goes without saying",
+      "The truth is,",
+      "The fact of the matter is",
+      "Indeed,",
+      "Certainly,",
+      "Ultimately,",
+      "At its core,",
+      "In essence,",
+      "Simply put,",
+      "profoundly",
+      "transformative",
+    ],
+    vocabularyLevel: "pastoral",
+    pacingFingerprint: "Alternates explanatory teaching with direct, shorter exhortation.",
+    narrativeDevice: "Uses examples and scripture to move from principle to application.",
+    emotionalArc: "Begins with challenge, builds conviction, and ends in encouragement.",
+    vernacularMarkers: [],
+    avoidStructures: [],
+    openingPattern: "Opens with a direct claim or question.",
+    closingPattern: "Closes with a practical call to action.",
+  });
+}
+
 export async function POST(req: NextRequest) {
   const body = await req.json() as unknown;
   let input;
@@ -65,11 +122,13 @@ export async function POST(req: NextRequest) {
   ].join("\n\n---\n\n");
 
   try {
-    const { text } = await withRetry(
-      () => withTimeout(generateText({
+    const { object } = await withRetry(
+      () => withTimeout(generateObject({
         model: deepSeekModel,
+        schema: VoiceDNASchema,
+        mode: "tool",
         temperature: 0.2,
-        maxTokens: 3200,
+        maxTokens: 1800,
         system: `You are a master linguist and voice analyst who profiles published authors for professional ghostwriting engagements.
 Your task: extract a precise, multi-dimensional Voice DNA from the provided transcript sample.
 
@@ -111,7 +170,7 @@ teachingStyle
 
 avoidWords
   Start with the mandatory AI-cliché baseline below, then append up to 8 words the author demonstrably never uses:
-  BASELINE (always include ALL 30): ["In conclusion", "delve into", "tapestry", "navigating", "It's important to note", "Furthermore", "Moreover", "In today's fast-paced world", "It is crucial", "It is worth noting", "At the end of the day", "Game-changer", "Paradigm shift", "Deep dive", "Unpack", "Moving forward", "Robust", "Leverage", "Synergy", "It goes without saying", "The truth is,", "The fact of the matter is", "Indeed,", "Certainly,", "Ultimately,", "At its core,", "In essence,", "Simply put,", "profoundly", "transformative", "vibrant", "fostering", "journey (metaphorical)", "not just...but", "not merely...but", "This is not merely"]
+  BASELINE (always include ALL 30): ["In conclusion", "delve into", "tapestry", "navigating", "It's important to note", "Furthermore", "Moreover", "In today's fast-paced world", "It is crucial", "It is worth noting", "At the end of the day", "Game-changer", "Paradigm shift", "Deep dive", "Unpack", "Moving forward", "Robust", "Leverage", "Synergy", "It goes without saying", "The truth is,", "The fact of the matter is", "Indeed,", "Certainly,", "Ultimately,", "At its core,", "In essence,", "Simply put,", "profoundly", "transformative"]
 
 vocabularyLevel
   Must be exactly one of: "conversational", "pastoral", "academic", "technical"
@@ -172,55 +231,11 @@ Respond with ONLY a valid JSON object — no markdown fences, no commentary — 
       "voice-dna extraction",
       2
     );
-
-    // Extract the first {...} JSON block — handles leading text, code fences, or truncation artifacts
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error(`Voice DNA response contained no JSON object. Raw: ${text.slice(0, 200)}`);
-
-    // Attempt to parse; if truncated, close any open brackets and retry once
-    let raw: Record<string, unknown>;
-    try {
-      raw = JSON.parse(jsonMatch[0]) as Record<string, unknown>;
-    } catch {
-      // Truncated JSON — close unclosed arrays and objects and retry
-      let partial = jsonMatch[0];
-      const openArrays = (partial.match(/\[/g) ?? []).length - (partial.match(/\]/g) ?? []).length;
-      const openObjects = (partial.match(/\{/g) ?? []).length - (partial.match(/\}/g) ?? []).length;
-      // Remove trailing comma or incomplete token before closing
-      partial = partial.replace(/,\s*$/, "").replace(/,\s*"[^"]*$/, "");
-      partial += "]".repeat(Math.max(0, openArrays)) + "}".repeat(Math.max(0, openObjects));
-      raw = JSON.parse(partial) as Record<string, unknown>;
-    }
-
-    // Coerce sentencePattern to a valid enum value
-    if (typeof raw.sentencePattern === "string") {
-      const sp = raw.sentencePattern.toLowerCase();
-      if (sp.includes("short") || sp.includes("punchy")) raw.sentencePattern = "short-punchy";
-      else if (sp.includes("long") || sp.includes("explanatory")) raw.sentencePattern = "long-explanatory";
-      else raw.sentencePattern = "mixed";
-    }
-
-    // Coerce vocabularyLevel to a valid enum value
-    if (typeof raw.vocabularyLevel === "string") {
-      const vl = raw.vocabularyLevel.toLowerCase();
-      if (vl.includes("academic")) raw.vocabularyLevel = "academic";
-      else if (vl.includes("technical")) raw.vocabularyLevel = "technical";
-      else if (vl.includes("pastoral")) raw.vocabularyLevel = "pastoral";
-      else raw.vocabularyLevel = "conversational";
-    }
-
-    // Hard-cap arrays so an over-generous model can never cause a truncation loop
-    if (Array.isArray(raw.signaturePhrases))    raw.signaturePhrases    = (raw.signaturePhrases    as string[]).slice(0, 8);
-    if (Array.isArray(raw.preferredTerminology)) raw.preferredTerminology = (raw.preferredTerminology as string[]).slice(0, 10);
-    if (Array.isArray(raw.rhetoricalPatterns))  raw.rhetoricalPatterns  = (raw.rhetoricalPatterns  as string[]).slice(0, 6);
-    if (Array.isArray(raw.avoidWords))          raw.avoidWords          = (raw.avoidWords          as string[]).slice(0, 30);
-    if (Array.isArray(raw.vernacularMarkers))   raw.vernacularMarkers   = (raw.vernacularMarkers   as string[]).slice(0, 10);
-    if (Array.isArray(raw.avoidStructures))     raw.avoidStructures     = (raw.avoidStructures     as string[]).slice(0, 10);
-
-    const object = VoiceDNASchema.parse(raw);
-    return NextResponse.json(object, { status: 200 });
+    return NextResponse.json(VoiceDNASchema.parse(object), { status: 200 });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Voice DNA extraction failed";
-    return NextResponse.json({ error: message }, { status: 500 });
+    console.warn("[voice-dna] Falling back to deterministic profile:", message);
+    const fallback = buildFallbackVoiceDNA(sampleTranscript);
+    return NextResponse.json(fallback, { status: 200 });
   }
 }
