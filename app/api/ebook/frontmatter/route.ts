@@ -101,15 +101,14 @@ ${transcript.slice(-3000)}`,
       })(),
     }, { status: 200 });
   } catch (err) {
-    const middle = transcript.slice(Math.floor(transcript.length * 0.05), 5200).trim();
-    const closing = transcript.slice(-2200).trim();
-    return NextResponse.json({
-      preface: "",
-      introduction: stripAudienceLanguage(middle || "Introduction unavailable."),
-      conclusion: stripAudienceLanguage(closing || "Conclusion unavailable."),
-      aboutAuthor: null,
-      resourcesList: [],
-      scriptureIndex: [],
-    }, { status: 200 });
+    const message = err instanceof Error ? err.message : "Front matter generation failed";
+    return NextResponse.json(
+      {
+        route: "ebook/frontmatter",
+        error: "Front matter generation failed",
+        details: message,
+      },
+      { status: 502 }
+    );
   }
 }

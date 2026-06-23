@@ -40,63 +40,6 @@ async function withRetry<T>(
   throw new Error(`${label} failed after retries: ${detail}`);
 }
 
-function buildFallbackVoiceDNA(sampleTranscript: string) {
-  const firstWords = sampleTranscript.split(/\s+/).filter(Boolean).slice(0, 1200).join(" ").toLowerCase();
-  const rhetoricalPatterns: string[] = [];
-  if (firstWords.includes("?")) rhetoricalPatterns.push("uses rhetorical questions");
-  if (/(amen|hallelujah|praise)/i.test(firstWords)) rhetoricalPatterns.push("uses call-and-response cues");
-  if (/(story|when i was|i remember|one day)/i.test(firstWords)) rhetoricalPatterns.push("uses personal story illustration");
-
-  return VoiceDNASchema.parse({
-    signaturePhrases: [],
-    preferredTerminology: [],
-    toneProfile: "pastoral, direct, conversational",
-    sentencePattern: "mixed",
-    rhetoricalPatterns,
-    teachingStyle: "Builds practical teaching points from scripture and direct exhortation.",
-    avoidWords: [
-      "In conclusion",
-      "delve into",
-      "tapestry",
-      "navigating",
-      "It's important to note",
-      "Furthermore",
-      "Moreover",
-      "In today's fast-paced world",
-      "It is crucial",
-      "It is worth noting",
-      "At the end of the day",
-      "Game-changer",
-      "Paradigm shift",
-      "Deep dive",
-      "Unpack",
-      "Moving forward",
-      "Robust",
-      "Leverage",
-      "Synergy",
-      "It goes without saying",
-      "The truth is,",
-      "The fact of the matter is",
-      "Indeed,",
-      "Certainly,",
-      "Ultimately,",
-      "At its core,",
-      "In essence,",
-      "Simply put,",
-      "profoundly",
-      "transformative",
-    ],
-    vocabularyLevel: "pastoral",
-    pacingFingerprint: "Alternates explanatory teaching with direct, shorter exhortation.",
-    narrativeDevice: "Uses examples and scripture to move from principle to application.",
-    emotionalArc: "Begins with challenge, builds conviction, and ends in encouragement.",
-    vernacularMarkers: [],
-    avoidStructures: [],
-    openingPattern: "Opens with a direct claim or question.",
-    closingPattern: "Closes with a practical call to action.",
-  });
-}
-
 export async function POST(req: NextRequest) {
   const body = await req.json() as unknown;
   let input;
@@ -234,8 +177,13 @@ Respond with ONLY a valid JSON object — no markdown fences, no commentary — 
     return NextResponse.json(VoiceDNASchema.parse(object), { status: 200 });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Voice DNA extraction failed";
-    console.warn("[voice-dna] Falling back to deterministic profile:", message);
-    const fallback = buildFallbackVoiceDNA(sampleTranscript);
-    return NextResponse.json(fallback, { status: 200 });
+    return NextResponse.json(
+      {
+        route: "ebook/voice-dna",
+        error: "Voice DNA extraction failed",
+        details: message,
+      },
+      { status: 502 }
+    );
   }
 }

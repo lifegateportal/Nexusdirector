@@ -467,22 +467,26 @@ export async function POST(req: NextRequest) {
           })
         );
 
+        const failedAudioPlans = chapterPlanResults
+          .map((result, idx) => ({ result, audioKey: audioKeys[idx] }))
+          .filter(({ result }) => result.status === "rejected");
+        if (failedAudioPlans.length > 0) {
+          return NextResponse.json({
+            route: "ebook/architect",
+            error: "One or more per-audio chapter plans failed",
+            details: failedAudioPlans
+              .map(({ audioKey, result }) => `${audioKey}: ${result.status === "rejected" ? String(result.reason) : "unknown"}`)
+              .join(" | "),
+          }, { status: 502 });
+        }
+
         const validIds = new Set(input.contentMap.segments.map((s) => s.id));
         const chapters = chapterPlanResults.map((planResult, idx) => {
           const segs = segsByAudio.get(audioKeys[idx])!;
           const themeHint = (input.contentMap.overarchingThemes[idx] || segs[0]?.topic || `Chapter ${idx + 1}`).trim();
-          if (planResult.status === "rejected") {
-            console.warn(`[architect] oneChapterPerUpload plan failed for ${audioKeys[idx]}:`, planResult.reason);
-          }
           const plan = planResult.status === "fulfilled" ? planResult.value : null;
           if (!plan || plan.sections.length === 0) {
-            const grouped = groupSegmentsIntoSections(segs, 5);
-            return {
-              number: idx + 1,
-              title: themeHint,
-              keyTheme: themeHint,
-              sections: grouped.map((sec, si) => ({ sectionNumber: si + 1, ...sec })),
-            };
+            throw new Error(`oneChapterPerUpload produced an empty plan for ${audioKeys[idx]}`);
           }
           return {
             number: idx + 1,
