@@ -86,11 +86,14 @@ function routeLabel(url: string): string {
 
 function parseSignalFilterLog(logEntries: string[]): { state: SignalFilterState; detail: string | null } {
   const relevant = [...logEntries].reverse().find(
-    (entry) => entry.includes("Signal filter unavailable") || entry.includes("Signal filtered") || entry.includes("Signal filter complete")
+    (entry) => entry.includes("Signal filter unavailable")
+      || entry.includes("Signal filtered")
+      || entry.includes("Signal filter complete")
+      || entry.includes("signal filter skipped")
   );
   if (!relevant) return { state: "idle", detail: null };
   const message = relevant.replace(/^\[[^\]]+\]\s*/, "");
-  if (message.includes("Signal filter unavailable")) {
+  if (message.includes("Signal filter unavailable") || message.includes("signal filter skipped")) {
     return { state: "skipped", detail: message };
   }
   return { state: "applied", detail: message };
@@ -179,8 +182,43 @@ async function streamSection(
   };
 }
 
+async function fetchWithRetry(input: RequestInfo | URL, init?: RequestInit, retries = 2): Promise<Response> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const res = await fetch(input, init);
+      const retryableStatus = res.status === 408 || res.status === 429 || res.status === 500 || res.status === 502 || res.status === 503 || res.status === 504;
+      if (attempt < retries && retryableStatus) {
+        const backoffMs = Math.min(9000, 1000 * Math.pow(2, attempt));
+        await new Promise<void>((resolve) => setTimeout(resolve, backoffMs));
+        continue;
+      }
+      return res;
+    } catch {
+      if (attempt < retries) {
+        const backoffMs = Math.min(9000, 1000 * Math.pow(2, attempt));
+        await new Promise<void>((resolve) => setTimeout(resolve, backoffMs));
+        continue;
+      }
+      throw new Error("Network request failed after retries");
+    }
+  }
+  throw new Error("Network request failed after retries");
+}
+
 function buildArchitectContentMap(contentMap: ContentMap, includeRawText: boolean): ContentMap {
-  if (includeRawText) return contentMap;
+  const ARCHITECT_RAW_TEXT_WORD_CAP = 1800;
+  if (includeRawText) {
+    return {
+      ...contentMap,
+      segments: contentMap.segments.map((segment) => ({
+        ...segment,
+        rawText: segment.rawText
+          .split(/\s+/)
+          .slice(0, ARCHITECT_RAW_TEXT_WORD_CAP)
+          .join(" "),
+      })),
+    };
+  }
   // Architect does not need transcript bodies unless oneChapterPerUpload is enabled.
   // Stripping rawText keeps large projects under request-size/proxy limits.
   return {
@@ -2227,7 +2265,7 @@ export function EbookPipeline({
     if (audioFile) {
       addLog(`Transcribing ${label} via Deepgram…`);
 
-      const tokenRes = await fetch("/api/transcribe-token");
+      const tokenRes = await fetchWithRetry("/api/transcribe-token", undefined, 2);
       if (!tokenRes.ok) throw new Error(`Could not get Deepgram token (HTTP ${tokenRes.status})`);
       const { apiKey } = await tokenRes.json() as { apiKey: string };
 
@@ -2252,11 +2290,15 @@ export function EbookPipeline({
       });
 
       const buffer = await audioFile.arrayBuffer();
-      const dgRes = await fetch(`https://api.deepgram.com/v1/listen?${params}`, {
-        method: "POST",
-        headers: { Authorization: `Token ${apiKey}`, "Content-Type": mimeType },
-        body: buffer,
-      });
+      const dgRes = await fetchWithRetry(
+        `https://api.deepgram.com/v1/listen?${params}`,
+        {
+          method: "POST",
+          headers: { Authorization: `Token ${apiKey}`, "Content-Type": mimeType },
+          body: buffer,
+        },
+        2
+      );
 
       if (!dgRes.ok) {
         const dgErr = await dgRes.json().catch(() => ({})) as { err_msg?: string };
@@ -2361,6 +2403,7 @@ export function EbookPipeline({
       if (!masterTranscript) {
         type FilterResult = { cleanedTranscript: string; removedSegments: { reason: string; excerpt: string }[]; summary: string };
         const transcriptResults: { label: string; text: string }[] = [];
+        const skippedFilterSlots: string[] = [];
         setStage("filtering");
         for (let i = 0; i < 6; i++) {
           if (!audioFiles[i] && !transcriptFiles[i]) continue;
@@ -2383,6 +2426,7 @@ export function EbookPipeline({
               addLog(`  ✓ ${label} — no non-teaching content found`);
             }
           } catch {
+            skippedFilterSlots.push(label);
             addLog(`  ⚠ ${label} signal filter skipped — using raw text`);
           }
 
@@ -2424,15 +2468,27 @@ export function EbookPipeline({
         // Per-slot filtering already ran above. Re-running a full combined pass
         // adds latency and duplicate LLM calls; use the assembled transcript here.
         filteredTranscript = masterTranscript;
-        setSignalFilterState("applied");
-        setSignalFilterDetail("Per-slot signal filter applied");
+        if (skippedFilterSlots.length > 0) {
+          setSignalFilterState("skipped");
+          setSignalFilterDetail(`Signal filter skipped for ${skippedFilterSlots.join(", ")}`);
+          addLog(`⚠ Signal filter partially skipped (${skippedFilterSlots.length} slot${skippedFilterSlots.length !== 1 ? "s" : ""}) — downstream stages use mixed filtered/raw text`);
+        } else {
+          setSignalFilterState("applied");
+          setSignalFilterDetail("Per-slot signal filter applied");
+        }
         (acc as EbookJobState & { filteredTranscript: string; filterRemovedCount: number }).filteredTranscript = filteredTranscript;
         (acc as EbookJobState & { filteredTranscript: string; filterRemovedCount: number }).filterRemovedCount = 0;
         addLog("✓ Signal filter complete (per-slot pass)");
         await checkpoint("analyzing");
       } else {
-        setSignalFilterState("applied");
-        setSignalFilterDetail(null);
+        const restoredFilter = parseSignalFilterLog(logRef.current);
+        if (restoredFilter.state === "idle") {
+          setSignalFilterState("applied");
+          setSignalFilterDetail(null);
+        } else {
+          setSignalFilterState(restoredFilter.state);
+          setSignalFilterDetail(restoredFilter.detail);
+        }
         addLog(`↩ Resuming — filtered transcript available (${countWords(filteredTranscript).toLocaleString()} teaching words)`);
       }
 

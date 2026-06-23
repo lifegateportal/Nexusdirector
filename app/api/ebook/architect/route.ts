@@ -9,6 +9,21 @@ import { SOURCE_LOCK_RULES } from "@/lib/editorial-style-bible";
 export const runtime = "nodejs";
 export const maxDuration = 120;
 
+async function withRetry<T>(fn: () => Promise<T>, retries = 2): Promise<T> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (attempt >= retries) break;
+      const backoffMs = Math.min(8000, 1200 * Math.pow(2, attempt));
+      await new Promise<void>((resolve) => setTimeout(resolve, backoffMs));
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error("architect request failed");
+}
+
 // ── Upgrade helpers ───────────────────────────────────────────────────────────
 
 type ArcRole = "hook" | "context" | "mechanism" | "application" | "untagged";
@@ -245,12 +260,13 @@ async function architectOneChapterFromTranscript(
     ].join("\n");
   }).join("\n\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n");
 
-  const { object } = await generateObject({
-    model: deepSeekModel,
-    schema: SingleChapterPlanSchema,
-    mode: "json",
-    temperature: 0.15,
-    system: `You are a senior structural editor turning one teaching message into a premium book chapter.
+  const { object } = await withRetry(() =>
+    generateObject({
+      model: deepSeekModel,
+      schema: SingleChapterPlanSchema,
+      mode: "json",
+      temperature: 0.15,
+      system: `You are a senior structural editor turning one teaching message into a premium book chapter.
 
 SOURCE-LOCK — ABSOLUTE RULE:
 Every title, section heading, and key theme you write MUST derive word-for-word or idea-for-idea from the transcript segments below. You may NOT invent, assume, or extrapolate anything not explicitly present in the provided text.
@@ -275,14 +291,15 @@ STRUCTURE RULES:
 - Apply a natural teaching arc: Hook → Context → Core Mechanism → Application → Landing
 
 ${SOURCE_LOCK_RULES}`,
-    prompt: `AVAILABLE SEGMENT IDs: ${segments.map((s) => s.id).join(", ")}
+      prompt: `AVAILABLE SEGMENT IDs: ${segments.map((s) => s.id).join(", ")}
 CHAPTER THEME HINT: ${chapterHint}
 CORE THESIS: ${coreThesis}
 TEACHING ARC: ${teachingArc}
 VOICE TONE: ${voiceDNATone}
 
 ${transcriptBlock}`,
-  });
+    })
+  , 2);
   return object;
 }
 
@@ -434,7 +451,7 @@ export async function POST(req: NextRequest) {
         }
         const audioKeys = audioOrder.filter((k) => segsByAudio.has(k));
 
-        const chapterPlans = await Promise.all(
+        const chapterPlanResults = await Promise.allSettled(
           audioKeys.map((audioKey, idx) => {
             const segs = segsByAudio.get(audioKey)!;
             const chapterHint = (input.contentMap.overarchingThemes[idx] || "").trim()
@@ -446,14 +463,18 @@ export async function POST(req: NextRequest) {
               input.contentMap.coreThesis,
               input.contentMap.teachingArc,
               input.voiceDNA.toneProfile,
-            ).catch(() => null);
+            );
           })
         );
 
         const validIds = new Set(input.contentMap.segments.map((s) => s.id));
-        const chapters = chapterPlans.map((plan, idx) => {
+        const chapters = chapterPlanResults.map((planResult, idx) => {
           const segs = segsByAudio.get(audioKeys[idx])!;
           const themeHint = (input.contentMap.overarchingThemes[idx] || segs[0]?.topic || `Chapter ${idx + 1}`).trim();
+          if (planResult.status === "rejected") {
+            console.warn(`[architect] oneChapterPerUpload plan failed for ${audioKeys[idx]}:`, planResult.reason);
+          }
+          const plan = planResult.status === "fulfilled" ? planResult.value : null;
           if (!plan || plan.sections.length === 0) {
             const grouped = groupSegmentsIntoSections(segs, 5);
             return {

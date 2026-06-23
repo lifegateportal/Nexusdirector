@@ -23,7 +23,10 @@ const EnvironmentSchema = z.object({
   RUNPOD_API_KEY:             z.string().optional(),
   RUNPOD_VOICE_ENDPOINT_ID:   z.string().optional(), // RunPod Serverless endpoint ID
   RUNPOD_ENDPOINT_ID:         z.string().optional(), // Backward-compatible alias
-  EBOOK_STRICT_ARCHITECT_OVERLAP_GATE: z.enum(["true", "false"]).optional().transform((value) => value !== "false"),
+  EBOOK_STRICT_ARCHITECT_OVERLAP_GATE: z
+    .enum(["true", "false"])
+    .optional()
+    .transform((value) => value === "true"),
 });
 
 const isBuildPhase =

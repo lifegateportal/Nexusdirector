@@ -28,6 +28,21 @@ export type FilterSignalResult = {
   summary: string;
 };
 
+async function withRetry<T>(fn: () => Promise<T>, retries = 2): Promise<T> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (attempt >= retries) break;
+      const backoffMs = Math.min(7000, 1000 * Math.pow(2, attempt));
+      await new Promise<void>((resolve) => setTimeout(resolve, backoffMs));
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error("signal filter request failed");
+}
+
 export async function POST(req: NextRequest) {
   const body = await req.json() as unknown;
   let input;
@@ -55,10 +70,11 @@ export async function POST(req: NextRequest) {
     : headSample;
 
   try {
-    const { text } = await generateText({
-      model: deepSeekModel,
-      temperature: 0.1,
-      system: `You are a content signal filter for a book production pipeline.
+    const { text } = await withRetry(
+      () => generateText({
+        model: deepSeekModel,
+        temperature: 0.1,
+        system: `You are a content signal filter for a book production pipeline.
 
 Find where the CORE TEACHING begins and ends in the transcript excerpt.
 
@@ -86,8 +102,10 @@ If no closing non-teaching is found, set teachingEndPhrase to the last teaching 
 
 Respond with ONLY a valid JSON object — no markdown, no code blocks, no explanation:
 {"teachingStartPhrase":"...","teachingEndPhrase":"...","removedCategories":[],"summary":"..."}`,
-      prompt: `Identify the teaching start and end markers:\n\n${sample}`,
-    });
+        prompt: `Identify the teaching start and end markers:\n\n${sample}`,
+      }),
+      2
+    );
     let _parsed: unknown;
     try {
       const _jsonMatch = text.match(/\{[\s\S]*\}/);
