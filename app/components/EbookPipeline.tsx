@@ -54,7 +54,7 @@ const STAGE_LABELS: Record<PipelineStage, string> = {
   assigning: "Assigning segments…",
   writing: "Writing sections…",
   polishing: "Polishing chapters…",
-  frontmatter: "Writing front matter…",
+  frontmatter: "Writing front and back matter…",
   exporting: "Generating PDF, EPUB & Word…",
   complete: "Complete",
   failed: "Failed",
@@ -648,16 +648,17 @@ function AudioCard({
 
 // ─── Stage Tracker ───────────────────────────────────────────────────────────
 
-const STAGE_STEPS: { key: PipelineStage; label: string; description: string }[] = [
-  { key: "transcribing", label: "Transcribe",   description: "Converting audio to text via Deepgram nova-2" },
-  { key: "filtering",    label: "Signal Filter", description: "Stripping prayers, announcements, and non-teaching content from transcript" },
-  { key: "analyzing",    label: "Voice DNA",    description: "Extracting author's signature phrases, tone, and teaching style" },
-  { key: "mapping",      label: "Content Map",  description: "Inventorying every teaching segment, scripture, and quote" },
-  { key: "architecting", label: "Chapters",     description: "Designing chapter and section structure from the content" },
-  { key: "writing",      label: "Writing",      description: "Drafting each section strictly from transcript source material" },
-  { key: "polishing",    label: "Polish",       description: "Adding chapter intros, conclusions, and key takeaways" },
-  { key: "frontmatter",  label: "Front Matter", description: "Writing introduction and conclusion from your words" },
-  { key: "exporting",    label: "Export",       description: "Generating PDF and EPUB files for download" },
+const STAGE_STEPS: { id: string; key: PipelineStage; label: string; description: string }[] = [
+  { id: "transcribing", key: "transcribing", label: "Transcribe",   description: "Converting audio to text via Deepgram nova-2" },
+  { id: "filtering",    key: "filtering",    label: "Signal Filter", description: "Stripping prayers, announcements, and non-teaching content from transcript" },
+  { id: "analyzing",    key: "analyzing",    label: "Voice DNA",    description: "Extracting author's signature phrases, tone, and teaching style" },
+  { id: "mapping",      key: "mapping",      label: "Content Map",  description: "Inventorying every teaching segment, scripture, and quote" },
+  { id: "architecting", key: "architecting", label: "Chapters",     description: "Designing chapter and section structure from the content" },
+  { id: "writing",      key: "writing",      label: "Writing",      description: "Drafting each section strictly from transcript source material" },
+  { id: "polishing",    key: "polishing",    label: "Polish",       description: "Adding chapter intros, conclusions, and key takeaways" },
+  { id: "frontmatter",  key: "frontmatter",  label: "Front Matter", description: "Writing introduction and conclusion from your words" },
+  { id: "backmatter",   key: "frontmatter",  label: "Back Matter",  description: "Generating glossary, discussion guide, and scripture index" },
+  { id: "exporting",    key: "exporting",    label: "Export",       description: "Generating PDF and EPUB files for download" },
 ];
 
 // Collapse adjacent stages so assigning/polishing/frontmatter light up their parent step
@@ -718,7 +719,7 @@ function EbookStageTracker({
           const active = step.key === activeKey && current !== "complete" && current !== "failed" && current !== "idle";
           const skipped = step.key === "filtering" && signalFilterState === "skipped";
           return (
-            <div key={step.key} className="flex items-center gap-1.5">
+            <div key={step.id} className="flex items-center gap-1.5">
               <span
                 className={`h-2 w-2 flex-shrink-0 rounded-full transition-all ${
                   skipped ? "bg-amber-400" :
@@ -2225,6 +2226,7 @@ export function EbookPipeline({
           subtitle: job.architecture.subtitle,
           authorName: job.architecture.authorName,
           frontMatter: job.frontMatter,
+          backMatter: job.backMatter,
           chapters: job.chapters ?? [],
           totalWordCount: (job.chapters ?? []).reduce((sum, chapter) => sum + (chapter.totalWordCount ?? 0), 0),
           allQuotes: contentMap.allQuotes ?? [],
