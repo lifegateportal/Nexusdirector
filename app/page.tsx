@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback, useEffect } from "react";
+import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import { NexusNav } from "@/app/components/NexusNav";
 import { StatusBar } from "@/app/components/StatusBar";
@@ -9,10 +10,7 @@ import { MediaUpload } from "@/app/components/MediaUpload";
 import { ProjectCard } from "@/app/components/ProjectCard";
 import { PipelineResults } from "@/app/components/PipelineResults";
 import { PromptBar } from "@/app/components/PromptBar";
-import { AssistantPanel } from "@/app/components/AssistantPanel";
 import { ProjectsPanel } from "@/app/components/ProjectsPanel";
-import { EbookPipeline } from "@/app/components/EbookPipeline";
-import { SermonAssistantPanel } from "@/app/components/SermonAssistantPanel";
 import type { EbookPipelineSnapshot } from "@/app/components/EbookPipeline";
 import { EbookJobStateSchema } from "@/lib/schemas/ebook";
 import type { EbookManifest } from "@/lib/schemas/ebook";
@@ -38,6 +36,21 @@ import {
   deleteEbookProject,
 } from "@/lib/ebook-project-store";
 import type { ProjectSnapshot, ChatMessage } from "@/lib/project-store";
+
+const EbookPipeline = dynamic(
+  () => import("@/app/components/EbookPipeline").then((mod) => mod.EbookPipeline),
+  { ssr: false },
+);
+
+const SermonAssistantPanel = dynamic(
+  () => import("@/app/components/SermonAssistantPanel").then((mod) => mod.SermonAssistantPanel),
+  { ssr: false },
+);
+
+const AssistantPanel = dynamic(
+  () => import("@/app/components/AssistantPanel").then((mod) => mod.AssistantPanel),
+  { ssr: false },
+);
 
 const INITIAL_MODELS: ModelState[] = [
   { name: "Gemini",   handle: "gemini",   role: "Analyst",           status: "standby" },
