@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import { NexusNav } from "@/app/components/NexusNav";
@@ -129,106 +129,102 @@ export default function HomePage() {
   const [currentProjectId, setCurrentProjectId] = useState<string>("");
   const [chatHistory,     setChatHistory]     = useState<ChatMessage[]>([]);
   const [panelLoadKey,    setPanelLoadKey]    = useState<string>("");
+  const hasRemoteProjectSyncRef = useRef(false);
+
+  const loadMergedLocalProjects = useCallback(async (): Promise<ProjectSnapshot[]> => {
+    const main = await listProjects();
+    const mainIds = new Set(main.map((p) => p.id));
+    const ebookOnly = (await listEbookProjects().catch(() => []))
+      .filter((e) => !mainIds.has(e.id))
+      .map((e) => ({
+        id: e.id,
+        name: e.name,
+        createdAt: e.createdAt,
+        updatedAt: e.updatedAt,
+        academy: null,
+        siteConfig: SiteConfigSchema.parse({}),
+        deliveryInstructions: "",
+        chatHistory: [],
+        blueprint: null,
+        logicResult: null,
+        uiResult: null,
+        ebookManifest: null,
+        ebookJobState: e.jobState,
+        publishedSlug: e.publishedSlug,
+        coverImageUrl: e.coverImageUrl,
+        authorImageUrl: e.authorImageUrl,
+      }));
+
+    return [...main, ...ebookOnly];
+  }, []);
+
+  const runRemoteProjectSync = useCallback(async () => {
+    if (hasRemoteProjectSyncRef.current) return;
+    hasRemoteProjectSyncRef.current = true;
+
+    try {
+      const localProjects = await loadMergedLocalProjects();
+      const r2res = await fetch("/api/projects");
+      if (!r2res.ok) return;
+
+      const { projects: r2projects } = await r2res.json() as { projects: ProjectSnapshot[] };
+      if (!Array.isArray(r2projects) || r2projects.length === 0) {
+        // R2 is empty — push all local projects up (initial upload)
+        for (const p of localProjects) {
+          await fetch("/api/projects", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ project: p }),
+          }).catch(() => {});
+        }
+        return;
+      }
+
+      const r2ById = new Map(r2projects.map((p: ProjectSnapshot) => [p.id, p]));
+      const localById = new Map(localProjects.map((p) => [p.id, p]));
+      const toPullLocal: ProjectSnapshot[] = [];
+      const toPushR2: ProjectSnapshot[] = [];
+
+      // Pull: R2 has newer or unknown project
+      for (const r2p of r2projects) {
+        const local = localById.get(r2p.id);
+        if (!local || new Date(r2p.updatedAt) > new Date(local.updatedAt)) {
+          toPullLocal.push(r2p as ProjectSnapshot);
+        }
+      }
+
+      // Push: local has newer or unknown project
+      for (const localP of localProjects) {
+        const r2p = r2ById.get(localP.id);
+        if (!r2p || new Date(localP.updatedAt) > new Date((r2p as ProjectSnapshot).updatedAt)) {
+          toPushR2.push(localP);
+        }
+      }
+
+      for (const p of toPullLocal) {
+        await saveProject(p).catch(() => {});
+      }
+      for (const p of toPushR2) {
+        await fetch("/api/projects", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ project: p }),
+        }).catch(() => {});
+      }
+
+      if (toPullLocal.length > 0) {
+        const refreshed = await loadMergedLocalProjects();
+        setProjects(refreshed);
+      }
+    } catch {
+      // R2 sync is best-effort.
+    }
+  }, [loadMergedLocalProjects]);
 
   // Load persisted state client-side only (avoids SSR hydration mismatch)
   useEffect(() => {
     void (async () => {
       try {
-        const main = await listProjects();
-        const mainIds = new Set(main.map((p) => p.id));
-        const ebookOnly = (await listEbookProjects().catch(() => []))
-          .filter((e) => !mainIds.has(e.id))
-          .map((e) => ({
-            id: e.id,
-            name: e.name,
-            createdAt: e.createdAt,
-            updatedAt: e.updatedAt,
-            academy: null,
-            siteConfig: SiteConfigSchema.parse({}),
-            deliveryInstructions: "",
-            chatHistory: [],
-            blueprint: null,
-            logicResult: null,
-            uiResult: null,
-            ebookManifest: null,
-            ebookJobState: e.jobState,
-            publishedSlug: e.publishedSlug,
-            coverImageUrl: e.coverImageUrl,
-            authorImageUrl: e.authorImageUrl,
-          }));
-        const mergedLocal = [...main, ...ebookOnly];
+        const mergedLocal = await loadMergedLocalProjects();
         setProjects(mergedLocal);
-
-        // ── Background R2 bidirectional sync ──────────────────────────────
-        void (async () => {
-          try {
-            const r2res = await fetch("/api/projects");
-            if (!r2res.ok) return;
-            const { projects: r2projects } = await r2res.json() as { projects: ProjectSnapshot[] };
-            if (!Array.isArray(r2projects) || r2projects.length === 0) {
-              // R2 is empty — push all local projects up (initial upload)
-              for (const p of mergedLocal) {
-                await fetch("/api/projects", {
-                  method: "POST", headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ project: p }),
-                }).catch(() => {});
-              }
-              return;
-            }
-            const r2ById  = new Map(r2projects.map((p: ProjectSnapshot) => [p.id, p]));
-            const localById = new Map(mergedLocal.map((p) => [p.id, p]));
-            const toPullLocal: ProjectSnapshot[] = [];
-            const toPushR2: ProjectSnapshot[] = [];
-            // Pull: R2 has newer or unknown project
-            for (const r2p of r2projects) {
-              const local = localById.get(r2p.id);
-              if (!local || new Date(r2p.updatedAt) > new Date(local.updatedAt)) {
-                toPullLocal.push(r2p as ProjectSnapshot);
-              }
-            }
-            // Push: local has newer or unknown project
-            for (const localP of mergedLocal) {
-              const r2p = r2ById.get(localP.id);
-              if (!r2p || new Date(localP.updatedAt) > new Date((r2p as ProjectSnapshot).updatedAt)) {
-                toPushR2.push(localP);
-              }
-            }
-            for (const p of toPullLocal) {
-              await saveProject(p).catch(() => {});
-            }
-            for (const p of toPushR2) {
-              await fetch("/api/projects", {
-                method: "POST", headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ project: p }),
-              }).catch(() => {});
-            }
-            if (toPullLocal.length > 0) {
-              const refreshedMain = await listProjects();
-              const refreshedMainIds = new Set(refreshedMain.map((p) => p.id));
-              const refreshedEbook = (await listEbookProjects().catch(() => []))
-                .filter((e) => !refreshedMainIds.has(e.id))
-                .map((e) => ({
-                  id: e.id,
-                  name: e.name,
-                  createdAt: e.createdAt,
-                  updatedAt: e.updatedAt,
-                  academy: null,
-                  siteConfig: SiteConfigSchema.parse({}),
-                  deliveryInstructions: "",
-                  chatHistory: [],
-                  blueprint: null,
-                  logicResult: null,
-                  uiResult: null,
-                  ebookManifest: null,
-                  ebookJobState: e.jobState,
-                  publishedSlug: e.publishedSlug,
-                  coverImageUrl: e.coverImageUrl,
-                  authorImageUrl: e.authorImageUrl,
-                }));
-              setProjects([...refreshedMain, ...refreshedEbook]);
-            }
-          } catch { /* R2 sync is best-effort */ }
-        })();
       } catch { /* ignore */ }
       try {
         setDeliveryInstructions(localStorage.getItem("nexus_delivery_instructions") ?? "");
@@ -236,7 +232,28 @@ export default function HomePage() {
         if (raw) setSiteConfig(SiteConfigSchema.parse(JSON.parse(raw) as unknown));
       } catch { /* ignore */ }
     })();
-  }, []);
+
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    let idleId: number | null = null;
+    const triggerRemoteSync = () => {
+      void runRemoteProjectSync();
+    };
+
+    if (typeof window !== "undefined" && "requestIdleCallback" in window) {
+      idleId = (window as Window & {
+        requestIdleCallback: (cb: () => void, options?: { timeout: number }) => number;
+      }).requestIdleCallback(triggerRemoteSync, { timeout: 2500 });
+    } else {
+      timeoutId = setTimeout(triggerRemoteSync, 1200);
+    }
+
+    return () => {
+      if (timeoutId) clearTimeout(timeoutId);
+      if (idleId !== null && typeof window !== "undefined" && "cancelIdleCallback" in window) {
+        (window as Window & { cancelIdleCallback: (id: number) => void }).cancelIdleCallback(idleId);
+      }
+    };
+  }, [loadMergedLocalProjects, runRemoteProjectSync]);
 
   // Populate boot logs client-side only to avoid server/client timestamp mismatch.
   useEffect(() => {
@@ -982,6 +999,9 @@ export default function HomePage() {
   const showActivityPanel = !isSermonView && !isBookView;
 
   const handleNavSelect = useCallback((id: string) => {
+    if (id === "projects") {
+      void runRemoteProjectSync();
+    }
     if (id === "ebook") {
       router.push("/ebook?tab=pipeline");
       return;
@@ -991,7 +1011,7 @@ export default function HomePage() {
       return;
     }
     setActiveNav(id);
-  }, [router]);
+  }, [router, runRemoteProjectSync]);
 
   return (
     <div className="flex min-h-dvh max-h-dvh overflow-hidden bg-shell-950 bg-grid bg-radial-glow safe-area-frame">
