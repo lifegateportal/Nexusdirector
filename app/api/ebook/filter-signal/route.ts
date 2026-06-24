@@ -43,6 +43,20 @@ async function withRetry<T>(fn: () => Promise<T>, retries = 2): Promise<T> {
   throw lastErr instanceof Error ? lastErr : new Error("signal filter request failed");
 }
 
+async function withTimeout<T>(promise: Promise<T>, label: string, timeoutMs = 90000): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs / 1000}s`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+}
+
 export async function POST(req: NextRequest) {
   const body = await req.json() as unknown;
   let input;
@@ -71,7 +85,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const { text } = await withRetry(
-      () => generateText({
+      () => withTimeout(generateText({
         model: deepSeekModel,
         temperature: 0.1,
         system: `You are a content signal filter for a book production pipeline.
@@ -103,7 +117,7 @@ If no closing non-teaching is found, set teachingEndPhrase to the last teaching 
 Respond with ONLY a valid JSON object — no markdown, no code blocks, no explanation:
 {"teachingStartPhrase":"...","teachingEndPhrase":"...","removedCategories":[],"summary":"..."}`,
         prompt: `Identify the teaching start and end markers:\n\n${sample}`,
-      }),
+      }), "ebook/filter-signal"),
       2
     );
     let _parsed: unknown;

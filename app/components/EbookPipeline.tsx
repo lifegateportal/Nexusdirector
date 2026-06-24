@@ -68,6 +68,7 @@ type SignalFilterState = "idle" | "applied" | "skipped";
 type QualityReport = { score: number; pass: boolean; issues: { severity: "warn" | "error"; message: string }[] };
 type ChapterPlanStep = { purpose: string; supportedExcerptNumbers: number[]; minExcerptNumber?: number };
 type ReviewTab = "manuscript" | "source-map";
+const DEFAULT_REQUEST_TIMEOUT_MS = 240000;
 export type EbookPipelineSnapshot = {
   stage: PipelineStage;
   progress: { total: number; completed: number };
@@ -105,14 +106,18 @@ async function postJson<T>(url: string, body: unknown, retries = 1): Promise<T> 
   const route = routeLabel(url);
   for (let attempt = 0; attempt <= retries; attempt++) {
     let res: Response;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(new Error(`${route} timed out`)), DEFAULT_REQUEST_TIMEOUT_MS);
 
     try {
       res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
+        signal: controller.signal,
       });
     } catch (err) {
+      clearTimeout(timeoutId);
       const cause = err instanceof Error ? err.message : "Unknown network failure";
       if (attempt < retries) {
         const backoffMs = Math.min(9000, 1500 * Math.pow(2, attempt));
@@ -121,6 +126,7 @@ async function postJson<T>(url: string, body: unknown, retries = 1): Promise<T> 
       }
       throw new Error([`Request failed: ${route}`, `Cause: ${cause}`].join("\n"));
     }
+    clearTimeout(timeoutId);
     if (!res.ok) {
       const rawText = await res.text();
       let err: { error?: string; details?: string; route?: string } = {};
@@ -183,10 +189,18 @@ async function streamSection(
   };
 }
 
-async function fetchWithRetry(input: RequestInfo | URL, init?: RequestInit, retries = 2): Promise<Response> {
+async function fetchWithRetry(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+  retries = 2,
+  timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+): Promise<Response> {
   for (let attempt = 0; attempt <= retries; attempt++) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(new Error("Request timed out")), timeoutMs);
     try {
-      const res = await fetch(input, init);
+      const res = await fetch(input, { ...init, signal: controller.signal });
+      clearTimeout(timeoutId);
       const retryableStatus = res.status === 408 || res.status === 429 || res.status === 500 || res.status === 502 || res.status === 503 || res.status === 504;
       if (attempt < retries && retryableStatus) {
         const backoffMs = Math.min(9000, 1000 * Math.pow(2, attempt));
@@ -195,6 +209,7 @@ async function fetchWithRetry(input: RequestInfo | URL, init?: RequestInit, retr
       }
       return res;
     } catch {
+      clearTimeout(timeoutId);
       if (attempt < retries) {
         const backoffMs = Math.min(9000, 1000 * Math.pow(2, attempt));
         await new Promise<void>((resolve) => setTimeout(resolve, backoffMs));
@@ -2331,7 +2346,8 @@ export function EbookPipeline({
           headers: { Authorization: `Token ${apiKey}`, "Content-Type": mimeType },
           body: buffer,
         },
-        2
+        2,
+        900000
       );
 
       if (!dgRes.ok) {
@@ -2949,49 +2965,67 @@ export function EbookPipeline({
               addLog(`  ✍ Writing Chapter ${assignment.chapterNumber} in one pass (${chapterAssignmentsForWrite.length} sections)…`);
               try {
                 // G6: route now returns SSE — read the stream and parse the data: line
-                const chapterWriteRes = await fetch("/api/ebook/write-chapter", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({
-                    chapterNumber: assignment.chapterNumber,
-                    chapterTitle: assignment.chapterTitle,
-                    chapterPremise: (architecture.chapters.find((ch) => ch.number === assignment.chapterNumber) as { chapterPremise?: string } | undefined)?.chapterPremise ?? undefined,
-                    nextChapterTitle: (() => {
-                      const last = chapterAssignmentsForWrite[chapterAssignmentsForWrite.length - 1];
-                      const lastIdx = assignments.indexOf(last);
-                      return assignments[lastIdx + 1]?.chapterTitle;
-                    })(),
-                    coreThesis: contentMap.coreThesis || undefined,
-                    primaryTranslation: chapterAssignmentsForWrite[0]?.primaryTranslation,
-                    voiceDNA,
-                    authorConfig: (authorInstructions || targetAudience) ? { instructions: authorInstructions, targetAudience } : undefined,
-                    priorSectionsSample: buildProseSampleForDedup(assignment.chapterNumber),
-                    bannedRecaps: extractBannedRecaps(allSections),
-                    alreadyQuotedRefs: [...usedQuoteRefs],
-                    forbiddenVerseTexts: Array.from(quotedVerseTextsByRef.values()).filter(Boolean),
-                    overusedPhrases: extractOverusedPhrases(writtenCorpus, 10), // G4
-                    sections: chapterAssignmentsForWrite.map((a) => {
-                      const filtered = (a.transcriptExcerpts ?? []).filter((_, idx) => {
-                        const segId = (a.sourceSegmentIds ?? [])[idx];
-                        return !segId || !consumedSegmentIds.has(segId);
-                      });
-                      const idx2 = assignments.indexOf(a);
-                      const next2 = assignments[idx2 + 1];
-                      return {
-                        sectionNumber: a.sectionNumber,
-                        heading: a.heading,
-                        transcriptExcerpts: filtered.length > 0 ? filtered : a.transcriptExcerpts,
-                        keyPoints: a.keyPoints ?? [],
-                        quotes: a.quotes ?? [],
-                        targetWordCount: a.targetWordCount ?? 500,
-                        isLastSectionInChapter: !next2 || next2.chapterNumber !== a.chapterNumber,
-                        assignedPlan: chapterPlanMap.get(a.sectionNumber),
-                      };
+                const chapterWriteController = new AbortController();
+                const chapterWriteTimeout = setTimeout(
+                  () => chapterWriteController.abort(new Error("write-chapter timed out")),
+                  DEFAULT_REQUEST_TIMEOUT_MS,
+                );
+                let chapterWriteRes: Response;
+                try {
+                  chapterWriteRes = await fetch("/api/ebook/write-chapter", {
+                    signal: chapterWriteController.signal,
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      chapterNumber: assignment.chapterNumber,
+                      chapterTitle: assignment.chapterTitle,
+                      chapterPremise: (architecture.chapters.find((ch) => ch.number === assignment.chapterNumber) as { chapterPremise?: string } | undefined)?.chapterPremise ?? undefined,
+                      nextChapterTitle: (() => {
+                        const last = chapterAssignmentsForWrite[chapterAssignmentsForWrite.length - 1];
+                        const lastIdx = assignments.indexOf(last);
+                        return assignments[lastIdx + 1]?.chapterTitle;
+                      })(),
+                      coreThesis: contentMap.coreThesis || undefined,
+                      primaryTranslation: chapterAssignmentsForWrite[0]?.primaryTranslation,
+                      voiceDNA,
+                      authorConfig: (authorInstructions || targetAudience) ? { instructions: authorInstructions, targetAudience } : undefined,
+                      priorSectionsSample: buildProseSampleForDedup(assignment.chapterNumber),
+                      bannedRecaps: extractBannedRecaps(allSections),
+                      alreadyQuotedRefs: [...usedQuoteRefs],
+                      forbiddenVerseTexts: Array.from(quotedVerseTextsByRef.values()).filter(Boolean),
+                      overusedPhrases: extractOverusedPhrases(writtenCorpus, 10), // G4
+                      sections: chapterAssignmentsForWrite.map((a) => {
+                        const filtered = (a.transcriptExcerpts ?? []).filter((_, idx) => {
+                          const segId = (a.sourceSegmentIds ?? [])[idx];
+                          return !segId || !consumedSegmentIds.has(segId);
+                        });
+                        const idx2 = assignments.indexOf(a);
+                        const next2 = assignments[idx2 + 1];
+                        return {
+                          sectionNumber: a.sectionNumber,
+                          heading: a.heading,
+                          transcriptExcerpts: filtered.length > 0 ? filtered : a.transcriptExcerpts,
+                          keyPoints: a.keyPoints ?? [],
+                          quotes: a.quotes ?? [],
+                          targetWordCount: a.targetWordCount ?? 500,
+                          isLastSectionInChapter: !next2 || next2.chapterNumber !== a.chapterNumber,
+                          assignedPlan: chapterPlanMap.get(a.sectionNumber),
+                        };
+                      }),
                     }),
-                  }),
-                });
+                  });
+                } finally {
+                  clearTimeout(chapterWriteTimeout);
+                }
+
+                if (!chapterWriteRes.ok) {
+                  throw new Error(`write-chapter failed (HTTP ${chapterWriteRes.status})`);
+                }
+                if (!chapterWriteRes.body) {
+                  throw new Error("write-chapter returned no stream body");
+                }
                 // Read SSE buffer, extract the data: JSON line
-                const reader = chapterWriteRes.body!.getReader();
+                const reader = chapterWriteRes.body.getReader();
                 const dec = new TextDecoder();
                 let buf = "";
                 while (true) {
