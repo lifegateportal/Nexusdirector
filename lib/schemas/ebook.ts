@@ -275,6 +275,9 @@ export const FrontBackMatterSchema = z.object({
 // ─── Back Matter (generated separately after manuscript is complete) ──────────
 
 export const BackMatterSchema = z.object({
+  glossaryTitle: z.string().optional(),
+  readingGroupGuideTitle: z.string().optional(),
+  scriptureIndexTitle: z.string().optional(),
   scriptureIndex: z.array(z.object({
     reference: z.string(),
     translation: z.string(),

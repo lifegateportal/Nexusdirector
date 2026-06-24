@@ -3868,9 +3868,44 @@ export function EbookPipeline({
 
                 {/* Glossary */}
                 {(completedManifest.backMatter.glossary?.length ?? 0) > 0 && (
-                  <div>
+                  <div className="space-y-2 rounded-xl border border-slate-700/50 bg-slate-900/45 p-3">
+                    <div className="flex flex-wrap items-end gap-2">
+                      <div className="min-w-[220px] flex-1">
+                        <label className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-500">Subsection Title</label>
+                        <input
+                          value={completedManifest.backMatter.glossaryTitle ?? "Glossary"}
+                          onChange={(e) => updateCompletedManifest((current) => {
+                            if (!current.backMatter) return current;
+                            return {
+                              ...current,
+                              backMatter: {
+                                ...current.backMatter,
+                                glossaryTitle: e.target.value,
+                              },
+                            };
+                          })}
+                          className="w-full min-h-[48px] rounded-xl border border-slate-700/60 bg-slate-950/70 px-3 py-2 text-base text-slate-100 outline-none ring-0 focus:border-cyan-500/40"
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => updateCompletedManifest((current) => {
+                          if (!current.backMatter) return current;
+                          return {
+                            ...current,
+                            backMatter: {
+                              ...current.backMatter,
+                              glossary: [],
+                            },
+                          };
+                        })}
+                        className="min-h-[48px] rounded-xl border border-red-500/35 bg-red-500/10 px-3 py-2 text-sm font-semibold text-red-200"
+                      >
+                        Delete Subsection Box
+                      </button>
+                    </div>
                     <label className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-500">
-                      Glossary ({completedManifest.backMatter.glossary.length} terms)
+                      {completedManifest.backMatter.glossary.length} terms
                     </label>
                     <div className="space-y-2 max-h-56 overflow-y-auto rounded-xl border border-slate-700/60 bg-slate-950/70 px-3 py-2">
                       {completedManifest.backMatter.glossary.map((entry, i) => (
@@ -3886,9 +3921,44 @@ export function EbookPipeline({
 
                 {/* Reading Group Guide */}
                 {(completedManifest.backMatter.readingGroupGuide?.length ?? 0) > 0 && (
-                  <div>
+                  <div className="space-y-2 rounded-xl border border-slate-700/50 bg-slate-900/45 p-3">
+                    <div className="flex flex-wrap items-end gap-2">
+                      <div className="min-w-[220px] flex-1">
+                        <label className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-500">Subsection Title</label>
+                        <input
+                          value={completedManifest.backMatter.readingGroupGuideTitle ?? "Reading Group Guide"}
+                          onChange={(e) => updateCompletedManifest((current) => {
+                            if (!current.backMatter) return current;
+                            return {
+                              ...current,
+                              backMatter: {
+                                ...current.backMatter,
+                                readingGroupGuideTitle: e.target.value,
+                              },
+                            };
+                          })}
+                          className="w-full min-h-[48px] rounded-xl border border-slate-700/60 bg-slate-950/70 px-3 py-2 text-base text-slate-100 outline-none ring-0 focus:border-cyan-500/40"
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => updateCompletedManifest((current) => {
+                          if (!current.backMatter) return current;
+                          return {
+                            ...current,
+                            backMatter: {
+                              ...current.backMatter,
+                              readingGroupGuide: [],
+                            },
+                          };
+                        })}
+                        className="min-h-[48px] rounded-xl border border-red-500/35 bg-red-500/10 px-3 py-2 text-sm font-semibold text-red-200"
+                      >
+                        Delete Subsection Box
+                      </button>
+                    </div>
                     <label className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-500">
-                      Reading Group Guide ({completedManifest.backMatter.readingGroupGuide.length} chapters)
+                      {completedManifest.backMatter.readingGroupGuide.length} chapters
                     </label>
                     <div className="space-y-3 max-h-64 overflow-y-auto rounded-xl border border-slate-700/60 bg-slate-950/70 px-3 py-2">
                       {completedManifest.backMatter.readingGroupGuide.map((chapter, i) => (
@@ -3909,9 +3979,44 @@ export function EbookPipeline({
 
                 {/* Scripture Index */}
                 {(completedManifest.backMatter.scriptureIndex?.length ?? 0) > 0 && (
-                  <div>
+                  <div className="space-y-2 rounded-xl border border-slate-700/50 bg-slate-900/45 p-3">
+                    <div className="flex flex-wrap items-end gap-2">
+                      <div className="min-w-[220px] flex-1">
+                        <label className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-500">Subsection Title</label>
+                        <input
+                          value={completedManifest.backMatter.scriptureIndexTitle ?? "Scripture Index"}
+                          onChange={(e) => updateCompletedManifest((current) => {
+                            if (!current.backMatter) return current;
+                            return {
+                              ...current,
+                              backMatter: {
+                                ...current.backMatter,
+                                scriptureIndexTitle: e.target.value,
+                              },
+                            };
+                          })}
+                          className="w-full min-h-[48px] rounded-xl border border-slate-700/60 bg-slate-950/70 px-3 py-2 text-base text-slate-100 outline-none ring-0 focus:border-cyan-500/40"
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => updateCompletedManifest((current) => {
+                          if (!current.backMatter) return current;
+                          return {
+                            ...current,
+                            backMatter: {
+                              ...current.backMatter,
+                              scriptureIndex: [],
+                            },
+                          };
+                        })}
+                        className="min-h-[48px] rounded-xl border border-red-500/35 bg-red-500/10 px-3 py-2 text-sm font-semibold text-red-200"
+                      >
+                        Delete Subsection Box
+                      </button>
+                    </div>
                     <label className="mb-1 block text-[10px] font-bold uppercase tracking-widest text-slate-500">
-                      Scripture Index ({completedManifest.backMatter.scriptureIndex.length} references)
+                      {completedManifest.backMatter.scriptureIndex.length} references
                     </label>
                     <div className="max-h-48 overflow-y-auto rounded-xl border border-slate-700/60 bg-slate-950/70 px-3 py-2 space-y-1">
                       {completedManifest.backMatter.scriptureIndex.map((entry, i) => (
