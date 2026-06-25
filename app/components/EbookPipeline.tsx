@@ -2650,7 +2650,18 @@ export function EbookPipeline({
       } else {
         // Restore previously written chapters to UI
         setChapters(acc.chapters);
-        setProgress(acc.progress);
+        const restoredTotal = typeof acc.progress?.total === "number" && Number.isFinite(acc.progress.total)
+          ? Math.max(0, Math.floor(acc.progress.total))
+          : totalSections;
+        const restoredCompletedRaw = typeof acc.progress?.completed === "number" && Number.isFinite(acc.progress.completed)
+          ? Math.max(0, Math.floor(acc.progress.completed))
+          : acc.sections.length;
+        const restoredCompleted = restoredTotal > 0
+          ? Math.min(restoredCompletedRaw, restoredTotal)
+          : restoredCompletedRaw;
+        const normalizedProgress = { total: restoredTotal, completed: restoredCompleted };
+        setProgress(normalizedProgress);
+        acc.progress = normalizedProgress;
       }
       await checkpoint("assigning");
 
