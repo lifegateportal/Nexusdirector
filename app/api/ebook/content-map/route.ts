@@ -12,7 +12,9 @@ export const maxDuration = 300;
 // hitting DeepSeek's context limit, and prevents the truncation that was causing
 // the last ~37 % of each slot to be invisble to segment extraction.
 const MAX_SLOT_WORDS = 9000;
-const SLOT_CONCURRENCY = 2;
+const SLOT_CONCURRENCY = 3;
+const SLOT_CHUNK_CONCURRENCY = 2;
+const MIN_CHUNK_WORDS = 1800;
 const MAX_SYNTHESIS_LINES = 90;
 const MAX_SYNTHESIS_CHARS = 18000;
 const CONTENT_MAP_STEP_TIMEOUT_MS = 180000;
@@ -157,6 +159,47 @@ async function mapWithConcurrency<T, R>(
   return results;
 }
 
+async function extractSegmentsForRange(
+  sourceAudio: string,
+  slotWords: string[],
+  start: number,
+  end: number,
+  chunkIndexLabel: string,
+): Promise<z.infer<typeof SlotSegmentExtractSchema>[]> {
+  const chunkText = slotWords.slice(start, end).join(" ");
+
+  try {
+    const { object } = await withRetry(
+      () => withTimeout(
+        generateObject({
+          model: deepSeekModel,
+          schema: SlotSegmentsSchema,
+          mode: "tool",
+          temperature: 0.2,
+          system: SEGMENT_SYSTEM,
+          prompt: `Extract all teaching segments from this recording (${sourceAudio}, chunk ${chunkIndexLabel}):\n\n${chunkText}`,
+        }),
+        `${sourceAudio} segment extraction chunk ${chunkIndexLabel}`
+      ),
+      `${sourceAudio} chunk ${chunkIndexLabel}`,
+      4,
+    );
+    return object.segments;
+  } catch (err) {
+    const wordCount = Math.max(0, end - start);
+    if (wordCount <= MIN_CHUNK_WORDS) {
+      throw err;
+    }
+
+    // If a large chunk fails repeatedly, split it into two smaller chunks
+    // and process both halves to preserve full transcript coverage.
+    const mid = start + Math.floor(wordCount / 2);
+    const left = await extractSegmentsForRange(sourceAudio, slotWords, start, mid, `${chunkIndexLabel}a`);
+    const right = await extractSegmentsForRange(sourceAudio, slotWords, mid, end, `${chunkIndexLabel}b`);
+    return [...left, ...right];
+  }
+}
+
 export async function POST(req: NextRequest) {
   let body: unknown;
   try {
@@ -215,9 +258,13 @@ export async function POST(req: NextRequest) {
       dedupedSegs: z.infer<typeof SlotSegmentExtractSchema>[];
     };
 
+    const slotCount = slotChunks.length;
+    const slotConcurrency = slotCount >= 5 ? 1 : slotCount >= 3 ? 2 : SLOT_CONCURRENCY;
+    const slotChunkConcurrency = slotCount >= 4 ? 1 : SLOT_CHUNK_CONCURRENCY;
+
     const slotResults: DedupedSlotResult[] = await mapWithConcurrency(
       slotChunks,
-      SLOT_CONCURRENCY,
+      slotConcurrency,
       async (chunk): Promise<DedupedSlotResult> => {
         const slotWords = chunk.text.split(/\s+/);
         const OVERLAP = 200;
@@ -230,27 +277,19 @@ export async function POST(req: NextRequest) {
           start = end - OVERLAP;
         }
 
-        const chunkSegments: z.infer<typeof SlotSegmentExtractSchema>[][] = [];
-        for (let chunkIndex = 0; chunkIndex < chunkRanges.length; chunkIndex++) {
-          const range = chunkRanges[chunkIndex];
-            const chunkText = slotWords.slice(range.start, range.end).join(" ");
-            const { object } = await withRetry(
-              () => withTimeout(
-                generateObject({
-                  model: deepSeekModel,
-                  schema: SlotSegmentsSchema,
-                  mode: "tool",
-                  temperature: 0.2,
-                  system: SEGMENT_SYSTEM,
-                  prompt: `Extract all teaching segments from this recording (${chunk.sourceAudio}, chunk ${chunkIndex + 1}/${chunkRanges.length}):\n\n${chunkText}`,
-                }),
-                `${chunk.sourceAudio} segment extraction chunk ${chunkIndex + 1}/${chunkRanges.length}`
-              ),
-              `${chunk.sourceAudio} chunk ${chunkIndex + 1}/${chunkRanges.length}`,
-              3
+        const chunkSegments = await mapWithConcurrency(
+          chunkRanges,
+          slotChunkConcurrency,
+          async (range, chunkIndex) => {
+            return extractSegmentsForRange(
+              chunk.sourceAudio,
+              slotWords,
+              range.start,
+              range.end,
+              `${chunkIndex + 1}/${chunkRanges.length}`,
             );
-            chunkSegments.push(object.segments);
-        }
+          }
+        );
 
         const rawSegmentsForSlot = chunkSegments.flat();
 
@@ -356,7 +395,7 @@ export async function POST(req: NextRequest) {
       }),
       "content-map synthesis"),
       "content-map synthesis",
-      2
+      3
     );
 
     const contentMap = {
