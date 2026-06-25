@@ -11,10 +11,11 @@ export const maxDuration = 300;
 // 12 000 covers the vast majority of sermon recordings (~60–90 min) without
 // hitting DeepSeek's context limit, and prevents the truncation that was causing
 // the last ~37 % of each slot to be invisble to segment extraction.
-const MAX_SLOT_WORDS = 7000;
+const MAX_SLOT_WORDS = 9000;
 const SLOT_CONCURRENCY = 2;
 const MAX_SYNTHESIS_LINES = 90;
 const MAX_SYNTHESIS_CHARS = 18000;
+const CONTENT_MAP_STEP_TIMEOUT_MS = 180000;
 
 // Per-slot extraction schema — NO rawText (LLM must not copy back large text blobs)
 const SlotSegmentExtractSchema = z.object({
@@ -99,7 +100,7 @@ For every scripture or quote mentioned:
 
 DO NOT reproduce large blocks of transcript text. Focus on structure and meaning.`;
 
-async function withTimeout<T>(promise: Promise<T>, label: string, timeoutMs = 90000): Promise<T> {
+async function withTimeout<T>(promise: Promise<T>, label: string, timeoutMs = CONTENT_MAP_STEP_TIMEOUT_MS): Promise<T> {
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
   try {
     return await Promise.race([
@@ -157,7 +158,19 @@ async function mapWithConcurrency<T, R>(
 }
 
 export async function POST(req: NextRequest) {
-  const body = await req.json() as unknown;
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch (err) {
+    return NextResponse.json(
+      {
+        route: "ebook/content-map",
+        error: err instanceof Error ? err.message : "Invalid JSON payload",
+      },
+      { status: 400 }
+    );
+  }
+
   let input;
   try {
     input = ContentMapRequestSchema.parse(body);
@@ -321,7 +334,7 @@ export async function POST(req: NextRequest) {
     }
 
     const { object: synthesis } = await withRetry(
-      () => generateObject({
+      () => withTimeout(generateObject({
         model: deepSeekModel,
         schema: SynthesisSchema,
         mode: "tool",
@@ -341,6 +354,7 @@ export async function POST(req: NextRequest) {
 
     ${topicSummary}`,
       }),
+      "content-map synthesis"),
       "content-map synthesis",
       2
     );

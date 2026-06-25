@@ -2168,6 +2168,18 @@ export function EbookPipeline({
       })),
     }));
 
+    const rawProgress = (raw as EbookJobState & { progress?: unknown }).progress;
+    const progressObj = rawProgress && typeof rawProgress === "object"
+      ? rawProgress as Record<string, unknown>
+      : {};
+    const total = typeof progressObj.total === "number" && Number.isFinite(progressObj.total)
+      ? Math.max(0, Math.floor(progressObj.total))
+      : 0;
+    const completedRaw = typeof progressObj.completed === "number" && Number.isFinite(progressObj.completed)
+      ? Math.max(0, Math.floor(progressObj.completed))
+      : 0;
+    const completed = total > 0 ? Math.min(completedRaw, total) : completedRaw;
+
     return {
       ...raw,
       audioFileNames: fixArrays(raw.audioFileNames),
@@ -2181,6 +2193,7 @@ export function EbookPipeline({
       sectionAssignments,
       chapterPlans,
       chapters,
+      progress: { total, completed },
     } as EbookJobState;
   }
 
@@ -2222,7 +2235,14 @@ export function EbookPipeline({
       setStage(job.status as PipelineStage);
       logRef.current = job.errorLog ?? [];
       setLog(job.errorLog ?? []);
-      setProgress(job.progress ?? { total: 0, completed: 0 });
+      const safeTotal = typeof job.progress?.total === "number" && Number.isFinite(job.progress.total)
+        ? Math.max(0, Math.floor(job.progress.total))
+        : 0;
+      const safeCompletedRaw = typeof job.progress?.completed === "number" && Number.isFinite(job.progress.completed)
+        ? Math.max(0, Math.floor(job.progress.completed))
+        : 0;
+      const safeCompleted = safeTotal > 0 ? Math.min(safeCompletedRaw, safeTotal) : safeCompletedRaw;
+      setProgress({ total: safeTotal, completed: safeCompleted });
       setChapters(job.chapters ?? []);
       setSectionAssignments(job.sectionAssignments ?? []);
       setSourceTranscripts(job.transcripts ?? []);

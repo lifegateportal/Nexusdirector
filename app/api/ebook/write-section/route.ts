@@ -488,7 +488,16 @@ ${READER_NORMALIZATION_RULES}
 ${PREMIUM_BOOK_STYLE_RULES}`;
 
 export async function POST(req: NextRequest) {
-  const body = await req.json() as unknown;
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch (err) {
+    return new Response(
+      JSON.stringify({ error: err instanceof Error ? err.message : "Invalid JSON payload" }),
+      { status: 400, headers: { "Content-Type": "application/json" } }
+    );
+  }
+
   let input;
   try {
     input = WriteSectionRequestSchema.parse(body);
