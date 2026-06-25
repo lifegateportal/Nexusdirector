@@ -118,7 +118,7 @@ async function withTimeout<T>(promise: Promise<T>, label: string, timeoutMs = DE
   }
 }
 
-async function postJson<T>(url: string, body: unknown, retries = 1): Promise<T> {
+async function postJson<T>(url: string, body: unknown, retries = 2): Promise<T> {
   const route = routeLabel(url);
   for (let attempt = 0; attempt <= retries; attempt++) {
     let res: Response;
@@ -153,7 +153,7 @@ async function postJson<T>(url: string, body: unknown, retries = 1): Promise<T> 
       }
       const msg = err.error || `HTTP ${res.status} error from ${route}`;
       // Retry transient upstream/proxy/rate-limit failures with bounded exponential backoff.
-      if (attempt < retries && (res.status === 401 || res.status === 429 || res.status === 500 || res.status === 502 || res.status === 503 || res.status === 504)) {
+      if (attempt < retries && (res.status === 401 || res.status === 408 || res.status === 425 || res.status === 429 || res.status === 499 || res.status === 500 || res.status === 502 || res.status === 503 || res.status === 504 || res.status === 520 || res.status === 521 || res.status === 522 || res.status === 523 || res.status === 524)) {
         const backoffMs = Math.min(9000, 1500 * Math.pow(2, attempt));
         await new Promise<void>((r) => setTimeout(r, backoffMs));
         continue;
@@ -217,7 +217,7 @@ async function fetchWithRetry(
     try {
       const res = await fetch(input, { ...init, signal: controller.signal });
       clearTimeout(timeoutId);
-      const retryableStatus = res.status === 408 || res.status === 429 || res.status === 500 || res.status === 502 || res.status === 503 || res.status === 504;
+      const retryableStatus = res.status === 408 || res.status === 425 || res.status === 429 || res.status === 499 || res.status === 500 || res.status === 502 || res.status === 503 || res.status === 504 || res.status === 520 || res.status === 521 || res.status === 522 || res.status === 523 || res.status === 524;
       if (attempt < retries && retryableStatus) {
         const backoffMs = Math.min(9000, 1000 * Math.pow(2, attempt));
         await new Promise<void>((resolve) => setTimeout(resolve, backoffMs));
@@ -3044,7 +3044,7 @@ export function EbookPipeline({
                       }),
                     }),
                   },
-                  1,
+                  3,
                   DEFAULT_REQUEST_TIMEOUT_MS,
                 );
 

@@ -50,7 +50,19 @@ const CoherenceReportSchema = z.object({
 export type CoherenceReport = z.infer<typeof CoherenceReportSchema>;
 
 export async function POST(req: NextRequest) {
-  const body = await req.json() as unknown;
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch (err) {
+    return NextResponse.json(
+      {
+        route: "ebook/coherence",
+        error: err instanceof Error ? err.message : "Invalid JSON payload",
+      },
+      { status: 400 }
+    );
+  }
+
   let input;
   try {
     input = CoherenceRequestSchema.parse(body);

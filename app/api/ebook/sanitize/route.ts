@@ -26,7 +26,19 @@ export type SanitizeResult = {
 };
 
 export async function POST(req: NextRequest) {
-  const body = await req.json() as unknown;
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch (err) {
+    return NextResponse.json(
+      {
+        route: "ebook/sanitize",
+        error: err instanceof Error ? err.message : "Invalid JSON payload",
+      },
+      { status: 400 }
+    );
+  }
+
   let input;
   try {
     input = RequestSchema.parse(body);

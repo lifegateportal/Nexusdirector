@@ -54,7 +54,19 @@ async function withRetry<T>(fn: () => Promise<T>, label: string, retries = 2): P
 }
 
 export async function POST(req: NextRequest) {
-  const body = await req.json() as unknown;
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch (err) {
+    return NextResponse.json(
+      {
+        route: "ebook/polish",
+        error: err instanceof Error ? err.message : "Invalid JSON payload",
+      },
+      { status: 400 }
+    );
+  }
+
   let input;
   try {
     input = PolishChapterRequestSchema.parse(body);
