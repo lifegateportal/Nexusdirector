@@ -68,7 +68,9 @@ type SignalFilterState = "idle" | "applied" | "skipped";
 type QualityReport = { score: number; pass: boolean; issues: { severity: "warn" | "error"; message: string }[] };
 type ChapterPlanStep = { purpose: string; supportedExcerptNumbers: number[]; minExcerptNumber?: number };
 type ReviewTab = "manuscript" | "source-map";
-const DEFAULT_REQUEST_TIMEOUT_MS = 240000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 600000;
+const CHAPTER_WRITER_STREAM_IDLE_TIMEOUT_MS = 90000;
+const DEEPGRAM_REQUEST_TIMEOUT_MS = 900000;
 export type EbookPipelineSnapshot = {
   stage: PipelineStage;
   progress: { total: number; completed: number };
@@ -102,6 +104,20 @@ function parseSignalFilterLog(logEntries: string[]): { state: SignalFilterState;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+async function withTimeout<T>(promise: Promise<T>, label: string, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error(`${label} timed out after ${Math.round(timeoutMs / 1000)}s`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+}
+
 async function postJson<T>(url: string, body: unknown, retries = 1): Promise<T> {
   const route = routeLabel(url);
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -128,7 +144,7 @@ async function postJson<T>(url: string, body: unknown, retries = 1): Promise<T> 
     }
     clearTimeout(timeoutId);
     if (!res.ok) {
-      const rawText = await res.text();
+      const rawText = await withTimeout(res.text(), `${route} error body`, DEFAULT_REQUEST_TIMEOUT_MS);
       let err: { error?: string; details?: string; route?: string } = {};
       try {
         err = rawText ? JSON.parse(rawText) as { error?: string; details?: string; route?: string } : {};
@@ -153,7 +169,7 @@ async function postJson<T>(url: string, body: unknown, retries = 1): Promise<T> 
         err.details ? `Details: ${err.details}` : "",
       ].filter(Boolean).join("\n"));
     }
-    return res.json() as Promise<T>;
+    return await withTimeout(res.json() as Promise<T>, `${route} response body`, DEFAULT_REQUEST_TIMEOUT_MS);
   }
   throw new Error(`Request failed after retries: ${route}`);
 }
@@ -2347,7 +2363,7 @@ export function EbookPipeline({
           body: buffer,
         },
         2,
-        900000
+        DEEPGRAM_REQUEST_TIMEOUT_MS
       );
 
       if (!dgRes.ok) {
@@ -2356,7 +2372,7 @@ export function EbookPipeline({
       }
 
       type DgResponse = { results?: { channels?: Array<{ alternatives?: Array<{ transcript?: string }> }> } };
-      const data = await dgRes.json() as DgResponse;
+      const data = await withTimeout(dgRes.json() as Promise<DgResponse>, `${label} transcription response`, DEEPGRAM_REQUEST_TIMEOUT_MS) as DgResponse;
       const transcript = data.results?.channels?.[0]?.alternatives?.[0]?.transcript ?? "";
       if (!transcript.trim()) throw new Error(`Deepgram returned an empty transcript for ${label}`);
 
@@ -2953,7 +2969,7 @@ export function EbookPipeline({
           // ── Proposal 2: single-call chapter writer ──────────────────────
           // When useChapterWriter is on, write ALL sections of this chapter
           // in one LLM call. Results cached — per-section loop reads from cache.
-          // Falls back to per-section writes if the call fails.
+          // If this fails, stop with a hard error (correctness over silent downgrade).
           if (useChapterWriter && chapterWrittenForChapter !== assignment.chapterNumber) {
             chapterWrittenForChapter = assignment.chapterNumber;
             chapterWriteCache.clear();
@@ -2965,15 +2981,9 @@ export function EbookPipeline({
               addLog(`  ✍ Writing Chapter ${assignment.chapterNumber} in one pass (${chapterAssignmentsForWrite.length} sections)…`);
               try {
                 // G6: route now returns SSE — read the stream and parse the data: line
-                const chapterWriteController = new AbortController();
-                const chapterWriteTimeout = setTimeout(
-                  () => chapterWriteController.abort(new Error("write-chapter timed out")),
-                  DEFAULT_REQUEST_TIMEOUT_MS,
-                );
-                let chapterWriteRes: Response;
-                try {
-                  chapterWriteRes = await fetch("/api/ebook/write-chapter", {
-                    signal: chapterWriteController.signal,
+                const chapterWriteRes = await fetchWithRetry(
+                  "/api/ebook/write-chapter",
+                  {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
@@ -3013,10 +3023,10 @@ export function EbookPipeline({
                         };
                       }),
                     }),
-                  });
-                } finally {
-                  clearTimeout(chapterWriteTimeout);
-                }
+                  },
+                  1,
+                  DEFAULT_REQUEST_TIMEOUT_MS,
+                );
 
                 if (!chapterWriteRes.ok) {
                   throw new Error(`write-chapter failed (HTTP ${chapterWriteRes.status})`);
@@ -3029,7 +3039,11 @@ export function EbookPipeline({
                 const dec = new TextDecoder();
                 let buf = "";
                 while (true) {
-                  const { done, value } = await reader.read();
+                  const { done, value } = await withTimeout(
+                    reader.read(),
+                    "write-chapter stream idle",
+                    CHAPTER_WRITER_STREAM_IDLE_TIMEOUT_MS,
+                  );
                   if (done) break;
                   buf += dec.decode(value, { stream: true });
                 }
@@ -3037,7 +3051,6 @@ export function EbookPipeline({
                 for (const line of buf.split("\n")) {
                   if (line.startsWith("data: ")) {
                     chapterWriteResult = JSON.parse(line.slice(6));
-                    break;
                   }
                 }
                 if (!chapterWriteResult || chapterWriteResult.error) throw new Error(chapterWriteResult?.error ?? "Empty response from write-chapter");
@@ -3050,8 +3063,10 @@ export function EbookPipeline({
                 }
                 addLog(`  ✓ Chapter ${assignment.chapterNumber} written (${chapterWriteCache.size} sections cached)`);
               } catch (writeErr) {
-                addLog(`  ⚠ Chapter write call failed — falling back to per-section writes`);
+                const detail = writeErr instanceof Error ? writeErr.message : String(writeErr);
+                addLog(`  ✗ Chapter write failed for Chapter ${assignment.chapterNumber}: ${detail}`);
                 console.warn("[write-chapter] failed:", writeErr);
+                throw new Error(`Single-pass chapter writer failed for Chapter ${assignment.chapterNumber}: ${detail}`);
               }
             }
           }
