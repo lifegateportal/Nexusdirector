@@ -25,6 +25,7 @@ import type { EbookProject } from "@/lib/ebook-project-store";
 
 const JOB_STATE_KEY = "nexus_ebook_job_state";
 const JOB_STORAGE_KEY = "nexus_ebook_current_job";
+const CURRENT_PROJECT_ID_KEY = "nexus_ebook_current_project_id";
 const PENDING_MOUNT_KEY = "nexus_ebook_pending_mount";
 const VOICE_STUDIO_STORAGE_PREFIX = "nexus_voice_studio_";
 const VALID_JOB_STATUSES = new Set([
@@ -175,28 +176,84 @@ function EbookPageClient() {
   const setCurrentProjectIdStable = useCallback((id: string) => {
     currentProjectIdRef.current = id;
     setCurrentProjectId(id);
+    try {
+      localStorage.setItem(CURRENT_PROJECT_ID_KEY, id);
+    } catch {
+      // localStorage unavailable
+    }
   }, []);
 
   const clearCurrentProjectIdStable = useCallback(() => {
     currentProjectIdRef.current = "";
     setCurrentProjectId("");
+    try {
+      localStorage.removeItem(CURRENT_PROJECT_ID_KEY);
+    } catch {
+      // localStorage unavailable
+    }
   }, []);
 
-  const ensureActiveProjectId = useCallback(() => {
+  const findProjectIdByJobId = useCallback((jobId: string | null | undefined) => {
+    if (!jobId) return "";
+    const matches = projects.filter((project) => project.jobState?.jobId === jobId);
+    if (matches.length === 0) return "";
+    const best = [...matches].sort((a, b) => (
+      Date.parse(b.updatedAt || b.createdAt || "") - Date.parse(a.updatedAt || a.createdAt || "")
+    ))[0];
+    return best?.id ?? "";
+  }, [projects]);
+
+  const ensureActiveProjectId = useCallback((jobId?: string | null) => {
     const existing = currentProjectIdRef.current || pendingProjectIdRef.current;
     if (existing) return existing;
+
+    const matchedByJobId = findProjectIdByJobId(jobId);
+    if (matchedByJobId) {
+      pendingProjectIdRef.current = matchedByJobId;
+      setCurrentProjectIdStable(matchedByJobId);
+      return matchedByJobId;
+    }
+
     const id = generateEbookProjectId();
     pendingProjectIdRef.current = id;
     setCurrentProjectIdStable(id);
     return id;
-  }, [setCurrentProjectIdStable]);
+  }, [findProjectIdByJobId, setCurrentProjectIdStable]);
 
   useEffect(() => {
     void (async () => {
       const localProjects = await listEbookProjects().catch(() => []);
       setProjects(localProjects);
+
+      try {
+        const storedProjectId = (localStorage.getItem(CURRENT_PROJECT_ID_KEY) ?? "").trim();
+        if (storedProjectId && localProjects.some((project) => project.id === storedProjectId)) {
+          setCurrentProjectIdStable(storedProjectId);
+          return;
+        }
+
+        if (storedProjectId) {
+          localStorage.removeItem(CURRENT_PROJECT_ID_KEY);
+        }
+
+        const rawJobState = localStorage.getItem(JOB_STATE_KEY);
+        if (!rawJobState) return;
+        const parsed = JSON.parse(rawJobState) as { jobId?: unknown };
+        const jobId = typeof parsed.jobId === "string" ? parsed.jobId : "";
+        if (!jobId) return;
+
+        const match = localProjects
+          .filter((project) => project.jobState?.jobId === jobId)
+          .sort((a, b) => Date.parse(b.updatedAt || b.createdAt || "") - Date.parse(a.updatedAt || a.createdAt || ""))[0];
+
+        if (match?.id) {
+          setCurrentProjectIdStable(match.id);
+        }
+      } catch {
+        // localStorage unavailable or corrupt
+      }
     })();
-  }, []);
+  }, [setCurrentProjectIdStable]);
 
   useEffect(() => {
     let cancelled = false;
@@ -943,7 +1000,7 @@ function EbookPageClient() {
       const chapterCount = safeChapters.length;
       const totalWordCount = sumChapterWordCount(safeChapters);
 
-      const id = ensureActiveProjectId();
+      const id = ensureActiveProjectId(safeJobState.jobId);
       const existing = projects.find((p) => p.id === id);
       const existingChapters = sanitizeChapterDrafts(existing?.jobState.chapters);
       const shouldPreserveExisting = Boolean(existing && existingChapters.length > 0 && chapterCount === 0);
@@ -1127,7 +1184,7 @@ function EbookPageClient() {
       chapterCount: manifest.chapters.length,
     });
     try {
-      const id = ensureActiveProjectId();
+      const id = ensureActiveProjectId(safeJobState.jobId);
       const existing = projects.find((p) => p.id === id) ?? null;
 
       const latestLiveJobState = liveJobStateRef.current;
