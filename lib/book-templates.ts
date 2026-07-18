@@ -1,6 +1,6 @@
 /**
  * book-templates.ts
- * Five industry-standard non-fiction book layout templates for PDF export.
+ * Seven industry-standard non-fiction book layout templates for PDF export.
  * Each template drives all typographic decisions in ebook-generator.tsx.
  */
 
@@ -10,6 +10,8 @@ export const BOOK_TEMPLATE_IDS = [
   "devotional",
   "popular-nonfiction",
   "premium-literary",
+  "pastoral-ministry",
+  "memoir-narrative",
 ] as const;
 
 export type BookTemplateId = (typeof BOOK_TEMPLATE_IDS)[number];
@@ -24,7 +26,7 @@ export type TrimSizeSpec = {
   margins: { top: number; bottom: number; left: number; right: number }; // recto (odd page) defaults
   gutterMargin: number;  // inside / binding margin — wider to allow for binding
   outsideMargin: number; // outside / trim margin — narrower
-  bodyFontSizeAdjust: number; // delta applied to template’s base body font size
+  bodyFontSizeAdjust: number; // delta applied to template's base body font size
 };
 
 /** International premium print trim specifications */
@@ -111,6 +113,17 @@ function toRoman(n: number): string {
     while (n >= vals[i]) { result += syms[i]; n -= vals[i]; }
   }
   return result;
+}
+
+// ─── Number-to-Word Helper (for Pastoral and Memoir labels) ───────────────────
+function toWord(n: number): string {
+  const ones  = ["","One","Two","Three","Four","Five","Six","Seven","Eight","Nine",
+                  "Ten","Eleven","Twelve","Thirteen","Fourteen","Fifteen",
+                  "Sixteen","Seventeen","Eighteen","Nineteen"];
+  const tens  = ["","","Twenty","Thirty","Forty","Fifty","Sixty","Seventy","Eighty","Ninety"];
+  if (n < 20) return ones[n] ?? String(n);
+  const t = Math.floor(n / 10), o = n % 10;
+  return o === 0 ? tens[t] : `${tens[t]}-${ones[o]}`;
 }
 
 // ─── Template Definitions ──────────────────────────────────────────────────────
@@ -325,6 +338,122 @@ export const BOOK_TEMPLATES: Record<BookTemplateId, BookTemplateConfig> = {
     scriptureFontSize: 11,
     accentColor: "#4d4d4d",         // CMYK 0/0/0/70 — cool grey
     labelColor: "#737373",          // CMYK 0/0/0/55 — softer label
+  },
+
+  // 6 ── Pastoral Ministry ────────────────────────────────────────────────────
+  //
+  // Modelled on Baker Books, Whitaker House, and Charisma House — publishers
+  // specialising in pastoral, prophetic, and ministry books. Key markers:
+  //   • Chapter labels spelled out in ALL-CAPS ("CHAPTER ONE") in a small
+  //     spaced sans-serif — a Baker Books house convention.
+  //   • Generous body leading (8pt line gap, 12pt paragraph gap) and a
+  //     slightly larger body size (12.5pt) for readability at the pulpit
+  //     and for congregants who read in lower light.
+  //   • Warm burgundy accent (#6b1f2a) — a press-safe deep red used widely
+  //     in Baker and Charisma covers.
+  //   • Centered chapter titles in a large bold serif — commanding authority
+  //     without academic distance.
+  //   • Generous scripture indent (48pt) and matching scripture font size —
+  //     scripture passages deserve visual breathing room in pastoral prose.
+  //
+  "pastoral-ministry": {
+    id: "pastoral-ministry",
+    name: "Pastoral Ministry",
+    description: "Baker Books / Whitaker House — Stanley, Hagee, Dollar style",
+    badge: "Baker / Whitaker House",
+    runningHeaders: true,
+    bodyFontSize: 12.5,
+    bodyLineGap: 8,
+    paragraphGap: 12,
+    paragraphIndent: 0,
+    bodyAlign: "justify",
+    chapterLabel: (n) => `CHAPTER ${toWord(n).toUpperCase()}`,
+    chapterLabelSize: 8.5,
+    chapterLabelColor: "#6b1f2a",   // CMYK 0/71/60/58 — deep burgundy, press-safe
+    chapterLabelFont: "sans",
+    chapterLabelAlign: "center",
+    chapterTitleSize: 26,
+    chapterTitleColor: "#1a0408",   // CMYK 0/80/55/90 — near-black with warm cast
+    chapterTitleFont: "serifBold",
+    chapterTitleAlign: "center",
+    chapterPreGap: 1.6,
+    sectionSize: 13.5,
+    sectionColor: "#1a0408",        // CMYK 0/80/55/90
+    sectionFont: "serifBold",
+    sectionAlign: "left",
+    sectionRule: false,
+    showDivider: true,
+    dividerColor: "#b89070",        // CMYK 0/22/39/28 — warm gold rule, press-safe
+    matterTitleSize: 22,
+    matterTitleAlign: "center",
+    titlePageTitleSize: 30,
+    titlePageSubtitleSize: 14,
+    titlePageAuthorSize: 13,
+    titlePageAlign: "center",
+    titlePageTopGap: 5.5,
+    scriptureIndent: 48,
+    scriptureFontSize: 12.5,
+    accentColor: "#6b1f2a",         // CMYK 0/71/60/58 — deep burgundy
+    labelColor: "#6b1f2a",          // burgundy label
+  },
+
+  // 7 ── Memoir & Narrative ───────────────────────────────────────────────────
+  //
+  // Modelled on Penguin Press, Harper Perennial, and W.W. Norton — publishers
+  // whose memoir list (Mary Karr, Rick Bragg, Frank McCourt) sets the standard
+  // for intimate, literary personal narrative. Key markers:
+  //   • Chapter labels as written-out ordinals in italic serif ("One", "Two") —
+  //     the single most recognisable convention of literary memoir typography.
+  //   • Traditional indented paragraphs (34pt) with no paragraph gap — the reader
+  //     is pulled forward without visual interruption.
+  //   • 11pt body on a 4.5pt line gap — tight but not cramped; allows a full
+  //     narrative page to feel immersive.
+  //   • Warm sepia accent (#5c3d1e — CMYK 0/33/67/64) rather than blue or red —
+  //     signals intimacy and memory rather than authority or energy.
+  //   • Section headings in italic serif, left-aligned — understated, never
+  //     interrupting the narrative voice.
+  //   • No divider rule — the prose flows as one continuous experience;
+  //     the indent alone signals paragraph transitions.
+  //
+  "memoir-narrative": {
+    id: "memoir-narrative",
+    name: "Memoir & Narrative",
+    description: "Penguin Press / W.W. Norton — Mary Karr, Rick Bragg style",
+    badge: "Penguin Press / Norton",
+    runningHeaders: true,
+    bodyFontSize: 11,
+    bodyLineGap: 4.5,
+    paragraphGap: 0,
+    paragraphIndent: 34,
+    bodyAlign: "justify",
+    chapterLabel: (n) => toWord(n),
+    chapterLabelSize: 14,
+    chapterLabelColor: "#5c3d1e",   // CMYK 0/33/67/64 — warm sepia, press-safe
+    chapterLabelFont: "serifItalic",
+    chapterLabelAlign: "center",
+    chapterTitleSize: 19,
+    chapterTitleColor: "#1c120a",   // CMYK 0/33/44/89 — deep warm near-black
+    chapterTitleFont: "serifBold",
+    chapterTitleAlign: "center",
+    chapterPreGap: 2,
+    sectionSize: 11.5,
+    sectionColor: "#2e1f0f",        // CMYK 0/32/67/82 — dark sepia
+    sectionFont: "serifItalic",
+    sectionAlign: "left",
+    sectionRule: false,
+    showDivider: false,
+    dividerColor: "#c4aa88",        // CMYK 0/13/30/23 — light sepia hairline
+    matterTitleSize: 20,
+    matterTitleAlign: "center",
+    titlePageTitleSize: 24,
+    titlePageSubtitleSize: 12,
+    titlePageAuthorSize: 12,
+    titlePageAlign: "center",
+    titlePageTopGap: 7,
+    scriptureIndent: 40,
+    scriptureFontSize: 11,
+    accentColor: "#5c3d1e",         // CMYK 0/33/67/64 — warm sepia
+    labelColor: "#8a6645",          // CMYK 0/25/50/46 — lighter sepia label
   },
 };
 

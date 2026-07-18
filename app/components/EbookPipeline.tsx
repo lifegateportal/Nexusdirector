@@ -1640,6 +1640,7 @@ export function EbookPipeline({
   const [auditRunning, setAuditRunning] = useState(false);
   const [applyingAudit, setApplyingAudit] = useState(false);
   const [exportingBook, setExportingBook] = useState(false);
+  const [showTemplatePicker, setShowTemplatePicker] = useState(false);
   const [printSpec, setPrintSpec] = useState<{ trimSize: "6x9" | "5.5x8.5"; runningHeaders: boolean }>({ trimSize: "6x9", runningHeaders: true });
   const [error, setError] = useState<string | null>(null);
   const [signalFilterState, setSignalFilterState] = useState<SignalFilterState>("idle");
@@ -3791,20 +3792,61 @@ export function EbookPipeline({
                 </div>
               </div>
               <div className="flex flex-wrap items-center gap-2">
-                {/* Template picker */}
-                <select
-                  value={completedManifest?.selectedTemplate ?? "devotional"}
-                  onChange={(e) => {
-                    const id = e.target.value as BookTemplateId;
-                    updateCompletedManifest((cur) => ({ ...cur, selectedTemplate: id }));
-                  }}
-                  className="min-h-[48px] rounded-xl border border-slate-600 bg-slate-800 px-3 py-2 text-xs text-slate-200 focus:border-cyan-500 focus:outline-none"
-                  aria-label="Book layout template"
-                >
-                  {BOOK_TEMPLATE_IDS.map((id) => (
-                    <option key={id} value={id}>{BOOK_TEMPLATES[id].name}</option>
-                  ))}
-                </select>
+                {/* Template picker — compact button that expands a card grid */}
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setShowTemplatePicker((v) => !v)}
+                    className="min-h-[48px] rounded-xl border border-slate-600 bg-slate-800 px-3 py-2 text-xs text-slate-200 hover:border-cyan-500/60 hover:bg-slate-700 transition-colors flex items-center gap-2"
+                    aria-label="Choose book layout template"
+                  >
+                    <span className="font-semibold text-cyan-300">Layout:</span>
+                    <span>{BOOK_TEMPLATES[completedManifest?.selectedTemplate ?? "devotional"].name}</span>
+                    <span className="text-[10px] rounded-full border border-slate-600 bg-slate-700 px-1.5 py-0.5 text-slate-400">
+                      {BOOK_TEMPLATES[completedManifest?.selectedTemplate ?? "devotional"].badge}
+                    </span>
+                    <svg className={`h-3.5 w-3.5 text-slate-400 transition-transform ${showTemplatePicker ? "rotate-180" : ""}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                  </button>
+
+                  {showTemplatePicker && (
+                    <div className="absolute right-0 top-full z-50 mt-2 w-[640px] max-w-[calc(100vw-2rem)] rounded-2xl border border-slate-600/60 bg-slate-900 p-3 shadow-2xl">
+                      <p className="mb-2.5 text-[10px] font-semibold uppercase tracking-widest text-slate-500">Choose a layout template</p>
+                      <div className="grid grid-cols-2 gap-2 sm:grid-cols-2">
+                        {BOOK_TEMPLATE_IDS.map((id) => {
+                          const tpl = BOOK_TEMPLATES[id];
+                          const isActive = (completedManifest?.selectedTemplate ?? "devotional") === id;
+                          return (
+                            <button
+                              key={id}
+                              type="button"
+                              onClick={() => {
+                                updateCompletedManifest((cur) => ({ ...cur, selectedTemplate: id }));
+                                setShowTemplatePicker(false);
+                              }}
+                              className={[
+                                "rounded-xl border p-3 text-left transition-all",
+                                isActive
+                                  ? "border-cyan-400/50 bg-cyan-500/10 ring-1 ring-cyan-400/30"
+                                  : "border-slate-700/60 bg-slate-800/60 hover:border-slate-500 hover:bg-slate-800",
+                              ].join(" ")}
+                            >
+                              <div className="flex items-start justify-between gap-2">
+                                <span className={`text-sm font-semibold ${isActive ? "text-cyan-200" : "text-slate-200"}`}>
+                                  {tpl.name}
+                                </span>
+                                {isActive && (
+                                  <svg className="mt-0.5 h-3.5 w-3.5 shrink-0 text-cyan-400" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" /></svg>
+                                )}
+                              </div>
+                              <span className="mt-0.5 block text-[10px] font-medium text-slate-500">{tpl.badge}</span>
+                              <span className="mt-1 block text-[11px] leading-snug text-slate-400">{tpl.description}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
                 <button
                   type="button"
                   onClick={() => void runAudit()}
