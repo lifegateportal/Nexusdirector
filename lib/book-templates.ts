@@ -12,6 +12,9 @@ export const BOOK_TEMPLATE_IDS = [
   "premium-literary",
   "pastoral-ministry",
   "memoir-narrative",
+  "study-reference",
+  "charismatic-prophetic",
+  "leadership-vision",
 ] as const;
 
 export type BookTemplateId = (typeof BOOK_TEMPLATE_IDS)[number];
@@ -454,6 +457,185 @@ export const BOOK_TEMPLATES: Record<BookTemplateId, BookTemplateConfig> = {
     scriptureFontSize: 11,
     accentColor: "#5c3d1e",         // CMYK 0/33/67/64 — warm sepia
     labelColor: "#8a6645",          // CMYK 0/25/50/46 — lighter sepia label
+  },
+};
+
+  // 8 ── Study & Reference ────────────────────────────────────────────────────
+  //
+  // Modelled on Crossway, Zondervan Academic, and Moody Publishers — houses
+  // that produce expository commentaries, systematic theologies, and study
+  // Bibles. Distinctive features:
+  //   • Smaller body text (10.5pt) with tight leading — page density is
+  //     intentional; readers expect a lot of content per page.
+  //   • Traditional deep indents (26pt) with no paragraph gap — the classic
+  //     scholarly convention going back to the Oxford University Press style manual.
+  //   • Chapter labels in small all-caps sans, forest green — a Crossway
+  //     house mark seen across their ESV Study Bible and reference series.
+  //   • Section headings with a thin forest-green rule beneath — this is the
+  //     single most recognisable feature of Crossway's interior design.
+  //   • Wide scripture indent (44pt) — doctrinal books quote scripture at length
+  //     and the passage needs clear visual separation from the commentary.
+  //   • Cream background (#faf8f2) is specified for the title page; body pages
+  //     use the trim spec's white — the cream tones match the actual paper stock
+  //     Crossway uses for their reference imprint.
+  //
+  "study-reference": {
+    id: "study-reference",
+    name: "Study & Reference",
+    description: "Crossway / Zondervan Academic — ESV Study Bible, Piper, MacArthur style",
+    badge: "Crossway / Moody",
+    runningHeaders: true,
+    bodyFontSize: 10.5,
+    bodyLineGap: 3.5,
+    paragraphGap: 0,
+    paragraphIndent: 26,
+    bodyAlign: "justify",
+    chapterLabel: (n) => `CHAPTER ${n}`,
+    chapterLabelSize: 8,
+    chapterLabelColor: "#2d5a27",   // CMYK 52/0/52/65 — forest green, press-safe
+    chapterLabelFont: "sans",
+    chapterLabelAlign: "left",
+    chapterTitleSize: 20,
+    chapterTitleColor: "#111111",   // CMYK 0/0/0/93 — near-black
+    chapterTitleFont: "serifBold",
+    chapterTitleAlign: "left",
+    chapterPreGap: 1.4,
+    sectionSize: 11,
+    sectionColor: "#111111",        // CMYK 0/0/0/93
+    sectionFont: "sansBold",
+    sectionAlign: "left",
+    sectionRule: true,              // green rule beneath each heading — Crossway signature
+    showDivider: true,
+    dividerColor: "#2d5a27",        // CMYK 52/0/52/65 — forest green rule
+    matterTitleSize: 18,
+    matterTitleAlign: "left",
+    titlePageTitleSize: 24,
+    titlePageSubtitleSize: 12,
+    titlePageAuthorSize: 11,
+    titlePageAlign: "left",
+    titlePageTopGap: 5,
+    scriptureIndent: 44,
+    scriptureFontSize: 10,
+    accentColor: "#2d5a27",         // CMYK 52/0/52/65 — forest green
+    labelColor: "#2d5a27",          // forest green label
+  },
+
+  // 9 ── Charismatic & Prophetic ──────────────────────────────────────────────
+  //
+  // Modelled on Destiny Image, River Publishing, and Creation House — the
+  // publishers behind the charismatic and prophetic movement's bestsellers
+  // (Bill Johnson, Cindy Jacobs, John Bevere, Reinhard Bonnke). Key markers:
+  //   • Deep royal purple accent (#4a1d8a — CMYK 47/79/0/46) — purple has been
+  //     the primary brand colour of Destiny Image since their founding; it
+  //     signals royalty, the Kingdom, and the prophetic.
+  //   • Large body text (12.5pt) with very generous leading (8pt gap) —
+  //     charismatic books are meant to be read aloud or consumed quickly in
+  //     short devotional bursts; the white space is a design choice, not waste.
+  //   • Centered everything — chapter labels, titles, section heads. This
+  //     centred gravity gives the page a formal, proclamatory weight.
+  //   • Chapter label in italic serif ("Chapter 3") in purple — softer than
+  //     an all-caps label; intimate and invitational rather than academic.
+  //   • Rich purple ornamental dividers — at 0.75pt, they visually punctuate
+  //     the revelatory shifts between sections.
+  //
+  "charismatic-prophetic": {
+    id: "charismatic-prophetic",
+    name: "Charismatic & Prophetic",
+    description: "Destiny Image / River Publishing — Johnson, Bevere, Jacobs style",
+    badge: "Destiny Image / River",
+    runningHeaders: true,
+    bodyFontSize: 12.5,
+    bodyLineGap: 8,
+    paragraphGap: 14,
+    paragraphIndent: 0,
+    bodyAlign: "justify",
+    chapterLabel: (n) => `Chapter ${n}`,
+    chapterLabelSize: 11,
+    chapterLabelColor: "#4a1d8a",   // CMYK 47/79/0/46 — royal purple, press-safe
+    chapterLabelFont: "serifItalic",
+    chapterLabelAlign: "center",
+    chapterTitleSize: 28,
+    chapterTitleColor: "#0e0518",   // CMYK 94/86/0/91 — deep purple-black
+    chapterTitleFont: "serifBold",
+    chapterTitleAlign: "center",
+    chapterPreGap: 1.6,
+    sectionSize: 14,
+    sectionColor: "#4a1d8a",        // royal purple
+    sectionFont: "serifBold",
+    sectionAlign: "center",
+    sectionRule: false,
+    showDivider: true,
+    dividerColor: "#7b52b9",        // CMYK 35/56/0/27 — lighter purple rule, press-safe
+    matterTitleSize: 22,
+    matterTitleAlign: "center",
+    titlePageTitleSize: 30,
+    titlePageSubtitleSize: 14,
+    titlePageAuthorSize: 13,
+    titlePageAlign: "center",
+    titlePageTopGap: 6,
+    scriptureIndent: 44,
+    scriptureFontSize: 12.5,
+    accentColor: "#4a1d8a",         // CMYK 47/79/0/46 — royal purple
+    labelColor: "#7b52b9",          // lighter purple label
+  },
+
+  // 10 ── Leadership & Vision ─────────────────────────────────────────────────
+  //
+  // Modelled on Crown Business, FaithWords (Hachette), and Thomas Nelson
+  // Leadership — publishers that target pastors, executives, and organisational
+  // leaders (Andy Stanley, Craig Groeschel, John Maxwell). Key markers:
+  //   • Gold accent (#c9a227 — CMYK 0/20/84/21) against gunmetal type. This
+  //     pairing signals authority, excellence, and premium positioning — it is
+  //     the dominant colour language of the leadership publishing category.
+  //   • Left-aligned body text (not justified) — a deliberate modern choice
+  //     that feels less "book" and more "executive brief"; the ragged right
+  //     edge keeps the tone direct and forward-moving.
+  //   • Chapter number rendered as a large oversized numeral in gold — a
+  //     Maxwell / Stanley convention that anchors the opener visually.
+  //   • Sans-serif section headings with a thin gold rule above — the rule
+  //     signals structure and precision; every section feels like an agenda item.
+  //   • Tight paragraph gap (10pt) with no indent — open but not loose;
+  //     scannable for the leader reading on a plane or between meetings.
+  //
+  "leadership-vision": {
+    id: "leadership-vision",
+    name: "Leadership & Vision",
+    description: "Crown Business / FaithWords — Maxwell, Stanley, Groeschel style",
+    badge: "Crown / FaithWords",
+    runningHeaders: true,
+    bodyFontSize: 11.5,
+    bodyLineGap: 5.5,
+    paragraphGap: 10,
+    paragraphIndent: 0,
+    bodyAlign: "left",              // ragged right — intentional; signals directness
+    chapterLabel: (n) => String(n),
+    chapterLabelSize: 52,           // oversized numeral — Maxwell/Stanley convention
+    chapterLabelColor: "#c9a227",   // CMYK 0/20/84/21 — gold, press-safe
+    chapterLabelFont: "sansBold",
+    chapterLabelAlign: "left",
+    chapterTitleSize: 22,
+    chapterTitleColor: "#1a1a1a",   // CMYK 0/0/0/90 — gunmetal near-black
+    chapterTitleFont: "sansBold",
+    chapterTitleAlign: "left",
+    chapterPreGap: 1.2,
+    sectionSize: 12,
+    sectionColor: "#1a1a1a",        // gunmetal
+    sectionFont: "sansBold",
+    sectionAlign: "left",
+    sectionRule: true,              // thin gold rule above each heading
+    showDivider: true,
+    dividerColor: "#c9a227",        // gold rule
+    matterTitleSize: 22,
+    matterTitleAlign: "left",
+    titlePageTitleSize: 32,
+    titlePageSubtitleSize: 14,
+    titlePageAuthorSize: 13,
+    titlePageAlign: "left",
+    titlePageTopGap: 4.5,
+    scriptureIndent: 30,
+    scriptureFontSize: 11.5,
+    accentColor: "#c9a227",         // CMYK 0/20/84/21 — gold
+    labelColor: "#c9a227",          // gold label
   },
 };
 
