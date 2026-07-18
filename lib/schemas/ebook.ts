@@ -321,6 +321,12 @@ export const PrintSpecSchema = z.object({
   bleed: z.boolean().default(false),
   /** Draw printer crop marks at the bleed corners (requires bleed: true to take effect) */
   cropMarks: z.boolean().default(false),
+  /**
+   * editableProof — when true, generates a review-friendly PDF (PDF 1.7, no PDF/X-1a
+   * restrictions, no bleed/crop marks) that can be text-edited in Adobe Acrobat Pro.
+   * Send the standard export (editableProof: false) to the printing press.
+   */
+  editableProof: z.boolean().default(false),
 });
 
 export const EbookManifestSchema = z.object({

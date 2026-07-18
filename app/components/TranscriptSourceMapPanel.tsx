@@ -76,7 +76,7 @@ export function TranscriptSourceMapPanel({
   const [selectedParagraphIndex, setSelectedParagraphIndex] = useState<number | null>(null);
   const [historyVersion, setHistoryVersion] = useState(0);
   const [critique, setCritique] = useState<z.infer<typeof CritiqueResponseSchema> | null>(null);
-  const [showUnusedOnly, setShowUnusedOnly] = useState(false);
+  const [coverageFilter, setCoverageFilter] = useState<"all" | "covered" | "not-covered">("all");
   const [mobileExcerptLimit, setMobileExcerptLimit] = useState(80);
   const historyRef = useRef<Record<string, HistoryEntry>>({});
 
@@ -129,10 +129,21 @@ export function TranscriptSourceMapPanel({
     });
   }, [active]);
 
+  // Coverage counts — used for the summary and filter button labels
+  const coveredCount = useMemo(
+    () => excerptUsedByIndex.filter(Boolean).length,
+    [excerptUsedByIndex]
+  );
+  const notCoveredCount = useMemo(
+    () => excerptUsedByIndex.filter((v) => !v).length,
+    [excerptUsedByIndex]
+  );
+
   const filteredExcerptIndexes = useMemo(() => {
-    if (!showUnusedOnly) return visibleExcerptIndexes;
-    return visibleExcerptIndexes.filter((index) => !excerptUsedByIndex[index]);
-  }, [excerptUsedByIndex, showUnusedOnly, visibleExcerptIndexes]);
+    if (coverageFilter === "covered") return visibleExcerptIndexes.filter((index) => excerptUsedByIndex[index]);
+    if (coverageFilter === "not-covered") return visibleExcerptIndexes.filter((index) => !excerptUsedByIndex[index]);
+    return visibleExcerptIndexes; // "all" — always show every excerpt
+  }, [excerptUsedByIndex, coverageFilter, visibleExcerptIndexes]);
 
   const renderedExcerptIndexes = useMemo(() => {
     if (!isLikelyIOS) return filteredExcerptIndexes;
@@ -280,7 +291,12 @@ export function TranscriptSourceMapPanel({
         </select>
         {active && (
           <p className="mt-2 text-xs text-slate-400">
-            {selectedExcerptNumbers.size} selected for rewrite • {active.assignment.transcriptExcerpts.length} total excerpts
+            {selectedExcerptNumbers.size} selected for rewrite •{" "}
+            <span className="text-emerald-400">{coveredCount} covered</span>
+            {" / "}
+            <span className={notCoveredCount > 0 ? "text-amber-400" : "text-slate-400"}>{notCoveredCount} not in prose</span>
+            {" / "}
+            {active.assignment.transcriptExcerpts.length} total
           </p>
         )}
         {active && (
@@ -314,26 +330,46 @@ export function TranscriptSourceMapPanel({
       {active && (
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 lg:items-start">
           <section className="rounded-xl border border-violet-500/20 bg-slate-900/50 p-3">
-            <div className="mb-3 flex items-center justify-between gap-2">
-              <p className="text-xs font-semibold uppercase tracking-widest text-violet-300">Transcript Source</p>
-              <div className="flex items-center gap-2">
+            <div className="mb-3 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs font-semibold uppercase tracking-widest text-violet-300">Transcript Source</p>
                 {transcriptPreview && (
                   <span className="rounded-full border border-violet-500/30 bg-violet-500/10 px-2 py-1 text-[10px] font-semibold text-violet-200">
                     {transcriptPreview.label}
                   </span>
                 )}
-                <button
-                  type="button"
-                  onClick={() => setShowUnusedOnly((v) => !v)}
-                  className={[
-                    "min-h-[48px] rounded-lg border px-2.5 text-[10px] font-semibold uppercase tracking-wide",
-                    showUnusedOnly
-                      ? "border-amber-400/40 bg-amber-500/15 text-amber-200"
-                      : "border-slate-700/60 bg-slate-900/60 text-slate-300",
-                  ].join(" ")}
-                >
-                  {showUnusedOnly ? "Showing unused only" : "Highlight unused"}
-                </button>
+              </div>
+              {/* 3-way coverage filter — always shows the full excerpt set, just narrows the view */}
+              <div className="flex gap-1.5">
+                {(["all", "covered", "not-covered"] as const).map((f) => {
+                  const label =
+                    f === "all"
+                      ? `All (${active.assignment.transcriptExcerpts.length})`
+                      : f === "covered"
+                      ? `Covered (${coveredCount})`
+                      : `Not in prose (${notCoveredCount})`;
+                  const activeStyle =
+                    f === "all"
+                      ? "border-violet-400/50 bg-violet-500/15 text-violet-200"
+                      : f === "covered"
+                      ? "border-emerald-400/50 bg-emerald-500/15 text-emerald-200"
+                      : "border-amber-400/50 bg-amber-500/15 text-amber-200";
+                  return (
+                    <button
+                      key={f}
+                      type="button"
+                      onClick={() => setCoverageFilter(f)}
+                      className={[
+                        "min-h-[36px] flex-1 rounded-lg border px-2 text-[10px] font-semibold uppercase tracking-wide transition-colors",
+                        coverageFilter === f
+                          ? activeStyle
+                          : "border-slate-700/60 bg-slate-900/60 text-slate-400 hover:text-slate-200",
+                      ].join(" ")}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
@@ -351,26 +387,37 @@ export function TranscriptSourceMapPanel({
                       "rounded-xl border px-3 py-3",
                       isActive
                         ? "border-cyan-400/50 bg-cyan-500/10"
-                        : "border-slate-700/60 bg-slate-950/70",
+                        : excerptUsedByIndex[index]
+                        ? "border-emerald-700/40 bg-emerald-950/30"
+                        : "border-amber-700/30 bg-amber-950/20",
                     ].join(" ")}
                   >
                     <div className="mb-2 flex flex-wrap items-center gap-2">
                       <button
                         type="button"
                         onClick={() => setActiveExcerptNumber(number)}
-                        className="min-h-[48px] rounded-lg border border-slate-600/60 px-2.5 text-xs font-semibold text-slate-200"
+                        className="min-h-[40px] rounded-lg border border-slate-600/60 px-2.5 text-xs font-semibold text-slate-200"
                       >
-                        Excerpt {number}
+                        #{number}
                       </button>
-                      {exactSlotLabel ? (
-                        <span className="rounded-md bg-emerald-500/20 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-emerald-300">
-                          Exact source: {exactSlotLabel}
+
+                      {/* Usage status — the primary signal the user asked for */}
+                      {excerptUsedByIndex[index] ? (
+                        <span className="rounded-md bg-emerald-500/20 px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-emerald-300">
+                          ✓ Covered in prose
                         </span>
                       ) : (
-                        <span className="rounded-md bg-amber-500/25 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-amber-200">
-                          Exact source not found in transcript entries
+                        <span className="rounded-md bg-amber-500/20 px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-amber-300">
+                          ○ Not in prose
                         </span>
                       )}
+
+                      {exactSlotLabel ? (
+                        <span className="rounded-md bg-slate-700/60 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-300">
+                          {exactSlotLabel}
+                        </span>
+                      ) : null}
+
                       <button
                         type="button"
                         onClick={() => {
@@ -382,10 +429,10 @@ export function TranscriptSourceMapPanel({
                           });
                         }}
                         className={[
-                          "min-h-[48px] rounded-lg border px-2.5 text-xs font-semibold",
+                          "min-h-[40px] rounded-lg border px-2.5 text-xs font-semibold",
                           isSelected
                             ? "border-cyan-400/50 bg-cyan-500/15 text-cyan-200"
-                            : "border-slate-600/60 text-slate-200",
+                            : "border-slate-600/60 text-slate-400 hover:text-slate-200",
                         ].join(" ")}
                       >
                         {isSelected ? "Will include" : "Include in rewrite"}
@@ -397,7 +444,7 @@ export function TranscriptSourceMapPanel({
               })}
               {renderedExcerptIndexes.length === 0 && (
                 <p className="rounded-xl border border-slate-700/60 bg-slate-950/70 px-3 py-2 text-sm text-slate-400">
-                  {showUnusedOnly ? "No unused excerpts found for this section." : "No excerpts available for this section."}
+                  {coverageFilter === "not-covered" ? "All excerpts are covered in prose for this section." : coverageFilter === "covered" ? "No excerpts found in prose yet — run the write step first." : "No excerpts available for this section."}
                 </p>
               )}
               {isLikelyIOS && renderedExcerptIndexes.length < filteredExcerptIndexes.length && (

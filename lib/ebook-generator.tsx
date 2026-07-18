@@ -121,15 +121,17 @@ function stampPageHeader(
     doc
       .fontSize(7)
       .font(fonts.sans)
-      .fillColor("#aaaaaa")
+      // #555555 = ~67% K — renders as dark neutral grey on press; avoids near-white
+      // RGB values that can drop out on CMYK-converted plates.
+      .fillColor("#555555")
       .text(headText.toUpperCase(), mL, 28, { width: textW, align: headAlign, lineBreak: false });
     doc.page.margins.top = savedTop;
 
-    // Hairline rule beneath the running head
+    // Hairline rule beneath the running head — #999999 = ~40% K, press-safe mid-grey
     doc
       .moveTo(mL, 42)
       .lineTo(pageW - mR, 42)
-      .strokeColor("#dddddd")
+      .strokeColor("#999999")
       .lineWidth(0.25)
       .stroke();
   }
@@ -141,7 +143,7 @@ function stampPageHeader(
   doc
     .fontSize(8)
     .font(fonts.serif)
-    .fillColor("#aaaaaa")
+    .fillColor("#555555")
     .text(String(bodyPageNumber), mL, footerY, { width: textW, align: "center", lineBreak: false });
   doc.page.margins.bottom = savedBottom;
 }
@@ -158,12 +160,17 @@ export async function generatePdfBuffer(manifest: EbookManifest, templateId?: st
   const trimSpec = TRIM_SIZE_SPECS[resolvedPrintSpec.trimSize ?? "6x9"];
   const showRunningHeaders = resolvedPrintSpec.runningHeaders !== false && tpl.runningHeaders;
 
+  // editableProof: author-review PDF — PDF 1.7, no PDF/X-1a, no bleed/crop marks,
+  // fully text-based so Acrobat's Edit PDF tool can make corrections.
+  const isEditableProof = resolvedPrintSpec.editableProof === true;
+
   // ── Amendment 7: Bleed + crop marks ───────────────────────────────────────
   // When bleed is enabled the canvas expands by BLEED_PT on each edge; all
   // content is offset so it still sits at the correct trim position.
   const BLEED_PT = 9; // 0.125 in (industry standard for IngramSpark / KDP Print)
-  const enableBleed    = resolvedPrintSpec.bleed    === true;
-  const enableCropMarks = resolvedPrintSpec.cropMarks === true && enableBleed;
+  // Proof mode suppresses bleed/crop marks — they serve no purpose in an author review copy.
+  const enableBleed    = !isEditableProof && resolvedPrintSpec.bleed    === true;
+  const enableCropMarks = !isEditableProof && resolvedPrintSpec.cropMarks === true && enableBleed;
   const bleedOffset = enableBleed ? BLEED_PT : 0;
 
   // Merge trim-size overrides on top of template defaults
@@ -196,27 +203,47 @@ export async function generatePdfBuffer(manifest: EbookManifest, templateId?: st
   };
 
   return new Promise<Buffer>((resolve, reject) => {
-    // ── Amendment 3: PDF 1.4 + PDF/X-1a compatible metadata ──────────────────
+    // ── PDF document initialisation ───────────────────────────────────────────
+    // Two modes:
+    //   Print-ready (default): PDF 1.4, PDF/X-1a:2001 metadata, bleed + crop marks optional.
+    //   Editable proof:        PDF 1.7, no PDF/X-1a restrictions, no bleed/crop marks —
+    //                          text is selectable and editable in Adobe Acrobat Pro.
     const creationDate = new Date();
+    const printReadyInfo = {
+      Title: manifest.bookTitle,
+      Author: manifest.authorName,
+      Subject: manifest.subtitle || manifest.bookTitle,
+      Creator: "Nexus Director",
+      Producer: "Nexus Director",
+      Keywords: [manifest.authorName, manifest.bookTitle].filter(Boolean).join(", "),
+      CreationDate: creationDate,
+      ModDate: creationDate,
+      // PDF/X-1a compliance markers (GTS_PDFXVersion + Trapped are required by spec).
+      // NOTE: full PDF/X-1a also requires an /OutputIntent ICC profile dictionary;
+      // PDFKit does not natively emit one. Prepress workflows that validate strictly
+      // (Acrobat Preflight / PitStop) will flag this. Supply the file to your print
+      // provider as a "PDF/X-1a intent" file and ask them to re-distil if needed.
+      GTS_PDFXVersion: "PDF/X-1a:2001",
+      Trapped: "False",
+    };
+    const proofInfo = {
+      Title: `${manifest.bookTitle} — Author Proof`,
+      Author: manifest.authorName,
+      Subject: manifest.subtitle || manifest.bookTitle,
+      Creator: "Nexus Director",
+      Producer: "Nexus Director",
+      Keywords: [manifest.authorName, manifest.bookTitle, "proof"].filter(Boolean).join(", "),
+      CreationDate: creationDate,
+      ModDate: creationDate,
+    };
     const doc = new PDFDocument({
       margins: pageMargins,
       size: pageSize,
       autoFirstPage: false, // we add pages manually so pageAdded tracking is accurate
       bufferPages: true,    // hold all pages in memory for the second-pass header stamp
-      pdfVersion: "1.4",    // required for PDF/X-1a compliance
-      info: {
-        Title: manifest.bookTitle,
-        Author: manifest.authorName,
-        Subject: manifest.subtitle || manifest.bookTitle,
-        Creator: "Nexus Director",
-        Producer: "Nexus Director",
-        Keywords: [manifest.authorName, manifest.bookTitle].filter(Boolean).join(", "),
-        CreationDate: creationDate,
-        ModDate: creationDate,
-        // PDF/X-1a identifies itself via the GTS_PDFXVersion key in the Info dict
-        GTS_PDFXVersion: "PDF/X-1a:2001",
-        Trapped: "False",
-      },
+      // Print-ready: PDF 1.4 (required for PDF/X-1a). Proof: PDF 1.7 (full Acrobat editing).
+      pdfVersion: isEditableProof ? "1.7" : "1.4",
+      info: isEditableProof ? proofInfo : printReadyInfo,
     });
     const fonts = resolvePdfFonts(doc);
     const chunks: Buffer[] = [];
