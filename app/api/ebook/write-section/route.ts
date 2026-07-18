@@ -278,7 +278,11 @@ function buildStrictBodyFromExcerpts(excerpts: string[]): string {
 function filterConsumedExcerpts(
   excerpts: string[],
   alreadyCoveredPoints: string[],
-  threshold = 0.40
+  // Raised from 0.40 → 0.65: pastoral transcripts reuse vocabulary naturally.
+  // A 40% overlap threshold was silently dropping excerpts that contained entirely
+  // new points just because they shared common preaching vocabulary with prior sections.
+  // 65% requires near-verbatim repetition before an excerpt is treated as consumed.
+  threshold = 0.65
 ): { filtered: string[]; removedCount: number } {
   if (alreadyCoveredPoints.length === 0) return { filtered: excerpts, removedCount: 0 };
   const coveredText = alreadyCoveredPoints.join(" ");
@@ -308,7 +312,8 @@ type ExcerptEntry = { text: string; sourceNumber: number };
 function filterConsumedExcerptEntries(
   entries: ExcerptEntry[],
   alreadyCoveredPoints: string[],
-  threshold = 0.40
+  // Raised from 0.40 → 0.65 — same reasoning as filterConsumedExcerpts above.
+  threshold = 0.65
 ): { filtered: ExcerptEntry[]; removedCount: number } {
   if (alreadyCoveredPoints.length === 0) return { filtered: entries, removedCount: 0 };
   const coveredText = alreadyCoveredPoints.join(" ");
@@ -479,7 +484,7 @@ AUDIENCE & FORMAT
 • Remove crowd cues and stage prompts (e.g., "say amen", "look at your neighbor", applause calls, house-response commands)
 • Rewrite direct live-room address ("today I want to tell you", "as you sit here") into book language for an individual reader
 • PARAGRAPH DISCIPLINE: You are returning paragraphs as a JSON ARRAY — each array element is exactly one paragraph. ONE idea per paragraph, 3 to 5 sentences. When a new point, scripture quotation, example, or argument begins, it must be a new array element. Never put two paragraphs in one array element. Never split a single paragraph across two elements.
-• Target the specified word count based on available content — do not pad to reach it
+• The target word count is a MINIMUM — write as much as the transcript provides. Do not stop at the target if excerpts are still uncovered. Only stop when all key points in the provided excerpts have been addressed.
 
 ${SOURCE_LOCK_RULES}
 
@@ -661,6 +666,8 @@ Your opening paragraph must land where that argument was heading — do NOT re-e
 
   // When chapter-plan is available, enforce its excerpt anchors surgically.
   // This prevents section bodies from drifting into prior/adjacent subtitle material.
+  // Coverage floor: if anchoring would leave fewer than 40% of available excerpts, use
+  // all excerpts instead — a sparse plan must not starve the writer of source material.
   if ((assignment.assignedPlan ?? []).length > 0) {
     const anchored = new Set<number>();
     for (const step of assignment.assignedPlan ?? []) {
@@ -670,7 +677,13 @@ Your opening paragraph must land where that argument was heading — do NOT re-e
     }
     if (anchored.size > 0) {
       const anchoredEntries = effectiveExcerptEntries.filter((e) => anchored.has(e.sourceNumber));
-      if (anchoredEntries.length > 0) {
+      const coverageRatio = effectiveExcerptEntries.length > 0
+        ? anchoredEntries.length / effectiveExcerptEntries.length
+        : 1;
+      // Only narrow to plan-anchored excerpts when they represent a meaningful fraction
+      // of what's available. Below 40% coverage the plan is too sparse (likely because
+      // chapter-plan dropped entries) and the writer needs the full excerpt set.
+      if (anchoredEntries.length > 0 && coverageRatio >= 0.40) {
         effectiveExcerptEntries = anchoredEntries;
       }
     }
@@ -781,7 +794,7 @@ HARD RULES for this section's close:
 
 CHAPTER ${assignment.chapterNumber}: ${assignment.chapterTitle}
 SECTION ${assignment.sectionNumber}: ${assignment.heading}
-TARGET WORD COUNT: ${assignment.targetWordCount} words (determined by available content — write what the transcript provides, no padding)
+TARGET WORD COUNT: ${assignment.targetWordCount} words — treat this as a MINIMUM. The transcript governs length. If the provided excerpts contain more content than the target, write more. Do not stop at the target if excerpts remain uncovered.
 ${excerptRemovedCount > 0 ? `NOTE: ${excerptRemovedCount} excerpt(s) were pre-filtered as already-covered — write ONLY from the excerpts provided below.` : ""}
 
 KEY POINTS TO COVER (all from the transcript — include every one):
@@ -806,7 +819,12 @@ SECTION SCOPE RULE — READ BEFORE WRITING:
 Your section is: "${assignment.heading}"${assignment.nextSectionHeading ? `\nThe NEXT section is: "${assignment.nextSectionHeading}"` : ""}${assignment.isLastSectionInChapter && assignment.nextChapterTitle ? `\nThis is the LAST section of Chapter ${assignment.chapterNumber}. The next chapter is "${assignment.nextChapterTitle}". STOP before any content that opens that chapter.` : ""}
 Write ONLY content that belongs to THIS section's heading and key points. If any excerpt contains sentences that transition into or introduce the next section's topic, STOP before those sentences. Do not write them. A transcript boundary does not override a section boundary.
 
-CONTENT COVERAGE REQUIREMENT: Exhaust every distinct key point, story, illustration, and argument that belongs to THIS section's scope. Skip any excerpt content that clearly belongs to the next section or next chapter. Write shorter rather than bleed forward.
+CONTENT COVERAGE REQUIREMENT — PRIMARY RULE:
+You MUST exhaust every distinct key point, story, illustration, argument, and scripture present in the provided excerpts. Partial coverage is the #1 failure mode — a point left uncovered in the transcript is a point the reader never receives.
+
+Stopping short because "the main idea is covered" is an error. The speaker developed each point deliberately — follow their full development, not just the headline.
+
+The ONLY legitimate reason to skip excerpt content is if it clearly belongs to the NEXT section or NEXT chapter (bleed forward). Write shorter only to avoid that bleed, never to abbreviate coverage of this section's own material.
 
 SEQUENCE RULE — ABSOLUTE: Write paragraphs in the EXACT ORDER ideas appear across the excerpts (Excerpt 1 first, then Excerpt 2, etc.). Do NOT reorder. Do NOT restructure into a different arc. The speaker's build-up is intentional — follow it point by point without skipping ahead or circling back.
 

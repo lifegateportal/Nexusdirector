@@ -39,14 +39,17 @@ type PlanEntry = {
 };
 
 function sortAndPruneEntries(entries: PlanEntry[]): PlanEntry[] {
-  const anchored = entries.filter((e) => (e.supportedExcerptNumbers ?? []).length > 0);
-  const base = anchored.length > 0 ? anchored : entries;
-  base.sort((a, b) => {
+  // Keep unanchored entries (no supportedExcerptNumbers) at the END rather than
+  // dropping them. They represent planned content the LLM identified as necessary
+  // but couldn't pin to a specific excerpt — the writer should still execute them.
+  const anchored   = entries.filter((e) => (e.supportedExcerptNumbers ?? []).length > 0);
+  const unanchored = entries.filter((e) => (e.supportedExcerptNumbers ?? []).length === 0);
+  anchored.sort((a, b) => {
     const minA = Math.min(...(a.supportedExcerptNumbers.length ? a.supportedExcerptNumbers : [Infinity]));
     const minB = Math.min(...(b.supportedExcerptNumbers.length ? b.supportedExcerptNumbers : [Infinity]));
     return minA - minB;
   });
-  return base;
+  return [...anchored, ...unanchored];
 }
 
 // ── Chapter-level response schema ─────────────────────────────────────────────
@@ -221,7 +224,11 @@ ${excerptPayload}`;
             })
             .filter((entry) => entry.supportedExcerptNumbers.length > 0);
 
-          // FIX 4: Excerpt ownership enforcement — remove excerpts already used by prior sections
+          // FIX 4: Excerpt ownership enforcement — strip already-claimed excerpts from
+          // each entry's supportedExcerptNumbers, but KEEP the entry even when all its
+          // excerpts were claimed. The planned purpose is still valid content the writer
+          // should address using the surrounding excerpt context. Dropping the entry
+          // entirely was causing planned paragraphs to silently vanish from the output.
           entries = entries
             .map((entry) => {
               const excerptKey = `S${sp.sectionNumber}`;
@@ -234,8 +241,7 @@ ${excerptPayload}`;
                 supportedExcerptNumbers: availableExcerpts,
                 minExcerptNumber: availableExcerpts.length > 0 ? Math.min(...availableExcerpts) : undefined,
               };
-            })
-            .filter((entry) => entry.supportedExcerptNumbers.length > 0);
+            });
 
           // Mark all excerpts in this section's plan as consumed
           for (const entry of entries) {
@@ -245,10 +251,14 @@ ${excerptPayload}`;
           }
 
           if (priorProseText.length > 100) {
+            // Raised from 0.30 → 0.55: the old threshold dropped planned paragraphs
+            // whenever their purpose statement shared common preaching vocabulary with
+            // earlier prose — even when they covered entirely new arguments. 55% requires
+            // near-verbatim purpose duplication before an entry is treated as redundant.
             entries = entries.filter((entry) => {
               if (!entry.purpose || entry.purpose.length < 20) return true;
               if (BIBLE_REF_RE.test(entry.purpose)) return true;
-              return ngramOverlap(entry.purpose, priorProseText) < 0.30;
+              return ngramOverlap(entry.purpose, priorProseText) < 0.55;
             });
           }
 
