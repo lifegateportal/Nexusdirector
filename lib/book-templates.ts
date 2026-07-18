@@ -458,7 +458,6 @@ export const BOOK_TEMPLATES: Record<BookTemplateId, BookTemplateConfig> = {
     accentColor: "#5c3d1e",         // CMYK 0/33/67/64 — warm sepia
     labelColor: "#8a6645",          // CMYK 0/25/50/46 — lighter sepia label
   },
-};
 
   // 8 ── Study & Reference ────────────────────────────────────────────────────
   //
