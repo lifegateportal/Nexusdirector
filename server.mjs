@@ -1,6 +1,13 @@
+import { loadEnvConfig } from "@next/env";
 import { createServer } from "http";
 import { parse } from "url";
 import next from "next";
+
+// Load .env, .env.local, .env.{NODE_ENV}, .env.{NODE_ENV}.local — same files
+// that `next dev` / `next start` load automatically. Without this, a custom
+// server never populates process.env from those files and every env validation
+// throws "Required" for all keys before the first request is served.
+loadEnvConfig(process.cwd());
 
 const dev = process.env.NODE_ENV !== "production";
 const port = parseInt(process.env.PORT ?? "3000", 10);
