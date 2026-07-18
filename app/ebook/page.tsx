@@ -20,7 +20,7 @@ import {
   EBOOK_PROJECT_SCHEMA_VERSION,
 } from "@/lib/ebook-project-store";
 import { saveProject } from "@/lib/project-store";
-import { getEbookJob, saveEbookJob } from "@/lib/ebook-job-store";
+import { getEbookJob, saveEbookJob, tryLoadServerCheckpoint } from "@/lib/ebook-job-store";
 import type { EbookProject } from "@/lib/ebook-project-store";
 
 const JOB_STATE_KEY = "nexus_ebook_job_state";
@@ -923,6 +923,11 @@ function EbookPageClient() {
         const savedJobId = localStorage.getItem(JOB_STORAGE_KEY);
         if (savedJobId) {
           parsedRaw = await getEbookJob(savedJobId).catch(() => null);
+          // C-3: if IndexedDB is empty (cleared, different device, incognito),
+          // fall back to the server checkpoint written after every pipeline stage.
+          if (!parsedRaw) {
+            parsedRaw = await tryLoadServerCheckpoint(savedJobId);
+          }
           jobState = mergeManifestIntoJobState(
             normalizeJobStateForSave(parsedRaw),
             ebookManifest,
@@ -1348,7 +1353,12 @@ function EbookPageClient() {
         }
       })();
       if (preferredIdbJobId) {
-        const idbJob = await getEbookJob(preferredIdbJobId).catch(() => null);
+        let idbJob = await getEbookJob(preferredIdbJobId).catch(() => null);
+        // C-3: fall back to server checkpoint when IndexedDB is empty
+        // (cleared browser data, incognito, different device).
+        if (!idbJob) {
+          idbJob = await tryLoadServerCheckpoint(preferredIdbJobId);
+        }
         const idbCandidate = normalizeJobStateForSave(idbJob);
         if (!expectedJobId || idbCandidate?.jobId === expectedJobId) {
           candidates.push(idbCandidate);

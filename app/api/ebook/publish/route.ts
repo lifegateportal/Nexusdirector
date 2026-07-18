@@ -29,6 +29,87 @@ function jsonResponse(payload: PublishGetResponse, status = 200) {
   return NextResponse.json(payload, { status });
 }
 
+function makeS3Client(accountId: string, accessKey: string, secretKey: string) {
+  return new S3Client({
+    region: "auto",
+    endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
+    credentials: { accessKeyId: accessKey, secretAccessKey: secretKey },
+  });
+}
+
+// ── Catalog helpers — ETag-conditional read / write ───────────────────────────
+
+/**
+ * Read the published catalog from R2 and return the raw ETag alongside the
+ * parsed catalog so callers can use it for a conditional write.
+ * Returns etag = null when the object does not yet exist (first publish).
+ */
+async function readCatalogWithETag(
+  s3: S3Client,
+  bucket: string,
+): Promise<{ catalog: PublishedCatalog; etag: string | null }> {
+  const now = new Date().toISOString();
+  try {
+    const res = await s3.send(
+      new GetObjectCommand({ Bucket: bucket, Key: "published/index.json" }),
+    );
+    const raw = await res.Body?.transformToString();
+    const etag = res.ETag ?? null;
+    if (!raw) return { catalog: { updatedAt: now, books: [] }, etag };
+    const parsed = PublishedCatalogSchema.safeParse(JSON.parse(raw));
+    return {
+      catalog: parsed.success ? parsed.data : { updatedAt: now, books: [] },
+      etag,
+    };
+  } catch {
+    // Object does not exist yet — first publish
+    return { catalog: { updatedAt: now, books: [] }, etag: null };
+  }
+}
+
+/**
+ * Write the catalog back to R2 with an ETag conditional check.
+ * If etag is non-null, the write is rejected (412) if the object was modified
+ * between our read and write, which means another request raced us.
+ * Throws with code "PreconditionFailed" on conflict so callers can retry.
+ */
+async function writeCatalogConditional(
+  s3: S3Client,
+  bucket: string,
+  catalog: PublishedCatalog,
+  etag: string | null,
+): Promise<void> {
+  const cmd = new PutObjectCommand({
+    Bucket:       bucket,
+    Key:          "published/index.json",
+    Body:         JSON.stringify(catalog),
+    ContentType:  "application/json",
+    CacheControl: "public, max-age=30",
+    // Only set IfMatch when we know the current ETag — prevents silent overwrites.
+    // When etag is null (first publish), no condition is needed.
+    ...(etag ? { IfMatch: etag } : {}),
+  });
+  await s3.send(cmd);
+}
+
+/**
+ * Resolve a unique slug: start from the base slug and append -2, -3 … until
+ * no existing catalog entry uses it.  O(n) scan is fine for typical book counts.
+ */
+function resolveUniqueSlug(
+  baseSlug: string,
+  existingBooks: Array<{ slug: string }>,
+): string {
+  const taken = new Set(existingBooks.map((b) => b.slug));
+  if (!taken.has(baseSlug)) return baseSlug;
+  for (let n = 2; n < 1000; n++) {
+    const candidate = `${baseSlug}-${n}`;
+    if (!taken.has(candidate)) return candidate;
+  }
+  // Fallback: append timestamp millis (effectively unique)
+  return `${baseSlug}-${Date.now()}`;
+}
+
 // ── GET /api/ebook/publish — fetch the live published catalog ─────────────────
 
 export async function GET(req: NextRequest) {
@@ -64,17 +145,14 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    const res = await s3.send(
-      new GetObjectCommand({ Bucket: R2_BUCKET_NAME, Key: "published/index.json" }),
-    );
-    const raw = await res.Body?.transformToString();
-    if (!raw) return jsonResponse({ books: [], manifest: null }, 200);
-    const parsed = PublishedCatalogSchema.safeParse(JSON.parse(raw));
-    return jsonResponse({ books: parsed.success ? parsed.data.books : [], manifest: null }, 200);
+    const { catalog } = await readCatalogWithETag(s3, R2_BUCKET_NAME);
+    return jsonResponse({ books: catalog.books, manifest: null }, 200);
   } catch {
     return jsonResponse({ books: [], manifest: null }, 200);
   }
 }
+
+// ── POST /api/ebook/publish — publish or re-publish a book ───────────────────
 
 const PublishRequestSchema = z.object({
   manifest:       EbookManifestSchema,
@@ -107,25 +185,14 @@ function buildSynopsis(manifest: z.infer<typeof EbookManifestSchema>): string {
   return `${manifest.bookTitle} by ${manifest.authorName}. ${manifest.chapters.length} chapters, ${manifest.totalWordCount.toLocaleString()} words.`;
 }
 
-function makeS3Client(accountId: string, accessKey: string, secretKey: string) {
-  return new S3Client({
-    region: "auto",
-    endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
-    credentials: { accessKeyId: accessKey, secretAccessKey: secretKey },
-  });
-}
-
 export async function POST(req: NextRequest) {
   let body: unknown;
   try {
     body = await req.json();
   } catch (err) {
     return NextResponse.json(
-      {
-        route: "ebook/publish",
-        error: err instanceof Error ? err.message : "Invalid JSON payload",
-      },
-      { status: 400 }
+      { route: "ebook/publish", error: err instanceof Error ? err.message : "Invalid JSON payload" },
+      { status: 400 },
     );
   }
 
@@ -155,14 +222,77 @@ export async function POST(req: NextRequest) {
   }
 
   const { manifest, coverAccent } = input;
-  // Prefer image URLs passed explicitly; fall back to URLs embedded in the manifest
   const coverImageUrl  = input.coverImageUrl  ?? manifest.coverImageUrl  ?? null;
   const authorImageUrl = input.authorImageUrl ?? manifest.authorImageUrl ?? null;
-  const slug = slugify(manifest.bookTitle, manifest.jobId);
-  const s3   = makeS3Client(R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY);
 
+  const s3 = makeS3Client(R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY);
+
+  // ── Step 1: Write the manifest (slug-independent, no race condition) ──────
+  // We derive the slug after reading the catalog so we can check uniqueness.
+  // Write manifest first with the base slug; if we end up using a suffixed slug
+  // we overwrite the key in step 5 — this is an idempotent operation.
+  const baseSlug = slugify(manifest.bookTitle, manifest.jobId);
+
+  const now = new Date().toISOString();
+
+  // ── Steps 2–5: Read catalog → resolve unique slug → upsert → conditional write
+  // Retry up to 3 times on ETag conflict (concurrent publish race).
+  const MAX_CATALOG_ATTEMPTS = 3;
+  let slug = baseSlug;
+
+  for (let attempt = 1; attempt <= MAX_CATALOG_ATTEMPTS; attempt++) {
+    const { catalog, etag } = await readCatalogWithETag(s3, R2_BUCKET_NAME);
+
+    // C-2 fix: resolve a unique slug against the current catalog.
+    // Re-publishing the same job always reuses its own slug (filter it out first).
+    const otherBooks = catalog.books.filter((b) => b.slug !== baseSlug && !b.slug.startsWith(`${baseSlug}-`));
+    slug = resolveUniqueSlug(baseSlug, otherBooks);
+
+    // Build the catalog entry
+    const entry = PublishedBookEntrySchema.parse({
+      slug,
+      title:        manifest.bookTitle,
+      subtitle:     manifest.subtitle,
+      authorName:   manifest.authorName,
+      publishedAt:  now,
+      updatedAt:    now,
+      wordCount:    manifest.totalWordCount,
+      chapterCount: manifest.chapters.length,
+      synopsis:     buildSynopsis(manifest),
+      coverAccent,
+      template:     manifest.selectedTemplate,
+      coverImageUrl,
+      authorImageUrl,
+    });
+
+    // Upsert: remove any entry for this job's slug family, prepend fresh entry
+    catalog.books = catalog.books.filter(
+      (b) => b.slug !== baseSlug && !b.slug.startsWith(`${baseSlug}-`),
+    );
+    catalog.books.unshift(entry);
+    catalog.updatedAt = now;
+
+    try {
+      await writeCatalogConditional(s3, R2_BUCKET_NAME, catalog, etag);
+      // Catalog write succeeded — break out of retry loop
+      break;
+    } catch (err) {
+      const isConflict =
+        err instanceof Error &&
+        (err.name === "PreconditionFailed" || err.message.includes("PreconditionFailed") || err.message.includes("412"));
+
+      if (isConflict && attempt < MAX_CATALOG_ATTEMPTS) {
+        // Another request modified the catalog between our read and write — retry.
+        continue;
+      }
+      // Non-conflict error or out of retries
+      const message = err instanceof Error ? err.message : "Catalog write failed";
+      return NextResponse.json({ error: message }, { status: 500 });
+    }
+  }
+
+  // ── Write the manifest to R2 under the resolved slug ─────────────────────
   try {
-    // 1. Write the full manifest to R2 (include image URLs so the reader can use them)
     const manifestWithImages = { ...manifest, coverImageUrl, authorImageUrl };
     await s3.send(
       new PutObjectCommand({
@@ -173,70 +303,21 @@ export async function POST(req: NextRequest) {
         CacheControl: "public, max-age=60",
       }),
     );
-
-    // 2. Build catalog entry
-    const now   = new Date().toISOString();
-    const entry = PublishedBookEntrySchema.parse({
-      slug,
-      title:          manifest.bookTitle,
-      subtitle:       manifest.subtitle,
-      authorName:     manifest.authorName,
-      publishedAt:    now,
-      updatedAt:      now,
-      wordCount:      manifest.totalWordCount,
-      chapterCount:   manifest.chapters.length,
-      synopsis:       buildSynopsis(manifest),
-      coverAccent,
-      template:       manifest.selectedTemplate,
-      coverImageUrl,
-      authorImageUrl,
-    });
-
-    // 3. Read existing catalog (best-effort — index may not yet exist)
-    let catalog: PublishedCatalog = { updatedAt: now, books: [] };
-    try {
-      const existing = await s3.send(
-        new GetObjectCommand({ Bucket: R2_BUCKET_NAME, Key: "published/index.json" }),
-      );
-      const raw = await existing.Body?.transformToString();
-      if (raw) {
-        const parsed = PublishedCatalogSchema.safeParse(JSON.parse(raw));
-        if (parsed.success) catalog = parsed.data;
-      }
-    } catch {
-      // Index not yet created — start fresh
-    }
-
-    // 4. Upsert (remove old entry for this slug, prepend new one)
-    catalog.books   = catalog.books.filter((b) => b.slug !== slug);
-    catalog.books.unshift(entry);
-    catalog.updatedAt = now;
-
-    // 5. Write updated catalog
-    await s3.send(
-      new PutObjectCommand({
-        Bucket:       R2_BUCKET_NAME,
-        Key:          "published/index.json",
-        Body:         JSON.stringify(catalog),
-        ContentType:  "application/json",
-        CacheControl: "public, max-age=30",
-      }),
-    );
-
-    const publicUrl = R2_PUBLIC_URL
-      ? `${R2_PUBLIC_URL.replace(/\/$/, "")}/published/${slug}/manifest.json`
-      : null;
-
-    revalidatePath("/library");
-
-    return NextResponse.json({ slug, publicUrl }, { status: 200 });
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Publish failed";
+    const message = err instanceof Error ? err.message : "Manifest upload failed";
     return NextResponse.json({ error: message }, { status: 500 });
   }
+
+  const publicUrl = R2_PUBLIC_URL
+    ? `${R2_PUBLIC_URL.replace(/\/$/, "")}/published/${slug}/manifest.json`
+    : null;
+
+  revalidatePath("/library");
+
+  return NextResponse.json({ slug, publicUrl }, { status: 200 });
 }
 
-// ── PATCH /api/ebook/publish — update catalog entry metadata without re-publishing ──
+// ── PATCH /api/ebook/publish — update catalog entry metadata ─────────────────
 
 const PatchCatalogRequestSchema = z.object({
   slug:        z.string().min(1),
@@ -267,26 +348,15 @@ export async function PATCH(req: NextRequest) {
   const s3  = makeS3Client(R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY);
   const now = new Date().toISOString();
 
-  try {
-    // Read current catalog
-    let catalog: PublishedCatalog = { updatedAt: now, books: [] };
-    try {
-      const existing = await s3.send(
-        new GetObjectCommand({ Bucket: R2_BUCKET_NAME, Key: "published/index.json" }),
-      );
-      const raw = await existing.Body?.transformToString();
-      if (raw) {
-        const parsed = PublishedCatalogSchema.safeParse(JSON.parse(raw));
-        if (parsed.success) catalog = parsed.data;
-      }
-    } catch { /* index may not exist yet */ }
+  const MAX_CATALOG_ATTEMPTS = 3;
+  for (let attempt = 1; attempt <= MAX_CATALOG_ATTEMPTS; attempt++) {
+    const { catalog, etag } = await readCatalogWithETag(s3, R2_BUCKET_NAME);
 
     const idx = catalog.books.findIndex((b) => b.slug === slug);
     if (idx === -1) {
       return NextResponse.json({ error: `Book with slug "${slug}" not found in catalog.` }, { status: 404 });
     }
 
-    // Merge patch
     catalog.books[idx] = PublishedBookEntrySchema.parse({
       ...catalog.books[idx],
       ...fields,
@@ -294,28 +364,30 @@ export async function PATCH(req: NextRequest) {
     });
     catalog.updatedAt = now;
 
-    await s3.send(
-      new PutObjectCommand({
-        Bucket:       R2_BUCKET_NAME,
-        Key:          "published/index.json",
-        Body:         JSON.stringify(catalog),
-        ContentType:  "application/json",
-        CacheControl: "public, max-age=30",
-      }),
-    );
+    try {
+      await writeCatalogConditional(s3, R2_BUCKET_NAME, catalog, etag);
+      break;
+    } catch (err) {
+      const isConflict =
+        err instanceof Error &&
+        (err.name === "PreconditionFailed" || err.message.includes("PreconditionFailed") || err.message.includes("412"));
 
-    revalidatePath("/library");
+      if (isConflict && attempt < MAX_CATALOG_ATTEMPTS) continue;
 
-    return NextResponse.json({ slug, updatedAt: now }, { status: 200 });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "Patch failed";
-    return NextResponse.json({ error: message }, { status: 500 });
+      const message = err instanceof Error ? err.message : "Catalog update failed";
+      return NextResponse.json({ error: message }, { status: 500 });
+    }
   }
+
+  revalidatePath("/library");
+  return NextResponse.json({ slug, updatedAt: now }, { status: 200 });
 }
 
-// ── DELETE /api/ebook/publish — remove a book from the library catalog ────────
+// ── DELETE /api/ebook/publish — unpublish a book ─────────────────────────────
 
-const DeleteRequestSchema = z.object({ slug: z.string().min(1) });
+const DeleteRequestSchema = z.object({
+  slug: z.string().min(1),
+});
 
 export async function DELETE(req: NextRequest) {
   let input;
@@ -328,67 +400,44 @@ export async function DELETE(req: NextRequest) {
     );
   }
 
-  const {
-    R2_ACCOUNT_ID,
-    R2_ACCESS_KEY_ID,
-    R2_SECRET_ACCESS_KEY,
-    R2_BUCKET_NAME,
-  } = env;
-
+  const { R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME } = env;
   if (!R2_ACCOUNT_ID || !R2_ACCESS_KEY_ID || !R2_SECRET_ACCESS_KEY || !R2_BUCKET_NAME) {
-    return NextResponse.json(
-      { error: "R2 storage must be configured to manage books." },
-      { status: 503 },
-    );
+    return NextResponse.json({ error: "R2 storage not configured." }, { status: 503 });
   }
 
   const { slug } = input;
-  const s3 = makeS3Client(R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY);
+  const s3  = makeS3Client(R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY);
+  const now = new Date().toISOString();
 
-  try {
-    // 1. Remove book from catalog index
-    const now = new Date().toISOString();
-    let catalog: PublishedCatalog = { updatedAt: now, books: [] };
-    try {
-      const existing = await s3.send(
-        new GetObjectCommand({ Bucket: R2_BUCKET_NAME, Key: "published/index.json" }),
-      );
-      const raw = await existing.Body?.transformToString();
-      if (raw) {
-        const parsed = PublishedCatalogSchema.safeParse(JSON.parse(raw));
-        if (parsed.success) catalog = parsed.data;
-      }
-    } catch {
-      // Index missing — nothing to remove
-    }
+  // ── Step 1: Remove from catalog with ETag conditional write ──────────────
+  const MAX_CATALOG_ATTEMPTS = 3;
+  for (let attempt = 1; attempt <= MAX_CATALOG_ATTEMPTS; attempt++) {
+    const { catalog, etag } = await readCatalogWithETag(s3, R2_BUCKET_NAME);
 
     catalog.books     = catalog.books.filter((b) => b.slug !== slug);
     catalog.updatedAt = now;
 
-    await s3.send(
-      new PutObjectCommand({
-        Bucket:       R2_BUCKET_NAME,
-        Key:          "published/index.json",
-        Body:         JSON.stringify(catalog),
-        ContentType:  "application/json",
-        CacheControl: "public, max-age=30",
-      }),
-    );
+    try {
+      await writeCatalogConditional(s3, R2_BUCKET_NAME, catalog, etag);
+      break;
+    } catch (err) {
+      const isConflict =
+        err instanceof Error &&
+        (err.name === "PreconditionFailed" || err.message.includes("PreconditionFailed") || err.message.includes("412"));
 
-    // 2. Delete the manifest file from R2
-    await s3.send(
-      new DeleteObjectCommand({
-        Bucket: R2_BUCKET_NAME,
-        Key:    `published/${slug}/manifest.json`,
-      }),
-    ).catch(() => { /* best-effort — file may not exist */ });
+      if (isConflict && attempt < MAX_CATALOG_ATTEMPTS) continue;
 
-    // 3. Bust the Next.js ISR cache so the library page reflects the removal immediately
-    revalidatePath("/library");
-
-    return NextResponse.json({ slug }, { status: 200 });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "Delete failed";
-    return NextResponse.json({ error: message }, { status: 500 });
+      const message = err instanceof Error ? err.message : "Catalog update failed";
+      return NextResponse.json({ error: message }, { status: 500 });
+    }
   }
+
+  // ── Step 2: Delete manifest from R2 (best-effort) ────────────────────────
+  await s3.send(
+    new DeleteObjectCommand({ Bucket: R2_BUCKET_NAME, Key: `published/${slug}/manifest.json` }),
+  ).catch(() => { /* file may not exist */ });
+
+  revalidatePath("/library");
+
+  return NextResponse.json({ slug }, { status: 200 });
 }
