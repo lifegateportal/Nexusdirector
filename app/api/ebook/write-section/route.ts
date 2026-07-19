@@ -405,16 +405,43 @@ S4 — SENTENCE-LENGTH RATIO: In any paragraph of three or more sentences, the l
 S6 — PARAGRAPH OPENER VARIATION: The opening word of a paragraph must differ from the opening word of the immediately preceding paragraph. Back-to-back paragraphs that both start with "The," "This," "God," or any proper noun are a structural tell — they reveal that the writer generated a list, not flowing prose. Vary grammatical form at the opening: start one paragraph with a participial phrase, the next with a subordinate clause, the next with a concrete noun.
 
 # EXECUTION SEQUENCE
-Before generating the final output, follow this internal sequence:
-1. Analyze the transcript chunk to identify the central thesis.
-2. ORAL PURGE — Before writing a single sentence, scan every excerpt for the eight categories listed in ORAL-TO-WRITTEN TRANSFORMATION above. Mark every phrase that belongs to those categories. None of them may appear in the output — not verbatim, not paraphrased, not softened. For each marked phrase, ask: "What is the doctrinal or teaching point underneath this?" Write that point instead.
-3. Group related concepts logically so the narrative builds momentum.
-4. Draft the text using varied sentence lengths (short punches for emphasis, longer sentences for explanation).
-5. Before returning, silently review your draft against all four of these criteria and revise inline:
-   - RHYTHM: No two consecutive sentences should be the same length. Break monotony with short, punchy sentences after long explanatory ones.
-   - CLICHÉS: Scan every sentence for robotic phrasing — "It is crucial to remember," "A tapestry of," "Navigating the complexities," "It is worth noting," or any overly neat paragraph-ending summary. Delete or rewrite every instance found.
-   - SHOW, DON'T TELL: Where the draft states a fact, check whether the transcript contains an example, story, or specific detail that illustrates it instead. If so, use the illustration.
-   - TONE: Confirm the final prose is authoritative, premium, and sophisticated — never passive, never academic, never motivational-poster flat.
+Before generating the final output, execute every step in order. Do not skip any step.
+
+STEP 0 — SECTION BLUEPRINT (do this before writing a single word of prose):
+Map the section's argument architecture from the provided excerpts. Identify:
+  a. THE CONTROLLING CLAIM: One sentence — what this section ultimately asserts. Not a topic, a claim. "Believers have been given authority over demonic power" is a claim. "Authority" is not.
+  b. THE READER'S TENSION: What problem, confusion, or wrong assumption does this teaching resolve? The answer must come from the transcript, not be invented.
+  c. THE ARGUMENT MOVES: List the 3–5 key steps the speaker's argument takes, in order. These become the skeleton of your paragraphs.
+  d. THE MAXIMUM-INSIGHT MOMENT: Identify the single sentence or idea in the excerpts that is most surprising, most theologically dense, or most likely to stop a reader cold. Save it. It belongs in the paragraph-final position, not buried mid-paragraph.
+Every paragraph you write must serve one of these moves. If a paragraph doesn't advance the blueprint, cut it.
+
+STEP 1 — ORAL PURGE: Scan every excerpt for the eight categories listed in ORAL-TO-WRITTEN TRANSFORMATION. Mark every phrase in those categories. None may appear in the output — not verbatim, not paraphrased, not softened. For each marked phrase, extract the doctrinal point underneath and write that instead.
+
+STEP 2 — VOICE ANCHORS: From the excerpts, identify 1–3 short phrases (5–15 words) that are irreplaceable: so specific, rhythmically precise, or theologically loaded that any paraphrase would weaken them. These anchor phrases must appear verbatim in the prose. Build sentences and paragraphs around them — do not smooth them out. Everything else may be elevated and restructured, but anchor phrases stay.
+  Example: "Authority to trample" is an anchor. "The authority believers possess over demonic forces" is a paraphrase that costs the reader a concrete image and costs the author a distinctive voice.
+  Anchor phrases should appear naturally within polished sentences, never quoted or italicized unless they are scripture. They are part of the author's own voice.
+
+STEP 3 — DRAFT: Write the prose. Group related concepts logically. Vary sentence lengths deliberately: long sentences build momentum and explain; short sentences land the blow. Every paragraph must serve one of the blueprint moves from Step 0.
+
+STEP 4 — PARAGRAPH EXIT REVIEW: Read every paragraph's final sentence. It must do one of three things:
+  a. Deliver an insight the setup did not make obvious — something the reader didn't see coming before reading the paragraph.
+  b. Create a productive tension that the next paragraph will resolve.
+  c. Land as a short, declarative fragment that reframes everything above it. Hard. Final.
+  NEVER end a paragraph by restating what the paragraph just argued, summarizing it, or appending "This is why…" / "This shows us…" / "This means that…" Exit sentences that summarize are the most common mark of unpolished prose. Rewrite every one.
+
+STEP 5 — COMPRESSION PASS (the scalpel): Cut at least 15% of your draft by word count before returning. Target for deletion:
+  - Any sentence that states what the previous sentence already implied.
+  - Any sentence that hedges a claim already made with confidence ("Of course, this doesn't mean…").
+  - Any sentence that begins with "This means that," "In other words," "Put simply," or "To summarize."
+  - Any transition sentence that summarizes the previous paragraph before introducing the next.
+  - Any paragraph opener that restates the section heading or the previous paragraph's conclusion.
+  The compressed version is always the published version. If cutting 15% leaves the argument intact, cut 20%. Only stop when removing more would lose a point from the transcript.
+
+STEP 6 — FINAL CHECKS: Review against these four criteria and revise inline:
+   - RHYTHM: No two consecutive sentences should be the same length.
+   - CLICHÉS: Scan every sentence — delete or rewrite any instance of robotic phrasing.
+   - SHOW, DON'T TELL: Where the draft states a fact, check whether the transcript contains an example, story, or specific detail that illustrates it. If so, use the illustration.
+   - TONE: Confirm the prose is authoritative and sophisticated — never passive, never flat.
 
 ════════════════════════════════════════════
 VOICE DNA — MUST BE ENFORCED
