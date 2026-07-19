@@ -5,12 +5,30 @@ export const READER_NORMALIZATION_RULES = `READER NORMALIZATION (book-first):
 - Rewrite stage/location references ("in this room", "as you sit here today") into direct reader language.
 - Preserve meaning, doctrine, and argument sequence exactly; only change delivery mode.`;
 
-export const SOURCE_LOCK_RULES = `SOURCE-LOCK FIDELITY — ZERO FABRICATION POLICY:
-- Every sentence must trace directly to the provided transcript. If you cannot point to the exact words, idea, story, or argument in the source material, that sentence must not exist in the output.
-- This ban is absolute. It includes: plausible extensions of what the author might mean; common theological context the author "probably" knows; general truths that "fit" the teaching; biographical details you can reasonably infer; and any content that feels consistent with the author's voice but is not explicitly present in the transcript.
-- DELETION IS ALWAYS CORRECT. When source material is thin, write fewer sentences — not padded ones. Three transcript-faithful sentences are better than five where two are invented.
-- You may improve clarity, re-order for logic, and smooth transitions — but only using the author's own words and ideas.
-- FABRICATION TEST: Before finalizing every sentence, ask: "Is this exact idea, story, or claim present in the provided transcript?" If the answer is no, delete the sentence.`;
+export const SOURCE_LOCK_RULES = `════════════════════════════════════════════
+SOURCE-LOCK — THE MOST IMPORTANT RULE IN THIS PROMPT
+════════════════════════════════════════════
+This book contains ONLY what this preacher taught in this transcript. Nothing else.
+
+THE GHOST-TEST: Before writing any sentence, ask: "Did this specific preacher say this specific thing in the provided excerpts?" If the answer is anything other than YES, that sentence must not exist.
+
+WHAT IS FORBIDDEN — be precise about each category:
+
+1. THEOLOGICAL EXTENSIONS: The preacher made point A. You know that point A logically implies point B. Point B is not in the transcript. → Do not write point B. It doesn't matter how obvious or correct point B is. The preacher didn't teach it here.
+
+2. SUPPORTING SCRIPTURE YOU KNOW: The preacher quoted Psalm 91. You know of five other passages that reinforce the same theme. → Do not cite them. Only scripture the preacher explicitly quoted or referenced may appear.
+
+3. DOCTRINAL BACKGROUND: You know the historical context, systematic theology category, Greek/Hebrew etymology, or church tradition behind what the preacher said. The preacher didn't mention any of it. → Do not include it. Your training data about theology is not source material.
+
+4. LOGICAL COMPLETIONS: The preacher started an argument but didn't fully close it. You can see how it ends. → Do not complete it. Write what was said; leave the rest out.
+
+5. CONSISTENT-SOUNDING CONTENT: An idea isn't in the transcript, but it "fits" the author's message, theology, or style. → Fitting is not the same as present. Do not include it.
+
+6. APPLICATIONS AND IMPLICATIONS: The preacher taught a principle. You can derive practical applications from it. The preacher didn't state those applications. → Do not add them. Applications must come from the preacher's own words.
+
+THE CORRECT RESPONSE TO THIN SOURCE MATERIAL: Write less. A section with three accurate, transcript-faithful paragraphs is better than five paragraphs where two were invented. Short and true beats long and padded. When the transcript runs out, the prose stops.
+
+WHAT YOU MAY DO: Improve sentence structure, word choice, rhythm, and paragraph flow. Re-order sentences within an excerpt for logical clarity. Smooth transitions between ideas — using only the ideas present in the transcript. You own the presentation; the preacher owns every idea.`;
 
 export const PREMIUM_BOOK_STYLE_RULES = `PREMIUM BOOK STYLE STANDARDS:
 
