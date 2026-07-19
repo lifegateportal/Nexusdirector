@@ -35,6 +35,35 @@ function normalizeForExactMatch(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
+// ── N-gram overlap coverage check ─────────────────────────────────────────
+// The LLM paraphrases rather than copying transcript text verbatim, so a
+// simple string.includes() check always returns false. Instead we measure
+// 4-gram overlap between the excerpt and the full section body. Any excerpt
+// whose concepts are ≥15% present in the body is considered covered.
+function bodyNgrams(text: string, n = 4): Set<string> {
+  const words = text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter((w) => w.length > 2);
+  const grams = new Set<string>();
+  for (let i = 0; i <= words.length - n; i++) {
+    grams.add(words.slice(i, i + n).join(" "));
+  }
+  return grams;
+}
+
+function excerptCoveredInBody(excerpt: string, bodyGrams: Set<string>): boolean {
+  const excGrams = bodyNgrams(excerpt);
+  if (excGrams.size === 0) return false;
+  let shared = 0;
+  for (const g of excGrams) {
+    if (bodyGrams.has(g)) shared++;
+  }
+  // 15% n-gram overlap: the excerpt's core concepts appear in the prose
+  return shared / excGrams.size >= 0.15;
+}
+
 function splitParagraphs(body: string): string[] {
   return body
     .split(/\n\n+/)
@@ -121,12 +150,14 @@ export function TranscriptSourceMapPanel({
 
   const excerptUsedByIndex = useMemo(() => {
     if (!active) return [] as boolean[];
-    const normalizedBody = normalizeForExactMatch(active.section.body ?? "");
-    if (!normalizedBody) return active.assignment.transcriptExcerpts.map(() => false);
-    return active.assignment.transcriptExcerpts.map((excerpt) => {
-      const normalizedExcerpt = normalizeForExactMatch(excerpt);
-      return normalizedExcerpt ? normalizedBody.includes(normalizedExcerpt) : false;
-    });
+    const body = active.section.body ?? "";
+    if (!body.trim()) return active.assignment.transcriptExcerpts.map(() => false);
+    // Use n-gram overlap rather than exact string match. The LLM always
+    // paraphrases so verbatim matching returns 0 covered every time.
+    const bgrams = bodyNgrams(body);
+    return active.assignment.transcriptExcerpts.map((excerpt) =>
+      excerpt.trim() ? excerptCoveredInBody(excerpt, bgrams) : false
+    );
   }, [active]);
 
   // Coverage counts — used for the summary and filter button labels

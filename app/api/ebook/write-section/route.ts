@@ -664,30 +664,15 @@ Your opening paragraph must land where that argument was heading — do NOT re-e
   );
   let effectiveExcerptEntries = excerptRemovedCount > 0 ? dedupedExcerptEntries : excerptEntries;
 
-  // When chapter-plan is available, enforce its excerpt anchors surgically.
-  // This prevents section bodies from drifting into prior/adjacent subtitle material.
-  // Coverage floor: if anchoring would leave fewer than 40% of available excerpts, use
-  // all excerpts instead — a sparse plan must not starve the writer of source material.
-  if ((assignment.assignedPlan ?? []).length > 0) {
-    const anchored = new Set<number>();
-    for (const step of assignment.assignedPlan ?? []) {
-      for (const n of step.supportedExcerptNumbers ?? []) {
-        if (Number.isInteger(n) && n > 0) anchored.add(n);
-      }
-    }
-    if (anchored.size > 0) {
-      const anchoredEntries = effectiveExcerptEntries.filter((e) => anchored.has(e.sourceNumber));
-      const coverageRatio = effectiveExcerptEntries.length > 0
-        ? anchoredEntries.length / effectiveExcerptEntries.length
-        : 1;
-      // Only narrow to plan-anchored excerpts when they represent a meaningful fraction
-      // of what's available. Below 40% coverage the plan is too sparse (likely because
-      // chapter-plan dropped entries) and the writer needs the full excerpt set.
-      if (anchoredEntries.length > 0 && coverageRatio >= 0.40) {
-        effectiveExcerptEntries = anchoredEntries;
-      }
-    }
-  }
+  // ── Excerpt anchoring removed ─────────────────────────────────────────────
+  // The paragraph plan previously filtered the LLM's excerpt set to only those
+  // explicitly listed in assignedPlan.supportedExcerptNumbers. This caused
+  // short sections: if the plan referenced 4 of 10 excerpts, the LLM never
+  // saw the other 6 and silently left half the transcript unwritten.
+  //
+  // The plan is now used ONLY as a structural guide (paragraph order / purpose),
+  // never as a content gate. The LLM always receives the full post-dedup excerpt
+  // set so it can exhaust every point the speaker made.
 
   const effectiveExcerpts = effectiveExcerptEntries.map((e) => e.text);
 
@@ -820,9 +805,9 @@ Your section is: "${assignment.heading}"${assignment.nextSectionHeading ? `\nThe
 Write ONLY content that belongs to THIS section's heading and key points. If any excerpt contains sentences that transition into or introduce the next section's topic, STOP before those sentences. Do not write them. A transcript boundary does not override a section boundary.
 
 CONTENT COVERAGE REQUIREMENT — PRIMARY RULE:
-You MUST exhaust every distinct key point, story, illustration, argument, and scripture present in the provided excerpts. Partial coverage is the #1 failure mode — a point left uncovered in the transcript is a point the reader never receives.
+Every EXCERPT labeled [EXCERPT N of M] above must produce at least one paragraph of polished prose. You MUST cover EVERY excerpt provided — do not skip any excerpt, do not merge two excerpts into a single thin paragraph and call it done, and do not stop writing once "the main idea" is covered. The speaker developed each point deliberately through multiple sentences and angles — follow their full development, not just the headline.
 
-Stopping short because "the main idea is covered" is an error. The speaker developed each point deliberately — follow their full development, not just the headline.
+Treat each excerpt as a minimum coverage unit. If an excerpt contains three distinct sub-points, write three paragraphs. If it contains an illustration, a scripture, and an application — all three must appear in the prose. A point left uncovered in the transcript is a point the reader never receives.
 
 The ONLY legitimate reason to skip excerpt content is if it clearly belongs to the NEXT section or NEXT chapter (bleed forward). Write shorter only to avoid that bleed, never to abbreviate coverage of this section's own material.
 
