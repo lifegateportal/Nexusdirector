@@ -308,7 +308,7 @@ export const BOOK_TEMPLATE_IDS = [
   "premium-literary",
 ] as const;
 
-export const BookTemplateEnum = z.enum(["classic-academic", "modern-business", "devotional", "popular-nonfiction", "premium-literary"]);
+export const BookTemplateEnum = z.enum(["classic-academic", "modern-business", "devotional", "popular-nonfiction", "premium-literary", "pastoral-ministry", "memoir-narrative", "study-reference", "charismatic-prophetic", "leadership-vision"]);
 
 // ─── Print Specifications ─────────────────────────────────────────────────────
 
