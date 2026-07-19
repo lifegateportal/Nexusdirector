@@ -546,12 +546,8 @@ This content is a sermon series. The author's preaching sequence IS the book's s
 
 # STRICT EDITORIAL INSTRUCTIONS
 1. SEQUENCE PRESERVATION — NON-NEGOTIABLE: Chapters must follow the source audio order (audio-1 before audio-2 before audio-3, etc.). A single audio source may produce more than one chapter if the content depth warrants it — but all chapters from audio-1 must appear consecutively before any chapter from audio-2. Never interleave chapters from different audio sources. Never place a segment from audio-2 into a chapter that also contains segments from audio-1.
-2. WITHIN-CHAPTER SYNTHESIS ONLY: Within a single message (single sourceAudio), you may group scattered thoughts on the same topic into unified sections. If the speaker revisits a point within the same message, consolidate it into one section. Do not synthesize across messages.
-3. WITHIN-CHAPTER ARC: Within each chapter, structure the sections to reflect the message's natural teaching progression. Where the content supports it, apply the arc below — but never at the cost of distorting the speaker's own sequence:
-   - The Hook: The core problem or provocative claim that opens the message
-   - The Context: Why this matters (as the speaker framed it)
-   - The Mechanism: The core argument or framework the speaker taught
-   - The Application: How the speaker called the listener to respond
+2. WITHIN-CHAPTER ORDER = TRANSCRIPT ORDER — NON-NEGOTIABLE: Sections within a chapter must appear in the exact same order that their segments appear in the transcript. The segment that appears earliest in the transcript goes to the first section; the segment that appears latest goes to the last section. Do NOT reorder sections to fit any narrative arc, thematic grouping, or editorial framework. The speaker's own sequence IS the structure. If the speaker introduced a concept late, that concept belongs in a late section — not moved to the front because it sounds like a "hook." Never rearrange sections based on content density, topic similarity, or any structural model.
+3. SAME-TOPIC CONSOLIDATION (conservative): If the speaker revisited the exact same point in two segments that are adjacent or nearly adjacent, you may consolidate them into one section. Do not reach across the transcript to pull distant segments together by theme — that reorders content. Each section's segments must be a contiguous or near-contiguous run from the transcript.
 4. WITHIN-CHAPTER DEDUPLICATION ONLY: Within a single message, pure title-restatement recap lines (e.g., "our series this month is...") with zero new substance may be collapsed. Do not discard content that transitions the series narrative forward.
 
 # PIPELINE RULES — REQUIRED FOR OUTPUT VALIDITY
@@ -670,22 +666,21 @@ This content is a sermon series. The author's preaching sequence IS the book's s
         };
       });
 
-      // ── Upgrade 4: Climax section placement ─────────────────────────────
-      // Move the most content-dense section to position 3 or 4 (0-indexed: 2 or 3)
-      // if it's currently at position 0 (hook slot) or last slot.
-      const sections = [...rawSections];
-      if (sections.length >= 4) {
-        const densities = sections.map((s) => s._contentDensity);
-        const maxDensity = Math.max(...densities);
-        const climaxIdx = densities.indexOf(maxDensity);
-        const targetPos = sections.length >= 5 ? 3 : 2; // 4th of 5, or 3rd of 4
-        if (climaxIdx === 0 || climaxIdx === sections.length - 1) {
-          const [climax] = sections.splice(climaxIdx, 1);
-          sections.splice(targetPos, 0, climax);
-          // Renumber after reorder
-          sections.forEach((s, i) => { s.sectionNumber = i + 1; });
-        }
+      // ── Transcript-order sort ────────────────────────────────────────────
+      // Sort sections by the earliest segment index among their assigned segments
+      // so the final section order always matches the speaker's presentation order.
+      // Segment IDs are "seg-N"; extract N as the sort key.
+      function segSortKey(id: string): number {
+        const m = id.match(/(\d+)/);
+        return m ? parseInt(m[1], 10) : 999999;
       }
+      const sections = [...rawSections].sort((a, b) => {
+        const aMin = Math.min(...(a.sourceSegmentIds.length ? a.sourceSegmentIds.map(segSortKey) : [999999]));
+        const bMin = Math.min(...(b.sourceSegmentIds.length ? b.sourceSegmentIds.map(segSortKey) : [999999]));
+        return aMin - bMin;
+      });
+      // Renumber after sort so sectionNumber stays 1-based and contiguous
+      sections.forEach((s, i) => { s.sectionNumber = i + 1; });
 
       // ── Upgrade 1: Arc flags ─────────────────────────────────────────────
       const arcFlags = buildArcFlags(sections, ch.title);
