@@ -9,11 +9,28 @@ import { stripAudienceLanguage } from "@/lib/editorial-style-bible";
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
+// Post-processing guard: catches oral artifacts that slipped past the LLM.
+// This runs on the FINAL OUTPUT paragraphs before they are returned to the client.
+// It does NOT replace the LLM prompt instructions — it is a safety net.
 function normalizeReaderFacingProse(text: string): string {
   return text
-    .replace(/\b(turn to your neighbor|say amen|clap your hands|lift your hands)\b/gi, "")
-    .replace(/\b(as you sit here today|in this room today|right here in this place)\b/gi, "")
-    .replace(/[ \t]{2,}/g, " ")   // collapse only horizontal whitespace, never newlines
+    // ── Audience-response cues ──────────────────────────────────────────────
+    .replace(/\b(say amen|can i get an amen|somebody shout|give god a hand|put your hands together|clap your hands|lift your hands|give him praise|let'?s do it for jesus)\b[.,!?]?/gi, "")
+    // ── Call-and-response check-ins ─────────────────────────────────────────
+    .replace(/\b(are you with me|do you hear what i'?m saying|do you see that|you understand\?|are you following me|can i tell you something|you know what i mean)\b[.,!?]?/gi, "")
+    // ── Live-room direct address ────────────────────────────────────────────
+    .replace(/\b(as you sit here today|in this room today|right here in this place|the person (sitting )?next to you|everyone here today|some of you in this room)\b[,.]?/gi, "")
+    // ── Pulpit throat-clearing openers (strip the opener, keep the content) ─
+    .replace(/^(now let me tell you something[,.]?\s*|before i go any further[,.]?\s*|let me say this again[,.]?\s*|i want you to understand that\s*|listen to me carefully[,.]?\s*|let me give you something[,.]?\s*)/gi, "")
+    // ── Service time/logistics markers ──────────────────────────────────────
+    .replace(/\b(this morning,?|today,?) (i want to|we are going to|we will|i will|i'm going to)\b/gi, "")
+    .replace(/\b(before we close|in closing,?|as we close|we're running out of time)\b[,.]?/gi, "")
+    // ── Scattered congregational exclamations ───────────────────────────────
+    .replace(/\b(amen|hallelujah|praise the lord|glory to god)\b[.,!]?\s*/gi, "")
+    // ── Cleanup: stray punctuation/whitespace from removals ─────────────────
+    .replace(/\s*,\s*,/g, ",")
+    .replace(/\s*\.\s*\./g, ".")
+    .replace(/[ \t]{2,}/g, " ")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
@@ -383,7 +400,7 @@ S6 — PARAGRAPH OPENER VARIATION: The opening word of a paragraph must differ f
 # EXECUTION SEQUENCE
 Before generating the final output, follow this internal sequence:
 1. Analyze the transcript chunk to identify the central thesis.
-2. Filter out all conversational redundancies and off-topic tangents.
+2. ORAL PURGE — Before writing a single sentence, scan every excerpt for the eight categories listed in ORAL-TO-WRITTEN TRANSFORMATION above. Mark every phrase that belongs to those categories. None of them may appear in the output — not verbatim, not paraphrased, not softened. For each marked phrase, ask: "What is the doctrinal or teaching point underneath this?" Write that point instead.
 3. Group related concepts logically so the narrative builds momentum.
 4. Draft the text using varied sentence lengths (short punches for emphasis, longer sentences for explanation).
 5. Before returning, silently review your draft against all four of these criteria and revise inline:
@@ -477,6 +494,41 @@ Every scripture quotation must complete a circuit within the same section:
   Truth: The speaker's doctrinal or practical claim drawn from the text.
   Application: What the reader must believe differently, do, or become as a result.
 All three stages must appear within two or three paragraphs of the quotation. If the transcript provides the text and truth but no application material, close the circuit with a reader-facing implication sentence drawn from the transcript's broader argument — not invented content. If the transcript genuinely provides no application, add [application thin] as a note after the section's last paragraph and reduce the word count rather than padding with fabricated application.
+
+════════════════════════════════════════════
+ORAL-TO-WRITTEN TRANSFORMATION — ABSOLUTE REQUIREMENTS
+════════════════════════════════════════════
+This content came from a LIVE PREACHING TRANSCRIPT. The source material is spoken performance; the output is a published book. These are two completely different media. Your core job is not editing — it is medium conversion. The reader never attended that service. They are reading a book, alone, in silence. Every trace of the live event must be erased from the output.
+
+NEVER include any of the following in the book prose — not even once, not even in a softened form:
+
+1. AUDIENCE-RESPONSE CUES (any variant):
+   "Say amen." / "Can I get an amen?" / "Somebody shout." / "Give God a hand." / "Put your hands together." / "Clap your hands." / "Lift your hands." / "Give him praise." / "Let's do it for Jesus." / Any instruction for the audience to physically respond.
+
+2. CALL-AND-RESPONSE FRAGMENTS:
+   "Are you with me?" / "Do you hear what I'm saying?" / "Do you see that?" / "You understand?" / "Are you following me?" / "Can I tell you something?" / "You know what I mean?" / Anything that checks whether the live audience is tracking.
+
+3. PULPIT DIRECT ADDRESS TO A LIVE ROOM:
+   "Some of you in this room..." / "The person sitting next to you..." / "As you sit here today..." / "Right here in this place..." / "Everyone here today..." / "Those of you watching online..." / "Today I want to share with you..." / Any statement addressed to people physically present at the service.
+
+4. PREACHER SELF-NARRATION / ORAL CONNECTIVES:
+   "Now let me tell you something." / "Before I go any further." / "Let me say this again." / "I want you to understand." / "Listen to me carefully." / "Let me give you something." / "Now I want to move on to..." / "And so what I'm saying is..." / Throat-clearing sentences that exist only to manage live attention.
+
+5. PERFORMANCE REPETITION (spoken emphasis that doesn't work in print):
+   In preaching, repeating a phrase three times ("Authority to trample. Authority to trample. Authority to trample!") builds oral momentum. In a book, it reads as padding. Consolidate into ONE powerful sentence. Keep the idea; cut the repetition.
+
+6. CONGREGATIONAL EXCLAMATIONS WOVEN INTO TEXT:
+   Scattered "Amen." / "Hallelujah." / "Glory." / "Oh." / "Yes." / "Preach." when they appear as standalone reactions or mid-sentence affirmations. These are the congregation responding, not the author writing.
+
+7. SERVICE LOGISTICS AND TIME MARKERS:
+   "This morning..." / "Today..." (when it means "at this service") / "Before we close..." / "In closing..." / "We're running out of time..." / "Next week we'll..." / "Our guest speaker next Sunday..." / Any reference to the service schedule or future events.
+
+8. SECOND-PERSON PULPIT EXHORTATIONS:
+   "You need to get this." / "You've got to understand." / "You sitting in that seat right now..." / "Some of you needed to hear this today." In book prose, the author speaks to the reader as a peer, not from a pulpit to a congregation. Rewrite as "The believer who grasps this..." or third-person principle statements.
+
+HOW TO HANDLE THESE: Do not just delete them. Extract the DOCTRINE or TEACHING POINT embedded in the preaching moment and express it as polished written prose. Example:
+— PREACHING: "Say amen if you believe that. Authority to trample. Authority to trample. Some of you have been afraid of demons your whole life. Are you with me? But Jesus said you have authority over ALL the power of the enemy!"
+— BOOK PROSE: "Jesus did not give his followers a defensive posture toward demonic power. The authority he granted in Luke 10 was offensive — to tread, to trample, to move through enemy territory without fear. The believer who internalizes this is not the one cowering from spiritual opposition; they are the threat."
 
 ════════════════════════════════════════════
 AUDIENCE & FORMAT
