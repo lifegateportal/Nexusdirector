@@ -2689,7 +2689,23 @@ export function EbookPipeline({
       const completedSectionKeys = new Set(
         acc.sections.map((s) => `${s.chapterNumber}-${s.sectionNumber}`)
       );
-      const allSections: SectionDraft[] = [...acc.sections];
+      // Deduplicate stored sections: if a prior run left duplicates in acc.sections
+      // (same chapterNumber+sectionNumber), keep only the last-written copy so the
+      // book body never contains the same section twice. The Set preserves order.
+      const _seenSectionKeys = new Set<string>();
+      const _dedupedSections: SectionDraft[] = [];
+      for (const s of acc.sections.slice().reverse()) {
+        const k = `${s.chapterNumber}-${s.sectionNumber}`;
+        if (!_seenSectionKeys.has(k)) {
+          _seenSectionKeys.add(k);
+          _dedupedSections.unshift(s);
+        }
+      }
+      if (_dedupedSections.length < acc.sections.length) {
+        console.warn(`[pipeline] Dropped ${acc.sections.length - _dedupedSections.length} duplicate section(s) from stored state`);
+        acc.sections = _dedupedSections;
+      }
+      const allSections: SectionDraft[] = [..._dedupedSections];
       let completedCount = allSections.length;
       const getLastSentence = (text: string) => {
         const lastPara = text.split("\n\n").filter(Boolean).slice(-1)[0] ?? "";
@@ -3174,9 +3190,6 @@ export function EbookPipeline({
           scripturePositions: extractScripturePositions(filteredExcerpts.length > 0 ? filteredExcerpts : assignment.transcriptExcerpts),
           // Seq-A7: last 2 sentences of prev section's final excerpt — argument was mid-flow
           priorExcerptTail: previousExcerptTail || undefined,
-          // Prose dedup corpus: first sentence of every written paragraph — primary signal
-          // for filterConsumedExcerpts in the route (prose-vs-prose n-gram overlap)
-          priorSectionsSample: buildProseCorpusSample(writtenCorpus),
           // Chapter-level pre-computed plan — skips per-section planner in write-section
           assignedPlan: chapterPlanMap.get(assignment.sectionNumber),
         };

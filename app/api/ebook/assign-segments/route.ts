@@ -104,8 +104,23 @@ export async function POST(req: NextRequest) {
       });
     });
 
-    console.log(`[assign-segments] Successfully created ${assignments.length} assignments`);
-    return NextResponse.json({ assignments }, { status: 200 });
+    // Dedup guard: if architecture somehow produced duplicate sectionNumbers for a
+    // chapter, drop the second occurrence and warn. Prevents downstream duplication.
+    const _assignKeys = new Set<string>();
+    const dedupedAssignments = assignments.filter((a) => {
+      const k = `${a.chapterNumber}-${a.sectionNumber}`;
+      if (_assignKeys.has(k)) {
+        console.warn(`[assign-segments] Duplicate assignment Ch${a.chapterNumber} §${a.sectionNumber} — dropping`);
+        return false;
+      }
+      _assignKeys.add(k);
+      return true;
+    });
+    if (dedupedAssignments.length < assignments.length) {
+      console.warn(`[assign-segments] Dropped ${assignments.length - dedupedAssignments.length} duplicate assignment(s)`);
+    }
+    console.log(`[assign-segments] Successfully created ${dedupedAssignments.length} assignments`);
+    return NextResponse.json({ assignments: dedupedAssignments }, { status: 200 });
   } catch (err) {
     console.error("[assign-segments] Fatal error:", err);
     const message = err instanceof Error ? err.message : "Segment assignment failed";

@@ -392,7 +392,11 @@ function normalizeArchitecture(
             targetWordCount: Math.max(0, Math.trunc(section.targetWordCount || 0)),
           };
         })
-        .filter((section) => section.sourceSegmentIds.length > 0),
+        .filter((section) => section.sourceSegmentIds.length > 0)
+        // Renumber sequentially so no two sections in a chapter share a sectionNumber,
+        // regardless of what the LLM returned. Duplicate sectionNumbers cause the pipeline
+        // to write the same section twice because the dedup guard is keyed by this number.
+        .map((section, si) => ({ ...section, sectionNumber: si + 1 })),
     }))
     .filter((chapter) => chapter.sections.length > 0);
   
