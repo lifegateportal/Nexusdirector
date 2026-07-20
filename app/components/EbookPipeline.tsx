@@ -328,25 +328,28 @@ function buildCoverageLedger(
   assignmentLookup?: Map<string, string[]>, // key: `ch-sec`, value: keyPoints[]
 ): { heading: string; summary: string }[] {
   return sections.map((s) => {
-    // Capture the first sentence of the first paragraph as the prose anchor
-    const firstSentence = (s.body ?? "")
-      .split(/\n\n+/)[0]
-      ?.replace(/^#{1,3} .+$/gm, "")
-      ?.match(/[^.!?]+[.!?]+/)?.[0]
-      ?.trim()
-      ?.slice(0, 120) ?? "";
-    // Append key points from assignments so the block lists what was actually taught
+    // Extract the opening claim of EVERY paragraph (up to 6), not just the first.
+    // One sentence per section was too thin — the LLM couldn't tell what ground was covered.
+    const paragraphs = (s.body ?? "").split(/\n\n+/).filter(Boolean);
+    const openers = paragraphs
+      .slice(0, 6)
+      .map((p) =>
+        p.replace(/^#{1,3} .+$/gm, "")
+          .match(/[^.!?]+[.!?]+/)?.[0]?.trim()?.slice(0, 130) ?? ""
+      )
+      .filter(Boolean);
     const kps = assignmentLookup?.get(`${s.chapterNumber}-${s.sectionNumber}`) ?? [];
-    const keyPointHint = kps.length > 0 ? ` | Key points: ${kps.slice(0, 3).join("; ")}` : "";
-    const summary = `${firstSentence}${keyPointHint}`.slice(0, 260);
+    const keyPointLine = kps.length > 0 ? `Key points: ${kps.slice(0, 4).join("; ")}` : "";
+    const summary = [...openers, keyPointLine].filter(Boolean).join(" | ").slice(0, 500);
     return { heading: s.heading, summary };
   }).filter((e) => e.heading && e.summary.length > 10);
 }
 
 // ─── Amendment 4: Thesis Sentence Extractor ───────────────────────────────────
 // The opening sentence of each paragraph is the most reliable thesis carrier.
-// Extract up to `maxPerSection` per section, capped at `hardCap` total.
-function extractBannedRecaps(sections: SectionDraft[], maxPerSection = 4, hardCap = 35): string[] {
+// Raised maxPerSection 4→10 and hardCap 35→80: the old limits left most paragraph
+// claims invisible to the ban list, allowing the LLM to silently restate body content.
+function extractBannedRecaps(sections: SectionDraft[], maxPerSection = 10, hardCap = 80): string[] {
   const all: string[] = [];
   for (const s of sections) {
     const paras = (s.body ?? "").split(/\n\n+/).filter(Boolean);
@@ -361,17 +364,22 @@ function extractBannedRecaps(sections: SectionDraft[], maxPerSection = 4, hardCa
 }
 
 // ─── Prose Corpus Sample Builder ────────────────────────────────────────────
-// Extracts the first sentence of each paragraph from the accumulated written corpus.
-// This is the comparison corpus sent to write-section so filterConsumedExcerpts can
-// do prose-vs-prose n-gram overlap instead of excerpt-vs-metadata comparison.
-function buildProseCorpusSample(corpus: string, maxSentences = 120): string[] {
+// Extracts full paragraph text (up to 120 words each) from the accumulated corpus.
+// Previously only extracted the first sentence of each paragraph, making the
+// n-gram dedup filter blind to sentences 2-5 of every written paragraph.
+// Full paragraph text gives filterConsumedExcerpts a complete view of what
+// has already been written, enabling it to catch semantic repetition accurately.
+function buildProseCorpusSample(corpus: string, maxParagraphs = 120): string[] {
   return corpus
     .split(/\n{2,}/)
-    .map((p) =>
-      p.replace(/^[>\s#*\-]+/, "").split(/(?<=[.!?])\s+/)[0]?.trim()
-    )
-    .filter((s): s is string => Boolean(s) && s.split(/\s+/).length >= 8)
-    .slice(0, maxSentences);
+    .map((p) => {
+      const cleaned = p.replace(/^[>\s#*\-]+/, "").trim();
+      const words = cleaned.split(/\s+/);
+      // Require at least 8 words; cap at 120 words per paragraph to bound token usage
+      return words.length >= 8 ? words.slice(0, 120).join(" ") : null;
+    })
+    .filter((s): s is string => s !== null)
+    .slice(0, maxParagraphs);
 }
 
 // ─── Amendment 6: Lexical Fingerprint Extractor ───────────────────────────────

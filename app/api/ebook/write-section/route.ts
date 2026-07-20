@@ -295,11 +295,13 @@ function buildStrictBodyFromExcerpts(excerpts: string[]): string {
 function filterConsumedExcerpts(
   excerpts: string[],
   alreadyCoveredPoints: string[],
-  // Raised from 0.40 → 0.65: pastoral transcripts reuse vocabulary naturally.
-  // A 40% overlap threshold was silently dropping excerpts that contained entirely
-  // new points just because they shared common preaching vocabulary with prior sections.
-  // 65% requires near-verbatim repetition before an excerpt is treated as consumed.
-  threshold = 0.65
+  // Threshold lowered 0.65 → 0.45: the corpus is now full paragraph text (not
+  // first-sentence only), so 45% 4-gram overlap is a meaningful semantic signal.
+  // The previous 65% required near-verbatim repetition — semantic repetition
+  // (same idea, different words) at 30–60% overlap was passing through freely.
+  // Short excerpts (<40 words) and scripture-bearing excerpts are always kept
+  // regardless of overlap, preventing over-filtering on common vocabulary.
+  threshold = 0.45
 ): { filtered: string[]; removedCount: number } {
   if (alreadyCoveredPoints.length === 0) return { filtered: excerpts, removedCount: 0 };
   const coveredText = alreadyCoveredPoints.join(" ");
@@ -329,8 +331,8 @@ type ExcerptEntry = { text: string; sourceNumber: number };
 function filterConsumedExcerptEntries(
   entries: ExcerptEntry[],
   alreadyCoveredPoints: string[],
-  // Raised from 0.40 → 0.65 — same reasoning as filterConsumedExcerpts above.
-  threshold = 0.65
+  // Lowered 0.65 → 0.45 — same reasoning as filterConsumedExcerpts above.
+  threshold = 0.45
 ): { filtered: ExcerptEntry[]; removedCount: number } {
   if (alreadyCoveredPoints.length === 0) return { filtered: entries, removedCount: 0 };
   const coveredText = alreadyCoveredPoints.join(" ");
@@ -647,26 +649,30 @@ When quoting a verse for which the speaker did not specify a translation, use ($
     : "";
 
   // ── Amendment 1: Coverage Ledger ─────────────────────────────────────────
-  // Each entry is a section that has ALREADY been written. The LLM must not
-  // re-establish any insight that is summarised here — reference it at most once.
+  // Each entry is a section that has ALREADY been written. The summary now
+  // contains ALL paragraph openers (up to 6 per section) + all key points,
+  // giving the LLM a complete picture of every specific claim already made.
   const coverageLedger = assignment.coverageLedger ?? [];
   const coverageLedgerBlock = coverageLedger.length > 0
     ? `\n\n════════════════════════════════════════════
-COVERAGE LEDGER — NEVER RE-EXPLAIN THESE SECTIONS
+CLAIMS ALREADY DELIVERED TO THE READER — DO NOT REPEAT
 ════════════════════════════════════════════
-Every section below has ALREADY BEEN WRITTEN and delivered to the reader. Do NOT re-introduce, re-define, re-explain, or re-develop the ideas they established — not even in passing. You may presuppose the reader already knows each one. Reference an entry at most once (inline citation only, e.g. "as we saw in [heading]") and only when it directly supports NEW content:
-${coverageLedger.map((e) => `• [${e.heading}] — Established: "${e.summary}"`).join("\n")}`
+The reader has already received every claim listed below. Repeating any of them — even with different wording, different scripture, or as "brief context" — is a content error. The reader will notice the repetition and lose trust in the book.
+
+For each section below, the specific claims already asserted are listed after "Established:". Do NOT re-argue, re-introduce, re-define, or re-prove any of these points. Do NOT open this section with a summary of a prior section. Do NOT use any of these claims as a "setup" to introduce new content — go straight to the new content instead.
+
+${coverageLedger.map((e) => `• [${e.heading}]\n  Established: ${e.summary}`).join("\n\n")}`
     : "";
 
   // ── Amendment 4: Banned Recaps ────────────────────────────────────────────
-  // These are the exact opening thesis sentences from prior sections. The LLM
-  // must not rephrase, echo, or restate any of them — not even loosely.
+  // Paragraph openers from ALL paragraphs of all prior sections (not just first 4).
+  // The LLM must not rephrase, echo, or restate any of them.
   const bannedRecaps = assignment.bannedRecaps ?? [];
   const bannedRecapsBlock = bannedRecaps.length > 0
     ? `\n\n════════════════════════════════════════════
-BANNED RECAPS — DO NOT REPHRASE OR RESTATE
+BANNED PARAGRAPH OPENERS — EVERY CLAIM BELOW IS ALREADY IN THE BOOK
 ════════════════════════════════════════════
-The following sentences are the opening claims of sections already written. You MUST NOT rephrase, echo, paraphrase, or restate any sentence in this list — not in full, not in part, not with synonyms, not as a summary. Write entirely new argumentation:
+These are the opening sentences of paragraphs already written and delivered to the reader. Each one anchors a claim that the reader already holds. You MUST NOT restate, rephrase, echo, or paraphrase any of them — not in full, not in part, not with synonyms. If your draft contains a sentence that expresses the same idea as any entry below, delete it and write something new:
 ${bannedRecaps.map((s) => `• "${s}"`).join("\n")}`
     : "";
 

@@ -197,9 +197,14 @@ ${excerptPayload}`;
         const { object } = await generatePromise;
         clearInterval(heartbeat);
 
-        // ── FIX 4: Post-process with excerpt-usage deduplication ────────────────
+        // ── Post-process: excerpt-usage + cross-section concept deduplication ──
         const priorProseText = priorSectionsSample.join(" ");
         const usedExcerpts = new Set<string>(); // Track which excerpt IDs are already assigned
+        // Cross-section concept tracker: accumulates purpose statements from sections
+        // already planned IN THIS CALL so later sections can't re-plan the same concept.
+        // Previously only priorProseText (already-written prose) was checked — sections
+        // planned together in the same chapter-plan call had no awareness of each other.
+        let plannedPurposesText = priorProseText;
         
         const cleanedPlans = (object.sectionPlans ?? []).map((sp) => {
           const sectionInput = sections.find((s) => s.sectionNumber === sp.sectionNumber);
@@ -250,21 +255,28 @@ ${excerptPayload}`;
             }
           }
 
-          if (priorProseText.length > 100) {
-            // Raised from 0.30 → 0.55: the old threshold dropped planned paragraphs
-            // whenever their purpose statement shared common preaching vocabulary with
-            // earlier prose — even when they covered entirely new arguments. 55% requires
-            // near-verbatim purpose duplication before an entry is treated as redundant.
-            entries = entries.filter((entry) => {
-              if (!entry.purpose || entry.purpose.length < 20) return true;
-              if (BIBLE_REF_RE.test(entry.purpose)) return true;
-              return ngramOverlap(entry.purpose, priorProseText) < 0.55;
-            });
+          // Filter entries whose purpose duplicates either already-written prose OR
+          // concepts already planned by an earlier section in THIS chapter-plan call.
+          // Previously only priorProseText was checked — within the same call, Section 3
+          // could plan "Explain authority over demons" even after Section 1 already planned it.
+          entries = entries.filter((entry) => {
+            if (!entry.purpose || entry.purpose.length < 20) return true;
+            if (BIBLE_REF_RE.test(entry.purpose)) return true;
+            // 0.45 threshold: lower than the old 0.55 because plannedPurposesText now
+            // includes full paragraph text (not just purpose statements), giving a richer
+            // comparison corpus where 45% 4-gram overlap is a meaningful semantic signal.
+            return ngramOverlap(entry.purpose, plannedPurposesText) < 0.45;
+          });
+
+          // Accumulate this section's planned purposes so the NEXT section in this
+          // call can detect and suppress duplicate concept planning.
+          const sectionPurposeText = entries.map((e) => e.purpose ?? "").filter(Boolean).join(" ");
+          if (sectionPurposeText.length > 0) {
+            plannedPurposesText = plannedPurposesText
+              ? `${plannedPurposesText} ${sectionPurposeText}`
+              : sectionPurposeText;
           }
 
-          // FIX 4: Removed monotonic sorting — sections can now use non-sequential excerpts
-          // This allows proper handling of teaching structures where concepts are introduced
-          // then circled back to. Entries are sorted by minExcerptNumber for readability only.
           entries.sort((a, b) => (a.minExcerptNumber ?? 0) - (b.minExcerptNumber ?? 0));
           return { sectionNumber: sp.sectionNumber, paragraphPlan: entries };
         });
