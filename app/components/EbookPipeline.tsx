@@ -3402,6 +3402,12 @@ export function EbookPipeline({
               const arc = (architecture as { seriesArc?: Array<{ fromChapter: number; toChapter: number; bridgeConcept: string }> }).seriesArc ?? [];
               return arc.find((e) => e.toChapter === chapterBlueprint.number)?.bridgeConcept ?? undefined;
             })(),
+            // Amendment 6: next chapter title — polish uses this to write a forward
+            // question that genuinely anticipates what the next chapter delivers.
+            nextChapterTitle: (() => {
+              const next = architecture.chapters.find((c) => c.number === chapterBlueprint.number + 1);
+              return next?.title ?? undefined;
+            })(),
           },
           ...((authorInstructions || targetAudience) ? { authorConfig: { instructions: authorInstructions, targetAudience } } : {}),
         }, 2);

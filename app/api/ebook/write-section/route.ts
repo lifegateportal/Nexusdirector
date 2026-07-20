@@ -353,6 +353,68 @@ function filterConsumedExcerptEntries(
   return { filtered: filtered.length > 0 ? filtered : entries.slice(0, 1), removedCount };
 }
 
+
+// ── Amendment 1: Pre-write argument outline ──────────────────────────────────────
+// A genuine two-call system: the LLM commits to a specific argument structure
+// BEFORE prose generation. The EXECUTION SEQUENCE Step 0 Blueprint is theater
+// in a single-pass generation (the LLM cannot "plan before writing" when it
+// generates linearly). Separating it into its own call forces real structural
+// commitment that becomes a hard constraint on the prose generation call.
+const OutlineSchema = z.object({
+  controllingClaim: z.string().default(""),
+  readerTension: z.string().default(""),
+  argumentMoves: z.array(z.object({
+    claim: z.string().default(""),
+    excerptHint: z.string().default(""),
+    paragraphClose: z.string().default(""),
+  })).default([]),
+  maximumInsightMoment: z.string().default(""),
+});
+
+async function generateArgumentOutline(
+  excerpts: string[],
+  keyPoints: string[],
+  sectionHeading: string,
+  voiceDNA?: { toneProfile?: string; rhetoricalPatterns?: string[] } | null,
+): Promise<z.infer<typeof OutlineSchema> | null> {
+  if (excerpts.length === 0) return null;
+  // Use condensed excerpts — first 100 words each — for fast, cheap planning
+  const excerptSample = excerpts.map((ex, i) => {
+    const words = ex.trim().split(/\s+/).slice(0, 100).join(" ");
+    return `[Excerpt ${i + 1}] ${words}`;
+  }).join("\n\n");
+  const rhetoricalHint = (voiceDNA?.rhetoricalPatterns ?? []).length > 0
+    ? `\nThe speaker's rhetorical patterns (frame argument moves using these): ${(voiceDNA?.rhetoricalPatterns ?? []).slice(0, 3).join("; ")}.`
+    : "";
+  try {
+    const { object } = await generateObject({
+      model: deepSeekModel,
+      schema: OutlineSchema,
+      mode: "json",
+      temperature: 0.25,
+      system: `You are a structural editor committing to an argument skeleton before prose is written.
+Every element must trace directly to the provided excerpt content — zero fabrication.
+Return tight, specific entries — not generic editorial framing.${rhetoricalHint}`,
+      prompt: `Section: "${sectionHeading}"
+Key points to cover:
+${keyPoints.map((k) => `• ${k}`).join("\n")}
+
+Excerpts (first 100 words each):
+${excerptSample}
+
+Return:
+- controllingClaim: the single claim this section ultimately proves (specific — must be verifiable in the excerpts above)
+- readerTension: the problem, wrong assumption, or confusion in the reader that this teaching resolves
+- argumentMoves: 3–6 planned paragraph moves in transcript order — for each: the specific claim it makes, which excerpt number(s) fuel it, how to close the paragraph
+- maximumInsightMoment: the single most surprising or theologically dense insight in the excerpts (verbatim words if possible) — this belongs in a paragraph-final position`,
+    });
+    return object;
+  } catch (err) {
+    console.warn("[write-section] Outline pass failed — proceeding without pre-computed blueprint:", err instanceof Error ? err.message : err);
+    return null;
+  }
+}
+
 const EDITORIAL_SYSTEM = `# ROLE AND OBJECTIVE
 You are an elite, New York Times-bestselling ghostwriter and developmental editor. Your task is to synthesize raw, unstructured audio transcripts into a highly polished, premium book chapter.
 
@@ -431,14 +493,12 @@ STEP 4 — PARAGRAPH EXIT REVIEW: Read every paragraph's final sentence. It must
   c. Land as a short, declarative fragment that reframes everything above it. Hard. Final.
   NEVER end a paragraph by restating what the paragraph just argued, summarizing it, or appending "This is why…" / "This shows us…" / "This means that…" Exit sentences that summarize are the most common mark of unpolished prose. Rewrite every one.
 
-STEP 5 — COMPRESSION PASS (the scalpel): Cut at least 15% of your draft by word count before returning. Target for deletion:
-  - Any sentence that states what the previous sentence already implied.
-  - Any sentence that hedges a claim already made with confidence ("Of course, this doesn't mean…").
-  - Any sentence that begins with "This means that," "In other words," "Put simply," or "To summarize."
-  - Any transition sentence that summarizes the previous paragraph before introducing the next.
-  - Any paragraph opener that restates the section heading or the previous paragraph's conclusion.
-  The compressed version is always the published version. If cutting 15% leaves the argument intact, cut 20%. Only stop when removing more would lose a point from the transcript.
-
+STEP 5 — COMPRESSION PASS (proportional to draft length — count your word total first): After drafting, estimate your total paragraph word count and apply the matching target:
+  • Under 350 words: SKIP this step entirely. Thin sections lose source coverage when compressed — accuracy takes priority over brevity.
+  • 350–600 words: Cut 8–10%. Remove sentences that hedge a claim already stated with confidence, and any sentence that restates the prior sentence’s conclusion in different words.
+  • 600–900 words: Cut 12–15%. Also delete any transition sentence that summarizes the previous paragraph before introducing the next.
+  • 900+ words: Cut 15–20%. Also delete every sentence beginning with “This means that,” “In other words,” “Put simply,” or “To summarize,” and any paragraph opener that restates the section heading or the previous paragraph’s conclusion.
+  In all cases: never cut a sentence that carries a teaching point from the transcript. Stop cutting when removing more would cost the reader a substantive idea from the source material.
 STEP 6 — FINAL CHECKS: Review against these four criteria and revise inline:
    - RHYTHM: No two consecutive sentences should be the same length.
    - CLICHÉS: Scan every sentence — delete or rewrite any instance of robotic phrasing.
@@ -549,6 +609,10 @@ NEVER include any of the following in the book prose — not even once, not even
 
 4. PREACHER SELF-NARRATION / ORAL CONNECTIVES:
    "Now let me tell you something." / "Before I go any further." / "Let me say this again." / "I want you to understand." / "Listen to me carefully." / "Let me give you something." / "Now I want to move on to..." / "And so what I'm saying is..." / Throat-clearing sentences that exist only to manage live attention.
+   EXCEPTION — STRUCTURAL ENUMERATORS (ALWAYS PRESERVE THESE):
+   Phrases like "There are three things..." / "Notice two realities in this text..." / "Here are four keys..." / "First... Second... Third..." are oral in origin but function as structure in print. They orient the reader: how many points are coming and where they stand in the argument. PRESERVE the enumeration structure — strip only the pulpit framing around it.
+   WRONG: Strip "I want to give you three things today about prayer" entirely.
+   RIGHT: Keep the enumeration — "Three things define this moment in prayer: First..." The count and the items stay. The stage-management language goes.
 
 5. PERFORMANCE REPETITION (spoken emphasis that doesn't work in print):
    In preaching, repeating a phrase three times ("Authority to trample. Authority to trample. Authority to trample!") builds oral momentum. In a book, it reads as padding. Consolidate into ONE powerful sentence. Keep the idea; cut the repetition.
@@ -867,6 +931,20 @@ HARD RULES for this section's close:
     ? `\n\nCHAPTER PREMISE (north star for this chapter):\n"${assignment.chapterPremise}"\nThe opening sentence of the FIRST paragraph of this section should echo the spirit of this premise — not quote it verbatim, but orient the reader toward the same central tension or claim. Subsequent paragraphs should build from it.`
     : "";
 
+
+
+  // ── Amendment 1: Generate pre-write argument outline (real Step 0 Blueprint) ────────────
+  // This two-call system forces real structural commitment before prose generation.
+  // The outline becomes a hard constraint on what paragraphs are written and in what order.
+  const outline = await generateArgumentOutline(
+    effectiveExcerpts,
+    assignment.keyPoints,
+    assignment.heading,
+    assignment.voiceDNA,
+  );
+  const outlineBlock = outline
+    ? `\n\nPRE-COMPUTED SECTION BLUEPRINT (Step 0 complete — begin at Step 1):\nCONTROLLING CLAIM: ${outline.controllingClaim}\nREADER TENSION: ${outline.readerTension}\nARGUMENT MOVES (commit to these in order — each drives one or more paragraphs):\n${outline.argumentMoves.map((m, i) => `  ${i + 1}. Claim: ${m.claim}\n     Excerpts: ${m.excerptHint}\n     Paragraph close: ${m.paragraphClose}`).join("\n")}\nMAXIMUM-INSIGHT MOMENT (save for a paragraph-final position): ${outline.maximumInsightMoment}\n\nThis outline is your committed architecture. Every paragraph must serve one of the argument moves above. Do NOT re-derive the blueprint — it is already done. Proceed directly to Step 1 (Oral Purge).`
+    : "";
   const prompt = `Write the prose for this section of the ebook. Transform the transcript excerpts into polished written prose.
 
 CHAPTER ${assignment.chapterNumber}: ${assignment.chapterTitle}
@@ -912,7 +990,7 @@ Return:
 - claimLedger: list of major claims and the excerpt numbers (1-based) that support each claim.
 - planSequenceIds: for EACH paragraph in the paragraphs array, provide the 0-based index of the paragraph plan step it fulfills. Must be non-decreasing (paragraph N cannot fulfill a plan step earlier than paragraph N-1's step).
 
-Now write the section prose:`;
+Now write the section prose:${outlineBlock}`;
 
 
   const PlanSchema = z.object({
@@ -990,7 +1068,7 @@ Now write the section prose:`;
           if ((dna.vernacularMarkers ?? []).length > 0)
             lines.push(`\nVERNACULAR MARKERS (must appear verbatim to authenticate the voice):\n${dna.vernacularMarkers.map((v) => `  • ${v}`).join("\n")}`);
           if ((dna.rhetoricalPatterns ?? []).length > 0)
-            lines.push(`\nRHETORICAL PATTERNS (replicate these devices):\n${dna.rhetoricalPatterns.map((r) => `  • ${r}`).join("\n")}`);
+            lines.push(`\nRHETORICAL PATTERNS — REPLICATE THESE STRUCTURES IN THE PROSE:\n${dna.rhetoricalPatterns.map((r) => `  • ${r}`).join("\n")}\nENFORCEMENT: Actively embed these patterns in the prose structure — do not merely note them. If the speaker characteristically "states a wrong assumption then corrects it from scripture," build at least one paragraph with that structure. If the speaker "builds to a three-point declaration," use that move where the excerpts support it. Rhetorical patterns are the structural signature of this voice. Their absence makes the prose sound like anyone could have written it.`);
           if ((dna.avoidStructures ?? []).length > 0)
             lines.push(`\nFORBIDDEN SENTENCE STRUCTURES (never construct sentences this way):\n${dna.avoidStructures.map((s) => `  • ${s}`).join("\n")}`);
           if ((dna.avoidWords ?? []).length > 0)
@@ -1017,6 +1095,22 @@ Now write the section prose:`;
       system: deduplicatedSystem,
       prompt: `${prompt}\n\nPARAGRAPH PLAN (must follow if provided):\n${JSON.stringify(paragraphPlan)}`,
     });
+    // ── Amendment 7: claimLedger key-point coverage check ────────────────────────
+    // Cross-reference returned claim entries against the assignment's key points.
+    // Key points with < 30% content-word match in the aggregated claim text = possible
+    // coverage gap that the claimLedger didn't capture. Surfaced as missedPoints in
+    // the response so the pipeline can log which content may have been skipped.
+    const claimText = (object.claimLedger ?? []).map((c) => c.claim.toLowerCase()).join(" ");
+    const missedPoints = (assignment.keyPoints ?? []).filter((kp) => {
+      const kpWords = kp.toLowerCase().replace(/[^a-z0-9\s]/g, "").split(/\s+/).filter((w) => w.length > 4);
+      if (kpWords.length === 0) return false;
+      const matchedWords = kpWords.filter((w) => claimText.includes(w));
+      return matchedWords.length / kpWords.length < 0.3;
+    });
+    if (missedPoints.length > 0) {
+      console.warn(`[write-section] Coverage gap: ${missedPoints.length} key point(s) may be missing from claimLedger in Ch${assignment.chapterNumber} §${assignment.sectionNumber}:`, missedPoints.slice(0, 2));
+    }
+
     const rawParagraphs = (object.paragraphs ?? [])
       .map((p) => p.trim())
       .filter(Boolean)
@@ -1118,6 +1212,7 @@ Now write the section prose:`;
     return NextResponse.json({
       body,
       claimLedger: object.claimLedger ?? [],
+      missedPoints,
       passiveVoiceCount: passiveHits.length,
       unfullfilledHook,
       sequenceBreakCount,

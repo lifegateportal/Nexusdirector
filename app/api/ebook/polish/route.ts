@@ -81,13 +81,24 @@ export async function POST(req: NextRequest) {
     : "";
 
   try {
-    // Send section headings + key takeaways only — NOT body prose.
-    // Sending body prose caused the LLM to mirror the section-1 opening verbatim as the intro.
+    // ── Amendment 3: Section summary now includes first 2 sentences of actual prose.
+    // Previously: only section headings were sent, so the intro LLM was generating
+    // openers that were disconnected from the chapter's actual arguments.
+    // Now: the first 2 sentences of each section's opening paragraph ground the LLM
+    // in real content — not just metadata — without risking the verbatim-mirroring
+    // problem (which was caused by sending the FULL first paragraph, not a 2-sentence sample).
     const sectionsSummary = (chapter.sections ?? [])
       .map((s) => {
-        return `Section ${s.sectionNumber} — ${s.heading}`;
+        const bodySentences = (s.body ?? "")
+          .split(/(?<=[.!?])\s+/)
+          .map((sent) => sent.trim())
+          .filter(Boolean)
+          .slice(0, 2)
+          .join(" ");
+        const proseHint = bodySentences ? `\n   Opens: "${bodySentences.slice(0, 180)}${bodySentences.length > 180 ? "…" : ""}"` : "";
+        return `Section ${s.sectionNumber} — ${s.heading}${proseHint}`;
       })
-      .join("\n");
+      .join("\n\n");
 
     const totalWordCount = (chapter.sections ?? []).reduce((acc, s) => acc + (s.wordCount ?? 0), 0);
 
@@ -107,6 +118,15 @@ export async function POST(req: NextRequest) {
 
     const prevChapterBlock = chapter.previousChapterForwardQuestion
       ? `\n\nPREVIOUS CHAPTER FORWARD QUESTION (the open question that closed the last chapter — your intro should feel like the answer beginning to form):\n${chapter.previousChapterForwardQuestion.slice(0, 200)}`
+      : "";
+
+    // ── Amendment 6: Forward question is grounded in the NEXT chapter's content.
+    // Previously the forward question was generated with no knowledge of what the
+    // next chapter actually covers — producing generic "open door" questions that
+    // may not match what comes next. Now the next chapter title is supplied so the
+    // LLM can write a question the reader will feel was answered by what follows.
+    const nextChapterBlock = chapter.nextChapterTitle
+      ? `\n\nNEXT CHAPTER (for FORWARD QUESTION only — do not reference in intro or conclusion):\n"${chapter.nextChapterTitle}"\nYour forward question must create a tension the reader will feel resolved by that chapter. Write it so that, looking back after reading the next chapter, the reader thinks: "That question was exactly what I needed answered." Do not name the next chapter. Do not preview its content. Plant the question that opens the door it walks through.`
       : "";
 
     // U5: Chapter premise from architect — constrains the intro and premise line
@@ -161,7 +181,8 @@ Your tasks:
    This is the last thing the reader sees before turning the page. It should feel like an open door, not a closed summary.
    It must point forward, not backward. Never restate what the chapter covered.
    WRONG: "We've seen how faith requires action." RIGHT: "But what happens when you've done everything right and nothing moves?"
-   If this is the final chapter, write a question that sends the reader back into life with something unresolved and worth carrying.
+   If a NEXT CHAPTER is provided in the prompt: write a question the reader will feel was answered by that chapter. It should feel, looking back after reading it, like it was pointing there all along. Do not name or preview the next chapter.
+    If this is the final chapter (no NEXT CHAPTER provided): write a question that sends the reader back into life with something unresolved and worth carrying.
 4. KEY TAKEAWAYS: 3–6 bullet statements taken VERBATIM or near-verbatim from the chapter content.
 5. REFLECTION QUESTIONS: 3–4 questions that are SPECIFIC, PERSONAL, and ACTIONABLE.
    REQUIRED: Each question must reference a concrete claim, story, or scripture from this chapter.
@@ -187,7 +208,7 @@ ${PREMIUM_BOOK_STYLE_RULES}${authorConfigBlock}
 
 Respond with ONLY a valid JSON object — no markdown, no code blocks, no explanation:
 {"intro":"...","forwardQuestion":"...","keyTakeaways":["..."],"reflectionQuestions":["..."],"epigraph":"...","sectionTransitions":[{"sectionNumber":1,"revisedLastSentence":"..."}]}`,
-        prompt: `Finalize this chapter.\n\nCHAPTER ${chapter.number}: ${chapter.title}\n\nVOICE DNA:\n${JSON.stringify(voiceDNASlim)}\n\nSECTION SUMMARIES:\n${sectionsSummary}${epigraphCandidates ? `\n\nSCRIPTURE CANDIDATES FOR EPIGRAPH (pick the most resonant ONE, or return empty string if none fits):\n${epigraphCandidates}` : ""}${prevChapterBlock}${chapterPremiseBlock}${seriesArcBlock}${sectionBoundariesBlock}`,
+        prompt: `Finalize this chapter.\n\nCHAPTER ${chapter.number}: ${chapter.title}\n\nVOICE DNA:\n${JSON.stringify(voiceDNASlim)}\n\nSECTION SUMMARIES:\n${sectionsSummary}${epigraphCandidates ? `\n\nSCRIPTURE CANDIDATES FOR EPIGRAPH (pick the most resonant ONE, or return empty string if none fits):\n${epigraphCandidates}` : ""}${prevChapterBlock}${nextChapterBlock}${chapterPremiseBlock}${seriesArcBlock}${sectionBoundariesBlock}`,
       }), "chapter polish generation"),
       "chapter polish",
       2

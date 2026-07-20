@@ -116,9 +116,31 @@ export async function POST(req: NextRequest) {
     ? `\n\nBOOK'S CORE THESIS (thread through every section's plan): "${coreThesis}"`
     : "";
 
-  const voiceDnaLine = voiceDNA?.toneProfile
-    ? `\n\nTONE (enforce in purpose statements): ${voiceDNA.toneProfile}`
-    : "";
+  // ── Amendment 9: VoiceDNA shapes paragraph purpose framing ────────────────
+  // Previously only toneProfile was injected. rhetoricalPatterns — the structural
+  // fingerprint of HOW the preacher argues — were ignored. Purpose statements
+  // framed with "Explain that..." are generic editorial language. Framing them
+  // with the speaker's own argumentative moves ("Expose the wrong assumption
+  // then correct it from scripture") produces writing plans that generate
+  // section prose that sounds like THIS preacher, not a generic writer.
+  const voiceDnaLine = (() => {
+    if (!voiceDNA) return "";
+    const parts: string[] = [];
+    if (voiceDNA.toneProfile) {
+      parts.push(`\n\nTONE (enforce in purpose statements): ${voiceDNA.toneProfile}`);
+    }
+    const patterns = voiceDNA.rhetoricalPatterns ?? [];
+    if (patterns.length > 0) {
+      parts.push(`\n\nSPEAKER RHETORICAL PATTERNS \u2014 FRAME PARAGRAPH PURPOSES USING THESE MOVES:
+This speaker characteristically argues through these patterns:
+${patterns.slice(0, 4).map((p) => `  \u2022 ${p}`).join("\n")}
+When writing purpose statements, use these patterns as the frame \u2014 not generic editorial language.
+WRONG: "Explain that believers have authority over demonic power."
+RIGHT: "Expose the assumption that spiritual authority must be earned, then declare from Luke 10:19 that Jesus already gave it freely."
+The purpose statement should describe the speaker's rhetorical move, not just the content topic.`);
+    }
+    return parts.join("");
+  })();
 
   const chapterBoundaryBlock = nextChapterTitle
     ? `\n\nCHAPTER BOUNDARY — HARD STOP: The final section of this chapter must not plan any paragraph that introduces or develops content from the next chapter titled "${nextChapterTitle}". If any transcript excerpt transitions into that next chapter's topic, stop planning before it.`

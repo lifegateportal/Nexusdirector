@@ -401,6 +401,50 @@ function normalizeArchitecture(
     console.warn("[architect] Segments removed during architecture normalization:", removedSegments);
   }
 
+  // ── Amendment 8: Section heading quality checks ─────────────────────────────
+  // Three checks: (1) headings > 12 words are too long for print section headings,
+  // (2) headings with no verb are likely topic labels rather than teaching claims,
+  // (3) global cross-chapter token overlap > 0.50 flags possible duplicate headings.
+  // These don't block generation — they surface as warnings the UI can log.
+  const architectureWarnings: string[] = [];
+  const allHeadingTokens: Array<{ heading: string; chapterNum: number; sectionNum: number }> = [];
+
+  const VERB_RE = /\b(is|are|was|were|has|have|had|do|does|did|will|would|can|could|may|might|shall|should|reveal|reveals|give|gives|show|shows|bring|brings|take|takes|make|makes|believe|believes|know|knows|find|finds|need|needs|walk|walks|live|lives|stand|stands|fight|fights|receive|receives|overcome|overcomes|build|builds|establish|establishes|declare|declares|prove|proves|demonstrate|demonstrates|unlock|unlocks|release|releases|restore|restores|define|defines|create|creates|open|opens|change|changes|grant|grants|call|calls|draw|draws|lead|leads|move|moves|keep|keeps|hold|holds|become|becomes|see|sees)\b/i;
+
+  for (const chapter of (chapters.length > 0 ? chapters : fallback.chapters)) {
+    for (const section of chapter.sections) {
+      const words = section.heading.trim().split(/\s+/);
+      if (words.length > 12) {
+        architectureWarnings.push(
+          `Ch ${chapter.number} §${section.sectionNumber}: Heading too long (${words.length} words) — consider shortening: "${section.heading}"`
+        );
+      }
+      if (words.length <= 6 && !VERB_RE.test(section.heading)) {
+        architectureWarnings.push(
+          `Ch ${chapter.number} §${section.sectionNumber}: Heading may be a topic label (no verb found) — teaching claims land harder: "${section.heading}"`
+        );
+      }
+      allHeadingTokens.push({ heading: section.heading, chapterNum: chapter.number, sectionNum: section.sectionNumber });
+    }
+  }
+
+  // Global cross-chapter dedup (check ALL chapter pairs, not just adjacent)
+  for (let i = 0; i < allHeadingTokens.length; i++) {
+    for (let j = i + 1; j < allHeadingTokens.length; j++) {
+      if (allHeadingTokens[i].chapterNum === allHeadingTokens[j].chapterNum) continue; // same-chapter already caught
+      const overlap = sectionKeywordOverlap(allHeadingTokens[i].heading, allHeadingTokens[j].heading);
+      if (overlap >= 0.55) {
+        architectureWarnings.push(
+          `Possible duplicate headings across chapters: Ch${allHeadingTokens[i].chapterNum} §${allHeadingTokens[i].sectionNum} vs Ch${allHeadingTokens[j].chapterNum} §${allHeadingTokens[j].sectionNum} — "${allHeadingTokens[i].heading}" / "${allHeadingTokens[j].heading}"`
+        );
+      }
+    }
+  }
+
+  if (architectureWarnings.length > 0) {
+    console.warn("[architect] Heading quality warnings:", architectureWarnings);
+  }
+
   return {
     bookTitle: (minimal.bookTitle || "").trim() || fallback.bookTitle,
     subtitle: (minimal.subtitle || "").trim(),
@@ -409,6 +453,7 @@ function normalizeArchitecture(
     frontMatterNotes: (minimal.frontMatterNotes || "").trim() || fallback.frontMatterNotes,
     backMatterNotes: (minimal.backMatterNotes || "").trim() || fallback.backMatterNotes,
     chapters: chapters.length > 0 ? chapters : fallback.chapters,
+    architectureWarnings,
   };
 }
 

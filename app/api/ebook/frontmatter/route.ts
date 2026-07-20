@@ -64,7 +64,13 @@ BACK MATTER
 - resourcesList: Books, tools, websites, or resources the author explicitly recommended. Return [] if none mentioned.
 
 SCRIPTURE & QUOTE FORMATTING: Apply Chicago Manual of Style rules as established in the chapter content.
-VOICE ENFORCEMENT: Match the author's tone profile and signature phrases.
+VOICE ENFORCEMENT — FIRST PERSON MANDATORY:
+The introduction speaks in first person as the author. This means:
+• Write WITH the author's voice, not ABOUT the author. Never slip into third-person description.
+• Use the toneProfile to set every sentence's register and emotional weight.
+• Embed signature phrases naturally — not quoted, not referenced, but used as the author would actually say them.
+• The rhetoricalPatterns describe HOW this author moves through an argument. Replicate those moves in the introduction's structure. If the speaker characteristically "states a problem then provides the scriptural answer," do that in the introduction.
+• Any sentence that sounds like a publicist describing the author (rather than the author speaking) is wrong. Rewrite it.
 
 ${SOURCE_LOCK_RULES}
 
@@ -84,12 +90,13 @@ ARCHITECTURE CONTEXT:
 VOICE DNA:
 ${JSON.stringify(input.voiceDNA, null, 2)}
 
-FULL TRANSCRIPT (source of truth — opening & closing only):
-${transcript.slice(0, 5000)}
+TRANSCRIPT OPENING (voice calibration — first-person voice anchoring only):
+${transcript.slice(0, 4000)}
 
-[… middle omitted …]
+[… sermon middle omitted — use chapter themes below for content coverage across the full book …]
 
-${transcript.slice(-3000)}`,
+CHAPTER-BY-CHAPTER CONTENT (full book map — introduction and conclusion must cover all chapters):
+${input.architecture.chapters.map((c, i) => `Chapter ${i + 1}: "${c.title}"\n  Core theme: ${c.keyTheme}\n  Sections: ${((c as {sections?: {heading: string}[]}).sections ?? []).map((s) => s.heading).join(" | ") || "(none)"}`).join("\n\n")}`,
     });
 
     return NextResponse.json({

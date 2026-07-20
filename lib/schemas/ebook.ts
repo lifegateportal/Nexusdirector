@@ -244,6 +244,8 @@ export const ChapterPolishInputSchema = z.object({
   chapterPremise: z.string().optional(),         // one-sentence north star for this chapter's intro/conclusion
   // ── Upgrade 7: Series arc bridge concept ─────────────────────────────────
   seriesArcBridge: z.string().optional(),        // keyword thread this chapter picks up from the previous
+  // ── Amendment 6: Next chapter title for forward question grounding ────────
+  nextChapterTitle: z.string().optional(),       // title of the next chapter — forward question should anticipate it
 });
 
 // ─── Chapter Draft (output of polish) ────────────────────────────────────────
