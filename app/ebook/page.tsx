@@ -44,6 +44,20 @@ function sanitizeChapterDrafts(chapters: unknown): ChapterDraft[] {
   return Array.isArray(chapters) ? chapters.filter(isChapterDraft) : [];
 }
 
+// Fields computed fresh at write time — they are passed to write-section as runtime
+// inputs but have zero value in the saved state. Persisting them bloats each
+// SectionAssignment by 10-100 KB and caused the browser to crash during save.
+const EPHEMERAL_ASSIGNMENT_FIELDS = new Set([
+  "priorSectionsSample",  // all sentences from written sections — can be thousands of items
+  "bannedRecaps",         // opening sentences of all prior paragraphs
+  "coverageLedger",       // per-section claim summaries
+  "overusedPhrases",      // 3-gram frequency list
+  "sequenceTurns",        // rhetorical pivot points
+  "storyPayoffPairs",     // story setup/payoff ordering data
+  "scripturePositions",   // scripture sequence enforcement data
+  "priorExcerptTail",     // last excerpt from the previous section
+]);
+
 function sanitizeSectionAssignments(assignments: unknown): SectionAssignment[] {
   if (!Array.isArray(assignments)) return [];
 
@@ -54,8 +68,15 @@ function sanitizeSectionAssignments(assignments: unknown): SectionAssignment[] {
       const sectionNumber = Number(assignment.sectionNumber);
       if (!Number.isFinite(chapterNumber) || !Number.isFinite(sectionNumber)) return null;
 
+      // Strip ephemeral runtime fields before saving. These are recomputed fresh
+      // before each write-section call — storing them wastes memory and causes crashes.
+      const stripped: Record<string, unknown> = {};
+      for (const [key, val] of Object.entries(assignment)) {
+        if (!EPHEMERAL_ASSIGNMENT_FIELDS.has(key)) stripped[key] = val;
+      }
+
       return {
-        ...assignment,
+        ...stripped,
         chapterNumber,
         sectionNumber,
         transcriptExcerpts: Array.isArray(assignment.transcriptExcerpts)
@@ -572,35 +593,22 @@ function EbookPageClient() {
   }, []);
 
   const toJsonSafeValue = useCallback((value: unknown): unknown => {
-    const seen = new WeakSet<object>();
-
-    const walk = (input: unknown): unknown => {
-      if (input === null) return null;
-      if (input instanceof Date) return input.toISOString();
-
-      const t = typeof input;
-      if (t === "string" || t === "number" || t === "boolean") return input;
-      if (t === "bigint") return input.toString();
-      if (t === "undefined" || t === "function" || t === "symbol") return null;
-
-      if (Array.isArray(input)) return input.map((item) => walk(item));
-
-      if (t === "object") {
-        const obj = input as Record<string, unknown>;
-        if (seen.has(obj)) return null;
-        seen.add(obj);
-
-        const out: Record<string, unknown> = {};
-        for (const [key, val] of Object.entries(obj)) {
-          out[key] = walk(val);
-        }
-        return out;
-      }
-
+    // Use the browser's native C++ JSON serializer instead of a recursive JS walk.
+    // The previous implementation (hand-rolled DFS) visited every node in the tree
+    // creating a full in-memory copy via JS object allocation — on a large job state
+    // (transcript text + all section data) this was 10-100x slower than native JSON
+    // and could exhaust the tab's memory, crashing the browser on Save.
+    try {
+      const json = JSON.stringify(value, (_key, val) => {
+        if (val instanceof Date) return val.toISOString();
+        if (typeof val === "bigint") return val.toString();
+        if (typeof val === "function" || typeof val === "symbol") return undefined;
+        return val;
+      });
+      return JSON.parse(json) as unknown;
+    } catch {
       return null;
-    };
-
-    return walk(value);
+    }
   }, []);
 
   const mergeManifestIntoJobState = useCallback((
