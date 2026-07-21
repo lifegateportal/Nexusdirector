@@ -65,6 +65,7 @@ const STAGE_ORDER: PipelineStage[] = [
 ];
 type SignalFilterState = "idle" | "applied" | "skipped";
 type QualityReport = { score: number; pass: boolean; issues: { severity: "warn" | "error"; message: string }[] };
+type ReviewTab = "manuscript" | "source-map";
 export type EbookPipelineSnapshot = {
   stage: PipelineStage;
   progress: { total: number; completed: number };
@@ -1509,9 +1510,9 @@ export function EbookPipeline({
   const [showSaveBar, setShowSaveBar] = useState(false);
   const [saveName, setSaveName] = useState("");
   const [savedConfirm, setSavedConfirm] = useState(false);
-  const [finalReviewTab, setFinalReviewTab] = useState<"manuscript" | "source-map">("manuscript");
-  const [reviewSectionAssignments, setReviewSectionAssignments] = useState<SectionAssignment[]>([]);
-  const [reviewTranscriptEntries, setReviewTranscriptEntries] = useState<Array<{ label: string; text: string }>>([]);
+  const [reviewTab, setReviewTab] = useState<ReviewTab>("manuscript");
+  const [sectionAssignments, setSectionAssignments] = useState<SectionAssignment[]>([]);
+  const [sourceTranscripts, setSourceTranscripts] = useState<Array<{ label: string; text: string }>>([]);
   const jobIdRef = useRef<string>(newJobId());
   // Mirror of log in a ref so runPipeline (async) can read the current value for checkpoints
   const logRef = useRef<string[]>([]);
@@ -1598,7 +1599,7 @@ export function EbookPipeline({
   setQualityReport(null);
   setError(null);
   setStage("complete");
-  setFinalReviewTab("manuscript");
+  setReviewTab("manuscript");
   // Build a minimal reviewContext so the export UI is available even without a full job state
   setReviewContext({
     contentMap: {
@@ -1882,8 +1883,8 @@ export function EbookPipeline({
       setLog(job.errorLog ?? []);
       setProgress(job.progress ?? { total: 0, completed: 0 });
       setChapters(job.chapters ?? []);
-      setReviewSectionAssignments(job.sectionAssignments ?? []);
-      setReviewTranscriptEntries(job.transcripts ?? []);
+      setSectionAssignments(job.sectionAssignments ?? []);
+      setSourceTranscripts(job.transcripts ?? []);
       // Restore error so the Resume button is visible after refresh
       if (job.status === "failed") {
         const lastErr = (job.errorLog ?? []).findLast?.((e) => e.includes("✗"));
@@ -2042,9 +2043,9 @@ export function EbookPipeline({
       setCompletedManifest(null);
       setReviewContext(null);
       setQualityReport(null);
-      setFinalReviewTab("manuscript");
-      setReviewSectionAssignments([]);
-      setReviewTranscriptEntries([]);
+      setReviewTab("manuscript");
+      setSectionAssignments([]);
+      setSourceTranscripts([]);
       setTotalWords(0);
       autoDownloadedRef.current = false;
     }
@@ -2132,7 +2133,7 @@ export function EbookPipeline({
         masterTranscript = transcriptResults
           .map((t) => `[${t.label}]\n${t.text}`)
           .join("\n\n═══════════════════════════════════════\n\n");
-        setReviewTranscriptEntries(transcriptResults);
+        setSourceTranscripts(transcriptResults);
         addLog(`Master transcript assembled — ${countWords(masterTranscript).toLocaleString()} words after per-slot filtering`);
 
         // ── Stage 1b: Glossary sanitization — zero-cost regex ASR correction ─
@@ -2154,7 +2155,7 @@ export function EbookPipeline({
         acc.transcripts = transcriptResults;
         await checkpoint("filtering");
       } else {
-        setReviewTranscriptEntries(acc.transcripts ?? []);
+        setSourceTranscripts(acc.transcripts ?? []);
         addLog(`↩ Resuming — transcript available (${countWords(masterTranscript).toLocaleString()} words)`);
       }
 
@@ -2278,12 +2279,12 @@ export function EbookPipeline({
           { architecture, contentMap, voiceDNA }
         );
         assignments = result.assignments;
-        setReviewSectionAssignments(assignments);
+        setSectionAssignments(assignments);
         addLog(`✓ ${assignments.length} section assignments ready`);
         acc.sectionAssignments = assignments;
         await checkpoint("writing");
       } else {
-        setReviewSectionAssignments(assignments);
+        setSectionAssignments(assignments);
         addLog(`↩ Resuming — ${assignments.length} section assignments available`);
       }
 
@@ -3393,76 +3394,38 @@ export function EbookPipeline({
               </div>
             </div>
 
-            {/* Shared word processor toolbar — one bar for all editors */}
-            <SharedProseToolbar className="sticky top-0 z-20" />
-
-            <div className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-700/60 bg-slate-900/50 p-2">
+            <div className="grid grid-cols-2 gap-2 rounded-xl border border-slate-700/40 bg-slate-900/50 p-1.5">
               <button
                 type="button"
-                onClick={() => setFinalReviewTab("manuscript")}
+                onClick={() => setReviewTab("manuscript")}
                 className={[
-                  "min-h-[44px] rounded-lg px-3 py-2 text-xs font-semibold transition-colors",
-                  finalReviewTab === "manuscript"
-                    ? "bg-cyan-500/20 text-cyan-200 border border-cyan-400/40"
-                    : "bg-slate-800/70 text-slate-300 border border-slate-700 hover:text-slate-100",
+                  "min-h-[48px] rounded-lg border px-3 py-2 text-sm font-semibold transition-colors",
+                  reviewTab === "manuscript"
+                    ? "border-cyan-400/40 bg-cyan-500/15 text-cyan-200"
+                    : "border-slate-700/50 bg-slate-900/60 text-slate-300",
                 ].join(" ")}
               >
                 Manuscript
               </button>
               <button
                 type="button"
-                onClick={() => setFinalReviewTab("source-map")}
+                onClick={() => setReviewTab("source-map")}
                 className={[
-                  "min-h-[44px] rounded-lg px-3 py-2 text-xs font-semibold transition-colors",
-                  finalReviewTab === "source-map"
-                    ? "bg-cyan-500/20 text-cyan-200 border border-cyan-400/40"
-                    : "bg-slate-800/70 text-slate-300 border border-slate-700 hover:text-slate-100",
-                  reviewSectionAssignments.length === 0
-                    ? "cursor-not-allowed opacity-50"
-                    : "",
+                  "min-h-[48px] rounded-lg border px-3 py-2 text-sm font-semibold transition-colors",
+                  reviewTab === "source-map"
+                    ? "border-violet-400/40 bg-violet-500/15 text-violet-200"
+                    : "border-slate-700/50 bg-slate-900/60 text-slate-300",
                 ].join(" ")}
-                disabled={reviewSectionAssignments.length === 0}
-                title={reviewSectionAssignments.length === 0 ? "Source map becomes available after section assignment." : "View transcript-to-section source map."}
               >
                 Source Map
               </button>
-              <p className="text-[11px] text-slate-500 sm:ml-2">
-                {reviewSectionAssignments.length > 0
-                  ? `${reviewSectionAssignments.length} mapped section${reviewSectionAssignments.length !== 1 ? "s" : ""}`
-                  : "Run or resume the pipeline to load source mappings."}
-              </p>
             </div>
 
-            {finalReviewTab === "source-map" && (
-              <div className="rounded-xl border border-slate-700/60 bg-slate-950/40 p-2">
-                <TranscriptSourceMapPanel
-                  chapters={chapters}
-                  sectionAssignments={reviewSectionAssignments}
-                  transcriptEntries={reviewTranscriptEntries}
-                  onSectionBodyChange={(chapterNumber, sectionNumber, body) => {
-                    updateCompletedManifest((current) => ({
-                      ...current,
-                      chapters: current.chapters.map((chapter) => (
-                        chapter.number !== chapterNumber
-                          ? chapter
-                          : {
-                              ...chapter,
-                              sections: chapter.sections.map((section) => (
-                                section.sectionNumber === sectionNumber
-                                  ? { ...section, body, wordCount: countWords(body) }
-                                  : section
-                              )),
-                            }
-                      )),
-                    }));
-                  }}
-                  authorConfig={{ instructions: authorInstructions, targetAudience }}
-                />
-              </div>
-            )}
-
-            {finalReviewTab === "manuscript" && (
+            {reviewTab === "manuscript" && (
               <>
+
+            {/* Shared word processor toolbar — one bar for all editors */}
+            <SharedProseToolbar className="sticky top-0 z-20" />
 
             {/* Print Specification Toggle */}
             <PrintSpecPanel
@@ -3657,22 +3620,50 @@ export function EbookPipeline({
             {/* Voice Studio — audiobook narration */}
             <VoiceStudio manifest={completedManifest} slug={completedManifest.jobId} />
 
+            </>
+            )}
+
+            {reviewTab === "source-map" && (
+              <TranscriptSourceMapPanel
+                chapters={chapters}
+                sectionAssignments={sectionAssignments}
+                transcriptEntries={sourceTranscripts}
+                authorConfig={{ instructions: authorInstructions, targetAudience }}
+                onSectionBodyChange={(chapterNumber, sectionNumber, body) => {
+                  updateCompletedManifest((current) => ({
+                    ...current,
+                    chapters: current.chapters.map((chapter) => {
+                      if (chapter.number !== chapterNumber) return chapter;
+                      return {
+                        ...chapter,
+                        sections: chapter.sections.map((section) => (
+                          section.sectionNumber === sectionNumber
+                            ? { ...section, body, wordCount: countWords(body) }
+                            : section
+                        )),
+                      };
+                    }),
+                  }));
+                }}
+              />
+            )}
+
             {/* Start new project */}
             <div className="border-t border-slate-700/40 pt-3 flex justify-end">
               <button
                 type="button"
                 onClick={() => {
                   setStage("idle");
-                  setFinalReviewTab("manuscript");
                   setChapters([]);
-                  setReviewSectionAssignments([]);
-                  setReviewTranscriptEntries([]);
                   setLog([]);
                   logRef.current = [];
                   setExportUrls(null);
                   setCompletedManifest(null);
                   setTotalWords(0);
                   setProgress({ total: 0, completed: 0 });
+                  setSectionAssignments([]);
+                  setSourceTranscripts([]);
+                  setReviewTab("manuscript");
                   jobIdRef.current = newJobId();
                   autoDownloadedRef.current = false;
                   localStorage.removeItem(JOB_STORAGE_KEY);
@@ -3683,8 +3674,6 @@ export function EbookPipeline({
                 Start new project
               </button>
             </div>
-            </>
-            )}
           </div>
           </ProseToolbarProvider>
         )}
@@ -3731,12 +3720,12 @@ export function EbookPipeline({
             onClick={() => {
               setStage("idle");
               setError(null);
-              setFinalReviewTab("manuscript");
+              setReviewTab("manuscript");
               setSignalFilterState("idle");
               setSignalFilterDetail(null);
               setChapters([]);
-              setReviewSectionAssignments([]);
-              setReviewTranscriptEntries([]);
+              setSectionAssignments([]);
+              setSourceTranscripts([]);
               setLog([]);
               logRef.current = [];
               setExportUrls(null);
