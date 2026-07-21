@@ -1501,6 +1501,7 @@ export function EbookPipeline({
   const [auditRunning, setAuditRunning] = useState(false);
   const [applyingAudit, setApplyingAudit] = useState(false);
   const [exportingBook, setExportingBook] = useState(false);
+  const [regeneratingBackMatter, setRegeneratingBackMatter] = useState(false);
   const [showTemplatePicker, setShowTemplatePicker] = useState(false);
   const [printSpec, setPrintSpec] = useState<{ trimSize: "6x9" | "5.5x8.5"; runningHeaders: boolean }>({ trimSize: "6x9", runningHeaders: true });
   const [error, setError] = useState<string | null>(null);
@@ -1787,6 +1788,23 @@ export function EbookPipeline({
       setAuditRunning(false);
     }
   }, [addLog, completedManifest]);
+
+  const regenerateBackMatter = useCallback(async () => {
+    if (!completedManifest) return;
+    setRegeneratingBackMatter(true);
+    try {
+      addLog("Regenerating back matter…");
+      const backMatter = await postJson<BackMatter>("/api/ebook/backmatter", { manifest: completedManifest });
+      updateCompletedManifest((current) => ({ ...current, backMatter }));
+      addLog(`✓ Back matter regenerated — ${backMatter.glossary.length} glossary terms, ${backMatter.readingGroupGuide.length} chapter guides, ${backMatter.scriptureIndex.length} scripture references`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Back matter regeneration failed";
+      addLog(`✗ Back matter regeneration failed: ${message}`);
+      setError(message);
+    } finally {
+      setRegeneratingBackMatter(false);
+    }
+  }, [addLog, completedManifest, updateCompletedManifest]);
 
   // ── Apply audit findings to manuscript ───────────────────────────────────
   const applyAuditToManuscript = useCallback(async (appliedKeys: string[]) => {
@@ -3516,6 +3534,24 @@ export function EbookPipeline({
                 Source Map
               </button>
             </div>
+
+            {completedManifest.backMatter ? (
+              <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/5 px-3 py-2 text-xs text-emerald-100">
+                Back Matter ready: {(completedManifest.backMatter.glossary?.length ?? 0)} glossary terms, {(completedManifest.backMatter.readingGroupGuide?.length ?? 0)} chapter guides, {(completedManifest.backMatter.scriptureIndex?.length ?? 0)} scripture references.
+              </div>
+            ) : (
+              <div className="rounded-xl border border-amber-400/25 bg-amber-400/8 px-3 py-2 text-xs text-amber-100 flex flex-wrap items-center justify-between gap-2">
+                <span>Back Matter is missing for this run.</span>
+                <button
+                  type="button"
+                  onClick={() => void regenerateBackMatter()}
+                  disabled={regeneratingBackMatter || exportingBook}
+                  className="min-h-[44px] rounded-lg border border-amber-300/30 bg-amber-400/10 px-3 py-2 text-xs font-semibold text-amber-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {regeneratingBackMatter ? "Regenerating…" : "Regenerate Back Matter"}
+                </button>
+              </div>
+            )}
 
             {reviewTab === "manuscript" && (
               <>
