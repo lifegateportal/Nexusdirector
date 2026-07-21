@@ -3462,6 +3462,7 @@ export function EbookPipeline({
             )}
 
             {finalReviewTab === "manuscript" && (
+              <>
 
             {/* Print Specification Toggle */}
             <PrintSpecPanel
@@ -3682,6 +3683,7 @@ export function EbookPipeline({
                 Start new project
               </button>
             </div>
+            </>
             )}
           </div>
           </ProseToolbarProvider>
