@@ -367,6 +367,7 @@ function EbookPageClient() {
           printSpec: { trimSize: "6x9", runningHeaders: true, bleed: false, cropMarks: false },
           coverImageUrl: p.coverImageUrl ?? null,
           authorImageUrl: p.authorImageUrl ?? null,
+          backMatter: job.backMatter ?? null,
         });
       } else {
         setEbookManifest(null);
@@ -562,6 +563,7 @@ function EbookPageClient() {
       generatedAt: new Date().toISOString(),
       selectedTemplate: "devotional",
       printSpec: { trimSize: "6x9", runningHeaders: true, bleed: false, cropMarks: false },
+      backMatter: job.backMatter ?? null,
     };
   }, []);
 
@@ -581,6 +583,7 @@ function EbookPageClient() {
           ...existing,
           chapters: manifest.chapters,
           frontMatter: manifest.frontMatter,
+          backMatter: manifest.backMatter ?? null,
           ...(existing.architecture
             ? {
                 architecture: {
