@@ -242,6 +242,7 @@ function EbookPageClient() {
           printSpec: { trimSize: "6x9", runningHeaders: true, bleed: false, cropMarks: false },
           coverImageUrl: project.coverImageUrl ?? null,
           authorImageUrl: project.authorImageUrl ?? null,
+          backMatter: job.backMatter ?? null,
         });
       }
       setPipelineKey((k) => k + 1);

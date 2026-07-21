@@ -4,6 +4,7 @@ import { useState, useRef, useCallback, useId, useEffect } from "react";
 import { ProseEditor, ProseToolbarProvider, SharedProseToolbar } from "./ProseEditor";
 import { EbookProgressRing } from "@/app/components/EbookProgressRing";
 import { VoiceStudio } from "@/app/components/VoiceStudio";
+import { TranscriptSourceMapPanel } from "@/app/components/TranscriptSourceMapPanel";
 import {
   saveEbookJob,
   getEbookJob,
@@ -1508,6 +1509,9 @@ export function EbookPipeline({
   const [showSaveBar, setShowSaveBar] = useState(false);
   const [saveName, setSaveName] = useState("");
   const [savedConfirm, setSavedConfirm] = useState(false);
+  const [finalReviewTab, setFinalReviewTab] = useState<"manuscript" | "source-map">("manuscript");
+  const [reviewSectionAssignments, setReviewSectionAssignments] = useState<SectionAssignment[]>([]);
+  const [reviewTranscriptEntries, setReviewTranscriptEntries] = useState<Array<{ label: string; text: string }>>([]);
   const jobIdRef = useRef<string>(newJobId());
   // Mirror of log in a ref so runPipeline (async) can read the current value for checkpoints
   const logRef = useRef<string[]>([]);
@@ -1594,6 +1598,7 @@ export function EbookPipeline({
   setQualityReport(null);
   setError(null);
   setStage("complete");
+  setFinalReviewTab("manuscript");
   // Build a minimal reviewContext so the export UI is available even without a full job state
   setReviewContext({
     contentMap: {
@@ -1877,6 +1882,8 @@ export function EbookPipeline({
       setLog(job.errorLog ?? []);
       setProgress(job.progress ?? { total: 0, completed: 0 });
       setChapters(job.chapters ?? []);
+      setReviewSectionAssignments(job.sectionAssignments ?? []);
+      setReviewTranscriptEntries(job.transcripts ?? []);
       // Restore error so the Resume button is visible after refresh
       if (job.status === "failed") {
         const lastErr = (job.errorLog ?? []).findLast?.((e) => e.includes("✗"));
@@ -1912,6 +1919,7 @@ export function EbookPipeline({
           totalWordCount: (job.chapters ?? []).reduce((sum, chapter) => sum + (chapter.totalWordCount ?? 0), 0),
           allQuotes: contentMap.allQuotes ?? [],
           generatedAt: new Date().toISOString(),
+          backMatter: job.backMatter ?? null,
         };
         setReviewContext({ contentMap, frontMatter: job.frontMatter });
         // Only reconstruct the manifest from job state when no external manifest was
@@ -2034,6 +2042,9 @@ export function EbookPipeline({
       setCompletedManifest(null);
       setReviewContext(null);
       setQualityReport(null);
+      setFinalReviewTab("manuscript");
+      setReviewSectionAssignments([]);
+      setReviewTranscriptEntries([]);
       setTotalWords(0);
       autoDownloadedRef.current = false;
     }
@@ -2121,6 +2132,7 @@ export function EbookPipeline({
         masterTranscript = transcriptResults
           .map((t) => `[${t.label}]\n${t.text}`)
           .join("\n\n═══════════════════════════════════════\n\n");
+        setReviewTranscriptEntries(transcriptResults);
         addLog(`Master transcript assembled — ${countWords(masterTranscript).toLocaleString()} words after per-slot filtering`);
 
         // ── Stage 1b: Glossary sanitization — zero-cost regex ASR correction ─
@@ -2142,6 +2154,7 @@ export function EbookPipeline({
         acc.transcripts = transcriptResults;
         await checkpoint("filtering");
       } else {
+        setReviewTranscriptEntries(acc.transcripts ?? []);
         addLog(`↩ Resuming — transcript available (${countWords(masterTranscript).toLocaleString()} words)`);
       }
 
@@ -2265,10 +2278,12 @@ export function EbookPipeline({
           { architecture, contentMap, voiceDNA }
         );
         assignments = result.assignments;
+        setReviewSectionAssignments(assignments);
         addLog(`✓ ${assignments.length} section assignments ready`);
         acc.sectionAssignments = assignments;
         await checkpoint("writing");
       } else {
+        setReviewSectionAssignments(assignments);
         addLog(`↩ Resuming — ${assignments.length} section assignments available`);
       }
 
@@ -3381,6 +3396,73 @@ export function EbookPipeline({
             {/* Shared word processor toolbar — one bar for all editors */}
             <SharedProseToolbar className="sticky top-0 z-20" />
 
+            <div className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-700/60 bg-slate-900/50 p-2">
+              <button
+                type="button"
+                onClick={() => setFinalReviewTab("manuscript")}
+                className={[
+                  "min-h-[44px] rounded-lg px-3 py-2 text-xs font-semibold transition-colors",
+                  finalReviewTab === "manuscript"
+                    ? "bg-cyan-500/20 text-cyan-200 border border-cyan-400/40"
+                    : "bg-slate-800/70 text-slate-300 border border-slate-700 hover:text-slate-100",
+                ].join(" ")}
+              >
+                Manuscript
+              </button>
+              <button
+                type="button"
+                onClick={() => setFinalReviewTab("source-map")}
+                className={[
+                  "min-h-[44px] rounded-lg px-3 py-2 text-xs font-semibold transition-colors",
+                  finalReviewTab === "source-map"
+                    ? "bg-cyan-500/20 text-cyan-200 border border-cyan-400/40"
+                    : "bg-slate-800/70 text-slate-300 border border-slate-700 hover:text-slate-100",
+                  reviewSectionAssignments.length === 0
+                    ? "cursor-not-allowed opacity-50"
+                    : "",
+                ].join(" ")}
+                disabled={reviewSectionAssignments.length === 0}
+                title={reviewSectionAssignments.length === 0 ? "Source map becomes available after section assignment." : "View transcript-to-section source map."}
+              >
+                Source Map
+              </button>
+              <p className="text-[11px] text-slate-500 sm:ml-2">
+                {reviewSectionAssignments.length > 0
+                  ? `${reviewSectionAssignments.length} mapped section${reviewSectionAssignments.length !== 1 ? "s" : ""}`
+                  : "Run or resume the pipeline to load source mappings."}
+              </p>
+            </div>
+
+            {finalReviewTab === "source-map" && (
+              <div className="rounded-xl border border-slate-700/60 bg-slate-950/40 p-2">
+                <TranscriptSourceMapPanel
+                  chapters={chapters}
+                  sectionAssignments={reviewSectionAssignments}
+                  transcriptEntries={reviewTranscriptEntries}
+                  onSectionBodyChange={(chapterNumber, sectionNumber, body) => {
+                    updateCompletedManifest((current) => ({
+                      ...current,
+                      chapters: current.chapters.map((chapter) => (
+                        chapter.number !== chapterNumber
+                          ? chapter
+                          : {
+                              ...chapter,
+                              sections: chapter.sections.map((section) => (
+                                section.sectionNumber === sectionNumber
+                                  ? { ...section, body, wordCount: countWords(body) }
+                                  : section
+                              )),
+                            }
+                      )),
+                    }));
+                  }}
+                  authorConfig={{ instructions: authorInstructions, targetAudience }}
+                />
+              </div>
+            )}
+
+            {finalReviewTab === "manuscript" && (
+
             {/* Print Specification Toggle */}
             <PrintSpecPanel
               trimSize={printSpec.trimSize}
@@ -3580,7 +3662,10 @@ export function EbookPipeline({
                 type="button"
                 onClick={() => {
                   setStage("idle");
+                  setFinalReviewTab("manuscript");
                   setChapters([]);
+                  setReviewSectionAssignments([]);
+                  setReviewTranscriptEntries([]);
                   setLog([]);
                   logRef.current = [];
                   setExportUrls(null);
@@ -3597,6 +3682,7 @@ export function EbookPipeline({
                 Start new project
               </button>
             </div>
+            )}
           </div>
           </ProseToolbarProvider>
         )}
@@ -3643,9 +3729,12 @@ export function EbookPipeline({
             onClick={() => {
               setStage("idle");
               setError(null);
+              setFinalReviewTab("manuscript");
               setSignalFilterState("idle");
               setSignalFilterDetail(null);
               setChapters([]);
+              setReviewSectionAssignments([]);
+              setReviewTranscriptEntries([]);
               setLog([]);
               logRef.current = [];
               setExportUrls(null);
