@@ -165,7 +165,7 @@ export async function POST(req: NextRequest) {
               const { object } = await generateObject({
                 model: deepSeekModel,
                 schema: SlotSegmentsSchema,
-                mode: "tool",
+                mode: "json",
                 temperature: 0.2,
                 system: SEGMENT_SYSTEM,
                 prompt: `Extract all teaching segments from this recording (${chunk.sourceAudio}):\n\n${chunkText}`,
@@ -258,7 +258,7 @@ export async function POST(req: NextRequest) {
     const { object: synthesis } = await generateObject({
       model: deepSeekModel,
       schema: SynthesisSchema,
-      mode: "tool",
+      mode: "json",
       temperature: 0.2,
       system: `You are a senior editor identifying the overarching message of a multi-part teaching series.
     Base your synthesis ONLY on what the speaker explicitly taught — do not add external theological context.

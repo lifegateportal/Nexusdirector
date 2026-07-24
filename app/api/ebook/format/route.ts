@@ -88,7 +88,7 @@ export async function POST(req: NextRequest) {
       const { object } = await generateObject({
         model: deepSeekModel,
         schema: FormatFrontMatterOutputSchema,
-        mode: "tool",
+        mode: "json",
         temperature: 0.05,
         maxTokens: 10000,
         system: FORMATTER_SYSTEM,
@@ -123,7 +123,7 @@ export async function POST(req: NextRequest) {
     const { object } = await generateObject({
       model: deepSeekModel,
       schema: FormatChapterOutputSchema,
-      mode: "tool",
+      mode: "json",
       temperature: 0.05,
       maxTokens: 16000,
       system: FORMATTER_SYSTEM,
