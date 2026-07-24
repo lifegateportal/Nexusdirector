@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { generateText } from "ai";
 import { z } from "zod";
-import { claudeModel } from "@/lib/ai-providers";
+import { deepSeekModel } from "@/lib/ai-providers";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
@@ -44,7 +44,7 @@ export async function POST(req: NextRequest) {
     ].filter(Boolean).join("\n\n");
 
     const { text } = await generateText({
-      model: claudeModel,
+      model: deepSeekModel,
       system: SYSTEM_PROMPT,
       prompt: userMessage,
       maxTokens: 1000,
