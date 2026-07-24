@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { generateObject } from "ai";
 import { z } from "zod";
-import { deepSeekModel, deepSeekReasonerModel } from "@/lib/ai-providers";
+import { deepSeekReasonerModel } from "@/lib/ai-providers";
 import { env } from "@/lib/env";
 import { ArchitectRequestSchema } from "@/lib/schemas/ebook";
 import { SOURCE_LOCK_RULES } from "@/lib/editorial-style-bible";
@@ -246,10 +246,10 @@ async function architectOneChapterFromTranscript(
   }).join("\n\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n");
 
   const { object } = await generateObject({
-    model: deepSeekModel,
+    model: deepSeekReasonerModel,
     schema: SingleChapterPlanSchema,
     mode: "json",
-    temperature: 0.15,
+    temperature: 1,
     system: `You are a senior structural editor turning one teaching message into a premium book chapter.
 
 SOURCE-LOCK — ABSOLUTE RULE:
