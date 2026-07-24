@@ -267,7 +267,11 @@ function excerptOverlapScore(para: string, excerpt: string, n = 4): number {
 function filterConsumedExcerpts(
   excerpts: string[],
   alreadyCoveredPoints: string[],
-  threshold = 0.40
+  // Threshold raised → 0.55: corpus is full paragraph prose, not summaries.
+  // Preachers reuse theological vocabulary; at lower thresholds legitimate excerpts
+  // were over-filtered and the "keep at least one" fallback fed already-covered
+  // material back to the LLM. 0.55 requires genuine content repetition.
+  threshold = 0.55
 ): { filtered: string[]; removedCount: number } {
   if (alreadyCoveredPoints.length === 0) return { filtered: excerpts, removedCount: 0 };
   const coveredText = alreadyCoveredPoints.join(" ");
@@ -297,7 +301,11 @@ type ExcerptEntry = { text: string; sourceNumber: number };
 function filterConsumedExcerptEntries(
   entries: ExcerptEntry[],
   alreadyCoveredPoints: string[],
-  threshold = 0.40
+  // Threshold raised → 0.55: corpus is full paragraph prose, not summaries.
+  // Preachers reuse theological vocabulary; at lower thresholds legitimate excerpts
+  // were over-filtered and the "keep at least one" fallback fed already-covered
+  // material back to the LLM. 0.55 requires genuine content repetition.
+  threshold = 0.55
 ): { filtered: ExcerptEntry[]; removedCount: number } {
   if (alreadyCoveredPoints.length === 0) return { filtered: entries, removedCount: 0 };
   const coveredText = alreadyCoveredPoints.join(" ");

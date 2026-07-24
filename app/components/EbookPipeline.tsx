@@ -2614,7 +2614,13 @@ export function EbookPipeline({
                     coreThesis: contentMap.coreThesis || undefined,
                     voiceDNA,
                     priorSectionsSample: buildProseSampleForDedup(assignment.chapterNumber),
-                    alreadyCoveredPoints: [], // deprecated — prose samples now used for dedup
+                    // Feed prior-chapter coverage into the planner's PRIOR CHAPTERS HARD SKIP block.
+                    // Previously [] meant the planner had zero knowledge of what earlier chapters
+                    // established — it could (and did) re-plan the same concepts across chapters.
+                    alreadyCoveredPoints: buildCoverageLedger(
+                      allSections.filter((s) => s.chapterNumber !== assignment.chapterNumber),
+                      assignmentKeyPointsLookup
+                    ).map((e) => `[${e.heading}]: ${e.summary}`),
                     sections: chapterAssignments.map((a) => ({
                       sectionNumber: a.sectionNumber,
                       heading: a.heading,
@@ -2773,13 +2779,22 @@ export function EbookPipeline({
         const forbiddenVerseTexts = Array.from(quotedVerseTextsByRef.values()).filter(Boolean);
         const allowedInlineOnly = Array.from(usedQuoteRefs);
 
+        // Compute coverage ledger once — reused for both the COVERAGE LEDGER prompt block
+        // and alreadyCoveredPoints. Previously alreadyCoveredPoints was hardcoded to [],
+        // which silently disabled the "PRIOR CONTENT — HARD SKIP" system prompt block
+        // (gated on array length > 0). The LLM was never told what was already written.
+        const _sectionLedger = buildCoverageLedger(allSections, assignmentKeyPointsLookup);
+
         const augmented: SectionAssignment = {
           ...assignment,
           transcriptExcerpts: filteredExcerpts.length > 0 ? filteredExcerpts : assignment.transcriptExcerpts,
           previousSectionEnding: previousEnding,
           nextSectionHeading: nextAssignment?.heading,
           priorSectionsSample: buildProseSampleForDedup(assignment.chapterNumber),
-          alreadyCoveredPoints: [], // deprecated — prose samples now used for dedup
+          // Restored: activates the "PRIOR CONTENT — HARD SKIP" block in the system prompt.
+          // Each entry is "[Section Heading]: <paragraph openers + key points>" — explicit
+          // enough for the LLM to recognize when it is about to re-cover covered ground.
+          alreadyCoveredPoints: _sectionLedger.map((e) => `[${e.heading}]: ${e.summary}`),
           alreadyQuotedRefs: [...usedQuoteRefs],
           isLastSectionInChapter,
           nextChapterTitle: isLastSectionInChapter && nextAssignment
@@ -2802,7 +2817,7 @@ export function EbookPipeline({
           primaryTranslation: assignment.primaryTranslation,
           // ── 7-Amendment Anti-Duplication System ──────────────────────────
           // Amendment 1: full coverage ledger — every section written so far
-          coverageLedger: buildCoverageLedger(allSections, assignmentKeyPointsLookup),
+          coverageLedger: _sectionLedger,
           // Amendment 4: thesis sentences from prior sections — banned from paraphrase
           bannedRecaps: extractBannedRecaps(allSections),
           // Amendment 6: top repeated 3-grams — encourage lexical variety
@@ -2883,7 +2898,9 @@ export function EbookPipeline({
                 ...buildProseSampleForDedup(assignment.chapterNumber),
                 ...dupSentences.map((s) => `[EXACT DUPLICATE — DO NOT REPRODUCE]: "${s.slice(0, 120)}"`).slice(0, 10),
               ],
-              alreadyCoveredPoints: [], // deprecated — prose samples now used for dedup
+              // Carry the HARD SKIP list from the original augmented object so the redraft
+              // retains the full list of already-covered points in its system prompt.
+              alreadyCoveredPoints: augmented.alreadyCoveredPoints ?? [],
             };
             ({ body, claimLedger, passiveVoiceCount, unfullfilledHook, sequenceBreakCount } = await streamSection(
               redraftExclusion,

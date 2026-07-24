@@ -39,17 +39,19 @@ type PlanEntry = {
 };
 
 function sortAndPruneEntries(entries: PlanEntry[]): PlanEntry[] {
-  // Keep unanchored entries (no supportedExcerptNumbers) at the END rather than
-  // dropping them. They represent planned content the LLM identified as necessary
-  // but couldn't pin to a specific excerpt — the writer should still execute them.
-  const anchored   = entries.filter((e) => (e.supportedExcerptNumbers ?? []).length > 0);
-  const unanchored = entries.filter((e) => (e.supportedExcerptNumbers ?? []).length === 0);
+  // Only keep entries anchored to at least one transcript excerpt.
+  // Previously unanchored entries were kept at the end as "planned content the LLM
+  // identified as necessary." In practice they had no transcript source, so the writer
+  // filled them with fabricated or already-covered content — the main driver of
+  // cross-section repetition. If a concept can't be grounded in an excerpt, it
+  // doesn't belong in this section's plan.
+  const anchored = entries.filter((e) => (e.supportedExcerptNumbers ?? []).length > 0);
   anchored.sort((a, b) => {
     const minA = Math.min(...(a.supportedExcerptNumbers.length ? a.supportedExcerptNumbers : [Infinity]));
     const minB = Math.min(...(b.supportedExcerptNumbers.length ? b.supportedExcerptNumbers : [Infinity]));
     return minA - minB;
   });
-  return [...anchored, ...unanchored];
+  return anchored;
 }
 
 // ── Chapter-level response schema ─────────────────────────────────────────────
@@ -239,11 +241,11 @@ ${excerptPayload}`;
             })
             .filter((entry) => entry.supportedExcerptNumbers.length > 0);
 
-          // FIX 4: Excerpt ownership enforcement — strip already-claimed excerpts from
-          // each entry's supportedExcerptNumbers, but KEEP the entry even when all its
-          // excerpts were claimed. The planned purpose is still valid content the writer
-          // should address using the surrounding excerpt context. Dropping the entry
-          // entirely was causing planned paragraphs to silently vanish from the output.
+          // FIX 4 (revised): Excerpt ownership enforcement — strip already-claimed
+          // excerpts, then DROP entries whose excerpts were fully claimed.
+          // Prior version kept "ghost entries" (supportedExcerptNumbers: []) after the
+          // strip, which told the writer to fill those paragraphs without transcript
+          // grounding — the #1 source of cross-section repetition and fabrication.
           entries = entries
             .map((entry) => {
               const excerptKey = `S${sp.sectionNumber}`;
@@ -256,7 +258,10 @@ ${excerptPayload}`;
                 supportedExcerptNumbers: availableExcerpts,
                 minExcerptNumber: availableExcerpts.length > 0 ? Math.min(...availableExcerpts) : undefined,
               };
-            });
+            })
+            // Drop ghost entries: if all excerpts were claimed by another section, this
+            // plan step has no transcript backing and must not reach the writer.
+            .filter((entry) => entry.supportedExcerptNumbers.length > 0);
 
           // Mark all excerpts in this section's plan as consumed
           for (const entry of entries) {
@@ -267,15 +272,14 @@ ${excerptPayload}`;
 
           // Filter entries whose purpose duplicates either already-written prose OR
           // concepts already planned by an earlier section in THIS chapter-plan call.
-          // Previously only priorProseText was checked — within the same call, Section 3
-          // could plan "Explain authority over demons" even after Section 1 already planned it.
           entries = entries.filter((entry) => {
             if (!entry.purpose || entry.purpose.length < 20) return true;
             if (BIBLE_REF_RE.test(entry.purpose)) return true;
-            // 0.45 threshold: lower than the old 0.55 because plannedPurposesText now
-            // includes full paragraph text (not just purpose statements), giving a richer
-            // comparison corpus where 45% 4-gram overlap is a meaningful semantic signal.
-            return ngramOverlap(entry.purpose, plannedPurposesText) < 0.45;
+            // Threshold raised 0.45 → 0.60: plannedPurposesText now contains full paragraph
+            // prose, not just purpose statements. Common theological vocabulary (grace, faith,
+            // authority) creates false 4-gram overlap at 0.45, silently dropping valid plan
+            // entries. 0.60 requires genuine semantic repetition to trigger suppression.
+            return ngramOverlap(entry.purpose, plannedPurposesText) < 0.60;
           });
 
           // Accumulate this section's planned purposes so the NEXT section in this
