@@ -830,21 +830,12 @@ Now write the section prose:`;
   });
 
   try {
-    // FIX 2: Require chapter-level plan (no fallback planner)
-    // The per-section fallback cannot see other sections and creates overlaps.
-    // Fail visibly so the pipeline can retry the chapter-plan call.
-    if ((assignment.assignedPlan ?? []).length === 0) {
-      return NextResponse.json(
-        {
-          error: "Chapter-level plan required",
-          details: `No assignedPlan for Ch${assignment.chapterNumber} §${assignment.sectionNumber}. The chapter-plan step must succeed before write-section can run.`,
-        },
-        { status: 400 }
-      );
+    const paragraphPlan = assignment.assignedPlan ?? [];
+    if (paragraphPlan.length > 0) {
+      console.log(`[write-section] Using chapter-level plan (${paragraphPlan.length} entries) for Ch${assignment.chapterNumber} §${assignment.sectionNumber}`);
+    } else {
+      console.log(`[write-section] No paragraph plan — writing from key points + excerpts directly for Ch${assignment.chapterNumber} §${assignment.sectionNumber}`);
     }
-
-    const paragraphPlan = assignment.assignedPlan!;
-    console.log(`[write-section] Using chapter-level plan (${paragraphPlan.length} entries) for Ch${assignment.chapterNumber} §${assignment.sectionNumber}`);
 
     // Build a per-request system prompt: Voice DNA at the top (system-level weight),
     // then the dedup prohibition block if any points have already been covered.
@@ -908,7 +899,9 @@ Now write the section prose:`;
       mode: "json",
       temperature: 0.7,
       system: deduplicatedSystem,
-      prompt: `${prompt}\n\nPARAGRAPH PLAN (must follow if provided):\n${JSON.stringify(paragraphPlan)}`,
+      prompt: paragraphPlan.length > 0
+        ? `${prompt}\n\nPARAGRAPH PLAN (must follow in order):\n${JSON.stringify(paragraphPlan)}`
+        : prompt,
     });
     const rawParagraphs = (object.paragraphs ?? [])
       .map((p) => p.trim())
