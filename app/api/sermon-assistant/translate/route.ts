@@ -141,7 +141,7 @@ async function requestTranslation(text: string, systemPrompt: string): Promise<{
       Authorization: `Bearer ${env.DEEPSEEK_API_KEY}`,
     },
     body: JSON.stringify({
-      model: "deepseek-chat",
+      model: env.DEEPSEEK_MODEL,
       temperature: 0,
       messages: [
         {
