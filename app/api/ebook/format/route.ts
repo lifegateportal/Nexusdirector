@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { generateObject } from "ai";
 import { z } from "zod";
-import { curatorModel } from "@/lib/ai-providers";
+import { deepSeekModel } from "@/lib/ai-providers";
 import { EbookManifestSchema, ChapterDraftSchema } from "@/lib/schemas/ebook";
 
 export const runtime = "nodejs";
@@ -86,7 +86,7 @@ export async function POST(req: NextRequest) {
       }
 
       const { object } = await generateObject({
-        model: curatorModel,
+        model: deepSeekModel,
         schema: FormatFrontMatterOutputSchema,
         mode: "tool",
         temperature: 0.05,
@@ -121,7 +121,7 @@ export async function POST(req: NextRequest) {
     );
 
     const { object } = await generateObject({
-      model: curatorModel,
+      model: deepSeekModel,
       schema: FormatChapterOutputSchema,
       mode: "tool",
       temperature: 0.05,
