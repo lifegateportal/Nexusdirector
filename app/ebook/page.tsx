@@ -626,6 +626,10 @@ function EbookPageClient() {
     try {
       localStorage.removeItem(JOB_STATE_KEY);
       localStorage.removeItem(PENDING_MOUNT_KEY);
+      // Clear the job-ID pointer so the remounted pipeline doesn't restore
+      // the old job from IndexedDB. Previously this key was left behind, causing
+      // the pipeline to silently reload the previous project's state on remount.
+      localStorage.removeItem("nexus_ebook_current_job");
     } catch {
       // localStorage unavailable; in-memory reset still applies
     }
