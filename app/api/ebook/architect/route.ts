@@ -196,16 +196,34 @@ function groupSegmentsIntoSections(
   });
 }
 
+/** Compress a heading to 6 words max — cuts at the first conjunction/clause break. */
+function compressHeading(heading: string): string {
+  const words = heading.trim().split(/\s+/);
+  if (words.length <= 6) return heading.trim();
+  // Cut at the first "soft" word after position 3 (conjunctions, relative pronouns, prepositions)
+  const SOFT = /^(and|but|that|as|so|which|who|when|where|while|because|until|after|before|though|although|if|or|–|—|-|,)$/i;
+  let cutAt = words.length;
+  for (let i = 3; i < words.length; i++) {
+    const clean = words[i].replace(/[,;:–—]$/, "");
+    if (SOFT.test(clean) || words[i].endsWith(",") || words[i].endsWith(";")) {
+      cutAt = i;
+      break;
+    }
+  }
+  const cut = words.slice(0, Math.min(cutAt, 6)).join(" ").replace(/[,;:–—]+$/, "").trim();
+  return cut || words.slice(0, 5).join(" ");
+}
+
 /** Pick the best heading from a segment's topic + keyPoints — never fabricates, uses transcript data only. */
 function deriveSectionHeading(topic: string, keyPoints: string[]): string {
   const BANNED = /^(introduction|intro|overview|opening|summary|conclusion|section|part|chapter)\s*[:\-]?\s*/i;
-  // Prefer a keyPoint over the raw topic if it's more specific (longer, no banned prefix)
   const candidates = [topic, ...(keyPoints ?? [])]
     .map((s) => s.replace(BANNED, "").trim())
-    .filter((s) => s.length > 10);
-  // Pick the longest candidate that doesn't start with a banned word (more specific = longer)
-  const best = candidates.sort((a, b) => b.length - a.length)[0];
-  return best || topic.replace(BANNED, "").trim() || "Core Teaching";
+    .filter((s) => s.length > 8);
+  // Pick the shortest candidate that is still meaningful (avoids pulling full sermon sentences)
+  const best = candidates.sort((a, b) => a.length - b.length)[0];
+  const raw = best || topic.replace(BANNED, "").trim() || "Core Teaching";
+  return compressHeading(raw);
 }
 
 // ── Per-audio LLM chapter architect (oneChapterPerUpload) ────────────────────
@@ -262,9 +280,10 @@ CHAPTER TITLE RULE:
 
 SECTION HEADING RULES:
 - Each heading must be a specific teaching claim the speaker made, drawn directly from the keyPoints or transcript text
-- 3–9 words; name the SPECIFIC idea, not its category
+- STRICT LIMIT: 3–6 words maximum. Count every word. If you write 7 or more words, you have failed this rule.
+- Title case. No articles (a/an/the) unless essential. No punctuation at the end.
 - BANNED prefixes: Introduction, Intro, Overview, Opening, Summary, Conclusion, Part, Chapter, Section
-- GOOD: "Prayer reveals the hidden glory within you" | BAD: "Introduction to Prayer"
+- GOOD: "Prayer Reveals Hidden Glory" | "Moses Weighed Nations by Prayer" | BAD: "There is something about prayer that will cause the glory to be revealed" (too long)
 
 STRUCTURE RULES:
 - Produce exactly 3–5 sections
@@ -373,27 +392,28 @@ function normalizeArchitecture(
     }))
     .filter((chapter) => chapter.sections.length > 0);
 
-  // ── Amendment 8: Section heading quality checks ─────────────────────────────
-  // Three checks: (1) headings > 12 words are too long for print section headings,
-  // (2) headings with no verb are likely topic labels rather than teaching claims,
-  // (3) global cross-chapter token overlap > 0.50 flags possible duplicate headings.
-  // These don't block generation — they surface as warnings the UI can log.
+  // ── Amendment 8: Section heading quality checks + auto-compression ──────────
+  // Headings > 6 words are compressed in-place using compressHeading().
+  // Warnings are still surfaced for visibility but no longer block generation.
   const architectureWarnings: string[] = [];
   const allHeadingTokens: Array<{ heading: string; chapterNum: number; sectionNum: number }> = [];
 
   const VERB_RE = /\b(is|are|was|were|has|have|had|do|does|did|will|would|can|could|may|might|shall|should|reveal|reveals|give|gives|show|shows|bring|brings|take|takes|make|makes|believe|believes|know|knows|find|finds|need|needs|walk|walks|live|lives|stand|stands|fight|fights|receive|receives|overcome|overcomes|build|builds|establish|establishes|declare|declares|prove|proves|demonstrate|demonstrates|unlock|unlocks|release|releases|restore|restores|define|defines|create|creates|open|opens|change|changes|grant|grants|call|calls|draw|draws|lead|leads|move|moves|keep|keeps|hold|holds|become|becomes|see|sees)\b/i;
 
-  for (const chapter of (chapters.length > 0 ? chapters : fallback.chapters)) {
+  const targetChapters = chapters.length > 0 ? chapters : fallback.chapters;
+  for (const chapter of targetChapters) {
     for (const section of chapter.sections) {
       const words = section.heading.trim().split(/\s+/);
-      if (words.length > 12) {
+      if (words.length > 6) {
+        const original = section.heading;
+        section.heading = compressHeading(original);
         architectureWarnings.push(
-          `Ch ${chapter.number} §${section.sectionNumber}: Heading too long (${words.length} words) — consider shortening: "${section.heading}"`
+          `Ch ${chapter.number} §${section.sectionNumber}: Heading compressed ${words.length}→${section.heading.split(/\s+/).length} words: "${original}" → "${section.heading}"`
         );
       }
       if (words.length <= 6 && !VERB_RE.test(section.heading)) {
         architectureWarnings.push(
-          `Ch ${chapter.number} §${section.sectionNumber}: Heading may be a topic label (no verb found) — teaching claims land harder: "${section.heading}"`
+          `Ch ${chapter.number} §${section.sectionNumber}: Heading may be a topic label (no verb found): "${section.heading}"`
         );
       }
       allHeadingTokens.push({ heading: section.heading, chapterNum: chapter.number, sectionNum: section.sectionNumber });
@@ -557,7 +577,8 @@ This content is a sermon series. The author's preaching sequence IS the book's s
 - estimatedTotalWords = sum of all section targetWordCounts.
 - Always return every required field, even if some strings are brief.
 - Never leave sections empty; every chapter must have at least one section with at least one sourceSegmentId.
-- SECTION HEADING BAN: Never start a section heading with "Introduction", "Intro", "Overview", "Opening", "Summary", or "Conclusion". These are structural labels, not teaching titles. Rename any such heading to the specific claim or truth the speaker made in that segment (e.g. "Prayer changes your countenance", not "Introduction: Prayer Changes People").`,
+- SECTION HEADING BAN: Never start a section heading with "Introduction", "Intro", "Overview", "Opening", "Summary", or "Conclusion". These are structural labels, not teaching titles. Rename any such heading to the specific claim or truth the speaker made in that segment.
+- SECTION HEADING LENGTH — STRICT: Every section heading must be 3–6 words maximum. Count every word. Full sentences are forbidden. GOOD: "Prayer Reveals Hidden Glory" | BAD: "There is something about prayer that will cause the glory to be revealed" (sentence, not a heading).`,
         prompt: `Design the chapter architecture.
 
       VOICE DNA TONE: ${input.voiceDNA.toneProfile}
