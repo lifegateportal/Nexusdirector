@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { generateObject } from "ai";
-import { deepSeekModel } from "@/lib/ai-providers";
+import { deepSeekFlashModel } from "@/lib/ai-providers";
 import { VoiceDNASchema, VoiceDNARequestSchema } from "@/lib/schemas/ebook";
 
 export const runtime = "nodejs";
@@ -30,7 +30,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const { object } = await generateObject({
-      model: deepSeekModel,
+      model: deepSeekFlashModel,
       schema: VoiceDNASchema,
       mode: "json",
       temperature: 0.2,

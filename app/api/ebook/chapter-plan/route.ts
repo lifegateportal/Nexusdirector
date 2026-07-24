@@ -92,7 +92,7 @@ export async function POST(req: NextRequest) {
   const sectionExcerptBlocks = sections.map((s) => {
     const excerpts = s.transcriptExcerpts ?? [];
     const block = excerpts
-      .map((t, i) => `[S${s.sectionNumber}-EXCERPT ${i + 1} of ${excerpts.length}]\n${t}`)
+      .map((t, i) => `[Excerpt ${i + 1}]\n${t}`)
       .join("\n\n---\n\n");
     return { sectionNumber: s.sectionNumber, block, excerptCount: excerpts.length };
   });
