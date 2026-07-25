@@ -108,15 +108,11 @@ ${input.architecture.chapters.map((c, i) => `Chapter ${i + 1}: "${c.title}"\n  C
       })(),
     }, { status: 200 });
   } catch (err) {
-    const middle = transcript.slice(Math.floor(transcript.length * 0.05), 5200).trim();
-    const closing = transcript.slice(-2200).trim();
-    return NextResponse.json({
-      preface: "",
-      introduction: stripAudienceLanguage(middle || "Introduction unavailable."),
-      conclusion: stripAudienceLanguage(closing || "Conclusion unavailable."),
-      aboutAuthor: null,
-      resourcesList: [],
-      scriptureIndex: [],
-    }, { status: 200 });
+    // NEVER fall back to raw transcript — it contains unfiltered sermon content
+    // (audience engagement, filler, altar calls) that would appear verbatim in the
+    // published book. Return empty strings so the user sees a blank field to fill,
+    // not garbage text.
+    const message = err instanceof Error ? err.message : "Frontmatter generation failed";
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

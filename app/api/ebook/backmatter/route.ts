@@ -1,13 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { generateObject } from "ai";
 import { z } from "zod";
-import { deepSeekReasonerModel } from "@/lib/ai-providers";
+import { deepSeekReasonerModel, deepSeekModel } from "@/lib/ai-providers";
 import { EbookManifestSchema, BackMatterSchema } from "@/lib/schemas/ebook";
 import type { BackMatter } from "@/lib/schemas/ebook";
 import { SOURCE_LOCK_RULES } from "@/lib/editorial-style-bible";
 
 export const runtime = "nodejs";
-export const maxDuration = 180;
+export const maxDuration = 300;
 
 // ─── Request ──────────────────────────────────────────────────────────────────
 
@@ -124,13 +124,7 @@ export async function POST(req: NextRequest) {
 
   const resourcesMentioned = (manifest.frontMatter.resourcesList ?? []).slice(0, 15);
 
-  try {
-    const { object } = await generateObject({
-      model: deepSeekReasonerModel,
-      schema: BackMatterSchema.omit({ scriptureIndex: true }),
-      mode: "json",
-      temperature: 1,  // reasoner requires temperature=1
-      system: `You are creating back matter for a published teaching book. Your job is three tasks:
+  const backmatterSystem = `You are creating back matter for a published teaching book. Your job is three tasks:
 
 TASK 1 — GLOSSARY:
 Define the provided key terms EXACTLY as the author uses them in the book. Rules:
@@ -152,8 +146,9 @@ Write 3–7 discussion questions per chapter. Rules:
 TASK 3 — RECOMMENDED RESOURCES:
 List any resources the author specifically mentioned in the book (books, passages, teachings). Do not add resources the author didn't reference. If none were mentioned, return an empty array.
 
-${SOURCE_LOCK_RULES}`,
-      prompt: `Book: "${manifest.bookTitle}"${manifest.subtitle ? ` — ${manifest.subtitle}` : ""}
+${SOURCE_LOCK_RULES}`;
+
+  const backmatterPrompt = `Book: "${manifest.bookTitle}"${manifest.subtitle ? ` — ${manifest.subtitle}` : ""}
 Author: ${manifest.authorName}
 
 CHAPTER SUMMARIES:
@@ -165,19 +160,49 @@ ${termsToDefine.map((t) => `• ${t}`).join("\n")}
 RESOURCES MENTIONED IN THE BOOK:
 ${resourcesMentioned.length > 0 ? resourcesMentioned.map((r) => `• ${r}`).join("\n") : "(none explicitly mentioned)"}
 
-Generate the glossary, reading group guide, and recommended resources.`,
+Generate the glossary, reading group guide, and recommended resources.`;
+
+  // Try R1 first for highest quality. If it fails or times out, fall back to V3.
+  let object: Awaited<ReturnType<typeof generateObject<z.infer<typeof BackMatterSchema>>>>["object"] | null = null;
+
+  try {
+    const res = await generateObject({
+      model: deepSeekReasonerModel,
+      schema: BackMatterSchema.omit({ scriptureIndex: true }),
+      mode: "json",
+      temperature: 1,  // R1 requires temperature=1
+      system: backmatterSystem,
+      prompt: backmatterPrompt,
     });
-
-    const result: BackMatter = {
-      scriptureIndex,
-      glossary: object.glossary ?? [],
-      readingGroupGuide: object.readingGroupGuide ?? [],
-      recommendedResources: object.recommendedResources ?? [],
-    };
-
-    return NextResponse.json(result, { status: 200 });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "Back matter generation failed";
-    return NextResponse.json({ error: message }, { status: 500 });
+    object = res.object;
+  } catch {
+    // R1 failed — fall back to V3 Pro
+    try {
+      const res = await generateObject({
+        model: deepSeekModel,
+        schema: BackMatterSchema.omit({ scriptureIndex: true }),
+        mode: "json",
+        temperature: 0.3,
+        system: backmatterSystem,
+        prompt: backmatterPrompt,
+      });
+      object = res.object;
+    } catch (v3Err) {
+      const message = v3Err instanceof Error ? v3Err.message : "Back matter generation failed";
+      return NextResponse.json({ error: message }, { status: 500 });
+    }
   }
+
+  if (!object) {
+    return NextResponse.json({ error: "Back matter generation returned no content" }, { status: 500 });
+  }
+
+  const result: BackMatter = {
+    scriptureIndex,
+    glossary: object.glossary ?? [],
+    readingGroupGuide: object.readingGroupGuide ?? [],
+    recommendedResources: object.recommendedResources ?? [],
+  };
+
+  return NextResponse.json(result, { status: 200 });
 }

@@ -117,16 +117,20 @@ export function evaluateBookQuality(input: {
 
       // Jaccard overlap against the full corpus is unreliable for short sections
       // (small sets always produce near-zero Jaccard regardless of sourcing quality).
-      // Only run the check on sections with enough words to make the metric meaningful.
+      // Only run the check on sections with enough words AND when we have a non-empty
+      // source corpus — if sourceTokens is empty (rawText missing from saved state),
+      // skip the check entirely rather than falsely flagging every section as low-overlap.
       const sectionTokens = tokenize(body);
-      const overlap = jaccard(sectionTokens, sourceTokens);
-      if (words >= 200 && overlap < 0.035) {
-        issues.push({
-          code: "LOW_CONTENT_OVERLAP",
-          severity: "warn",
-          message: `Chapter ${chapter.number} section ${section.sectionNumber} has low source overlap (${overlap.toFixed(3)}).`,
-        });
-        score -= 6;
+      if (words >= 200 && sourceTokens.size > 0) {
+        const overlap = jaccard(sectionTokens, sourceTokens);
+        if (overlap < 0.035) {
+          issues.push({
+            code: "LOW_CONTENT_OVERLAP",
+            severity: "warn",
+            message: `Chapter ${chapter.number} section ${section.sectionNumber} has low source overlap (${overlap.toFixed(3)}).`,
+          });
+          score -= 6;
+        }
       }
 
       const recapSentences = body
