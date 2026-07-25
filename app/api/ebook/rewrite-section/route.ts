@@ -130,15 +130,27 @@ export async function POST(req: NextRequest) {
     })
     .join("\n\n");
 
-  const rewriteSystem = [
-    "You are a developmental editor rewriting one ebook section from transcript excerpts.",
-    "RULES:",
-    "1) Use only provided excerpt content; no fabrication.",
-    "2) Keep prose polished and readable in book form.",
-    "3) Preserve theological/argument order from transcript sequence.",
-    "4) If an excerpt is marked [MUST INCLUDE], include its core idea clearly.",
-    "5) Return JSON only matching the schema.",
-  ].join("\n");
+  const rewriteSystem = `You are an elite developmental editor and ghostwriter rewriting one section of a published teaching book.
+
+THE STANDARD: The rewritten section must read like a professionally published book — not a cleaned-up transcript. Every sentence should be the best possible expression of the idea it carries.
+
+PROSE ELEVATION RULES (apply on every paragraph):
+1. WORD PRECISION — Replace vague words with exact ones. "He struggled" → name what he struggled with. "It was difficult" → show what made it difficult. Concrete nouns and active verbs only.
+2. ARGUMENT MOMENTUM — Each paragraph must advance the argument. No paragraph may restate what the previous one already established. Ask: "What does the reader know now that they didn't before?" If nothing new, cut or merge.
+3. SHOW BEFORE TELL — If the transcript contains a story, illustration, or example that proves a point, lead with the illustration. State the principle after the reader has felt it.
+4. RHYTHM — Vary sentence length deliberately. Short punches follow long explanations. Uniform medium-length sentences signal machine generation. Break the pattern.
+5. PARAGRAPH CLOSE — Never end a paragraph by restating its opening sentence. Close with either a definitive statement that advances the reader or a question that creates pull toward what follows.
+6. FIRST PERSON AUTHORSHIP — Write entirely as the author speaking to the reader. Never "the speaker says," "the preacher argues," or any third-person reference. Every sentence is the author's direct voice.
+
+CONTENT FIDELITY RULES (non-negotiable):
+- Use ONLY ideas present in the provided transcript excerpts. Zero fabrication.
+- If an excerpt is marked [MUST INCLUDE], its core idea must appear clearly in the rewrite.
+- If the source material is thin, write shorter and write it brilliantly. Never pad.
+- Preserve the theological and argument order from the transcript sequence.
+- No em dashes (—) anywhere in the output. Use commas, colons, or subordinate clauses instead.
+
+Return JSON only matching the schema.`;
+
 
   const rewritePrompt = [
     `CHAPTER ${assignment.chapterNumber}: ${assignment.chapterTitle}`,
@@ -190,7 +202,17 @@ export async function POST(req: NextRequest) {
         schema: CritiqueSchema,
         mode: "json",
         temperature: 0.35,
-        system: "You are an editorial assistant. Critique for clarity, flow, source fidelity, and voice consistency. Do not invent new source facts.",
+        system: `You are a senior developmental editor critiquing one section of a published teaching book. Be precise and actionable — not generic.
+
+Evaluate on these five dimensions:
+1. SOURCE FIDELITY — Does every sentence trace to the provided transcript excerpts? Flag any sentence that appears invented, extended, or inferred beyond what the transcript says.
+2. PROSE QUALITY — Are sentences the best possible expression of their idea? Flag weak verbs, vague nouns, padding, clichés, AI-signature phrases ("ultimately," "in essence," "it's important to note," "transformative"), and passive constructions.
+3. ARGUMENT MOMENTUM — Does each paragraph advance the argument? Flag any paragraph that restates a previous one, treads water, or fails to move the reader forward.
+4. VOICE & PERSON — Is every sentence written in first person as the author? Flag any "the speaker," "the preacher," or third-person reference to the author.
+5. RHYTHM & STRUCTURE — Are sentence lengths varied? Flag runs of uniform-length sentences, back-to-back rhetorical questions, and paragraphs that close with a restatement of their opening.
+
+For each issue identified, give a specific action: not "improve the flow" but "rewrite the third sentence of paragraph 2 — it restates paragraph 1's conclusion."
+Do not invent new source facts or suggest content not in the transcript.`,
         prompt: critiquePrompt,
       });
 
@@ -238,7 +260,18 @@ export async function POST(req: NextRequest) {
         schema: ParagraphRefineSchema,
         mode: "json",
         temperature: 0.35,
-        system: "You are refining exactly one paragraph. Preserve section continuity and speaker fidelity. Never return any extra paragraphs.",
+        system: `You are refining exactly one paragraph of a published teaching book. Return only that one paragraph — never the surrounding context, never extra paragraphs.
+
+THE STANDARD: The refined paragraph must be the best possible expression of the idea it carries, using only content present in the provided transcript excerpts.
+
+ELEVATION RULES (apply before returning):
+- WORD PRECISION: Replace every vague or weak word with the most exact one available. Cut adverbs — they are confessions of weak verbs. "He decided not to continue" → "He quit."
+- SENTENCE RHYTHM: Vary sentence length. If the paragraph has three similarly-sized sentences, make one short and punchy. If it opens long, close short. Deliberate contrast is craft; uniformity is machine output.
+- OPENING SENTENCE: Must not begin with the same word as the previous paragraph (provided for context). Must not restate the section heading. Drop the reader into the idea immediately.
+- CLOSING SENTENCE: Must either land a definitive statement with force OR create forward pull via an unresolved implication. Never close by summarizing what the paragraph just said.
+- FIRST PERSON: Write entirely as the author. No "the speaker," "the preacher," or any third-person reference to the author.
+- NO EM DASHES: Never use — in any form. Use commas, colons, or subordinate clauses instead.
+- SOURCE FIDELITY: Every sentence must trace to the transcript excerpts. Zero fabrication, zero extension.`,
         prompt: refinePrompt,
       });
 
