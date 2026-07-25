@@ -19,8 +19,10 @@ import {
   generateEbookProjectId,
 } from "@/lib/ebook-project-store";
 import type { EbookProject } from "@/lib/ebook-project-store";
+import { getEbookJob } from "@/lib/ebook-job-store";
 
 const JOB_STATE_KEY = "nexus_ebook_job_state";
+const JOB_STORAGE_KEY = "nexus_ebook_current_job"; // IndexedDB job-ID pointer
 const PENDING_MOUNT_KEY = "nexus_ebook_pending_mount";
 const VOICE_STUDIO_STORAGE_PREFIX = "nexus_voice_studio_";
 const VALID_JOB_STATUSES = new Set([
@@ -285,11 +287,27 @@ function EbookPageClient() {
 
   const handleSaveProject = useCallback(async (name: string) => {
     try {
+      // 1. Try localStorage (written continuously during pipeline runs)
       const raw = localStorage.getItem(JOB_STATE_KEY);
-      const fallbackProject = currentProjectId
-        ? projects.find((p) => p.id === currentProjectId)
-        : null;
-      const parsedRaw = raw ? JSON.parse(raw) as unknown : fallbackProject?.jobState;
+      let parsedRaw: unknown = raw ? JSON.parse(raw) as unknown : null;
+
+      // 2. Fall back to IndexedDB (persists across refreshes and localStorage clears)
+      if (!parsedRaw) {
+        const jobId = localStorage.getItem(JOB_STORAGE_KEY);
+        if (jobId) {
+          const idbJob = await getEbookJob(jobId).catch(() => null);
+          if (idbJob) parsedRaw = idbJob;
+        }
+      }
+
+      // 3. Fall back to last-loaded project state
+      if (!parsedRaw) {
+        const fallbackProject = currentProjectId
+          ? projects.find((p) => p.id === currentProjectId)
+          : null;
+        if (fallbackProject?.jobState) parsedRaw = fallbackProject.jobState;
+      }
+
       if (!parsedRaw) {
         setStatusMsg({ type: "error", text: "Nothing to save yet — start the pipeline first." });
         return;
