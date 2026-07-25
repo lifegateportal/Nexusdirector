@@ -274,16 +274,22 @@ SOURCE-LOCK — ABSOLUTE RULE:
 Every title, section heading, and key theme you write MUST derive word-for-word or idea-for-idea from the transcript segments below. You may NOT invent, assume, or extrapolate anything not explicitly present in the provided text.
 
 CHAPTER TITLE RULE:
-- Use the strongest single claim or overarching idea the speaker explicitly states
-- Use the speaker's actual words or a direct condensation of them
-- If the speaker states a clear thesis, that IS your chapter title
+- 4–7 words. Punchy. Sounds like a book you would buy, not an academic paper.
+- Use the speaker's actual words or a natural distillation of their central claim.
+- Must be a COMPLETE, self-contained phrase — no dangling prepositions, no dangling conjunctions.
+- FORBIDDEN formats: "The [abstract noun] of X and Y" | "The [adjective] link between X and Y" | "The [noun] dimensions of X (parenthetical list)" | anything with a parenthetical aside.
+- GOOD: "When Prayer Changes the Pray-er" | "The Glory That Prayer Reveals" | "Righteous Living Fuels Effectual Prayer"
+- BAD: "Prayer as a transformative encounter that reveals hidden glory" (sentence, not a title) | "The inseparable link between righteous living and effective prayer" (academic) | "The communal dimensions of prayer (personal, elders, interpersonal)" (parenthetical)
 
 SECTION HEADING RULES:
-- Each heading must be a specific teaching claim the speaker made, drawn directly from the keyPoints or transcript text
-- STRICT LIMIT: 3–6 words maximum. Count every word. If you write 7 or more words, you have failed this rule.
-- Title case. No articles (a/an/the) unless essential. No punctuation at the end.
+- Each heading must name a specific truth, claim, or action the speaker made in that segment — drawn directly from the keyPoints or transcript.
+- 4–8 words. Complete phrase — NEVER cut a thought mid-clause or leave a dangling word.
+- Title case. No punctuation at the end.
+- The heading must be able to stand alone and make sense to a reader who has not heard the sermon.
 - BANNED prefixes: Introduction, Intro, Overview, Opening, Summary, Conclusion, Part, Chapter, Section
-- GOOD: "Prayer Reveals Hidden Glory" | "Moses Weighed Nations by Prayer" | BAD: "There is something about prayer that will cause the glory to be revealed" (too long)
+- FORBIDDEN: any heading that ends with a preposition ("to", "our", "the", "in", "for", "on"), a conjunction ("and", "but", "or"), or a pronoun without its noun ("it", "them", "their", "its").
+- GOOD: "Prayer Reveals Hidden Glory" | "Moses Held the Nation by Prayer" | "The Righteous Life Powers Prayer"
+- BAD: "Pray until you are no longer" (dangling) | "You need a Joshua 2.0 to" (dangling) | "When we open up our" (dangling) | "Is any among you afflicted? Let" (question fragment)
 
 STRUCTURE RULES:
 - Produce exactly 3–5 sections
@@ -392,28 +398,28 @@ function normalizeArchitecture(
     }))
     .filter((chapter) => chapter.sections.length > 0);
 
-  // ── Amendment 8: Section heading quality checks + auto-compression ──────────
-  // Headings > 6 words are compressed in-place using compressHeading().
-  // Warnings are still surfaced for visibility but no longer block generation.
+  // ── Heading quality pass: warn-only, no mutation ────────────────────────────
+  // We deliberately do NOT compress or truncate headings here. The AI is
+  // instructed to produce complete 4–8 word phrases. Post-hoc truncation was
+  // the root cause of dangling fragments like "Pray until you are no longer".
+  // Warnings are logged for monitoring but headings are left as-is.
   const architectureWarnings: string[] = [];
   const allHeadingTokens: Array<{ heading: string; chapterNum: number; sectionNum: number }> = [];
 
-  const VERB_RE = /\b(is|are|was|were|has|have|had|do|does|did|will|would|can|could|may|might|shall|should|reveal|reveals|give|gives|show|shows|bring|brings|take|takes|make|makes|believe|believes|know|knows|find|finds|need|needs|walk|walks|live|lives|stand|stands|fight|fights|receive|receives|overcome|overcomes|build|builds|establish|establishes|declare|declares|prove|proves|demonstrate|demonstrates|unlock|unlocks|release|releases|restore|restores|define|defines|create|creates|open|opens|change|changes|grant|grants|call|calls|draw|draws|lead|leads|move|moves|keep|keeps|hold|holds|become|becomes|see|sees)\b/i;
+  const DANGLING_END_RE = /\b(to|our|the|in|for|on|and|but|or|let|a|an|its|their|them|it)$/i;
 
   const targetChapters = chapters.length > 0 ? chapters : fallback.chapters;
   for (const chapter of targetChapters) {
     for (const section of chapter.sections) {
       const words = section.heading.trim().split(/\s+/);
-      if (words.length > 6) {
-        const original = section.heading;
-        section.heading = compressHeading(original);
+      if (words.length > 8) {
         architectureWarnings.push(
-          `Ch ${chapter.number} §${section.sectionNumber}: Heading compressed ${words.length}→${section.heading.split(/\s+/).length} words: "${original}" → "${section.heading}"`
+          `Ch ${chapter.number} §${section.sectionNumber}: Heading too long (${words.length} words): "${section.heading}"`
         );
       }
-      if (words.length <= 6 && !VERB_RE.test(section.heading)) {
+      if (DANGLING_END_RE.test(section.heading.trim())) {
         architectureWarnings.push(
-          `Ch ${chapter.number} §${section.sectionNumber}: Heading may be a topic label (no verb found): "${section.heading}"`
+          `Ch ${chapter.number} §${section.sectionNumber}: Heading ends mid-thought: "${section.heading}"`
         );
       }
       allHeadingTokens.push({ heading: section.heading, chapterNum: chapter.number, sectionNum: section.sectionNumber });
@@ -578,7 +584,8 @@ This content is a sermon series. The author's preaching sequence IS the book's s
 - Always return every required field, even if some strings are brief.
 - Never leave sections empty; every chapter must have at least one section with at least one sourceSegmentId.
 - SECTION HEADING BAN: Never start a section heading with "Introduction", "Intro", "Overview", "Opening", "Summary", or "Conclusion". These are structural labels, not teaching titles. Rename any such heading to the specific claim or truth the speaker made in that segment.
-- SECTION HEADING LENGTH — STRICT: Every section heading must be 3–6 words maximum. Count every word. Full sentences are forbidden. GOOD: "Prayer Reveals Hidden Glory" | BAD: "There is something about prayer that will cause the glory to be revealed" (sentence, not a heading).`,
+- SECTION HEADING STANDARD — NON-NEGOTIABLE: Every section heading must be a COMPLETE, self-contained phrase of 4–8 words. Full sentences are forbidden. A heading that ends mid-thought (dangling preposition, dangling conjunction, or incomplete clause) is a failure. FORBIDDEN endings: any heading that ends with "to", "our", "the", "in", "for", "on", "and", "but", "or", "let", "a". GOOD: "Prayer Reveals Hidden Glory" | "The Righteous Life Powers Prayer" | "God Listens to Those Who Pray" | BAD: "Pray until you are no longer" (dangling) | "When we open up our" (dangling) | "Is any among you afflicted? Let" (fragment).
+- CHAPTER TITLE STANDARD: Chapter titles must be 4–7 words, punchy, and sound like a published book — not an academic description. FORBIDDEN: parenthetical asides in titles, the phrase "The [abstract noun] of X and Y", thesis-statement format. GOOD: "When Prayer Changes the Pray-er" | BAD: "Prayer as a transformative encounter that reveals hidden glory and changes the pray-er's internal state".`,
         prompt: `Design the chapter architecture.
 
       VOICE DNA TONE: ${input.voiceDNA.toneProfile}
