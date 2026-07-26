@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { generateObject } from "ai";
 import { z } from "zod";
-import { deepSeekReasonerModel, deepSeekModel } from "@/lib/ai-providers";
+import { deepSeekReasonerModel } from "@/lib/ai-providers";
 import { env } from "@/lib/env";
 import { ArchitectRequestSchema } from "@/lib/schemas/ebook";
 import { SOURCE_LOCK_RULES } from "@/lib/editorial-style-bible";
@@ -263,9 +263,11 @@ async function architectOneChapterFromTranscript(
     ].join("\n");
   }).join("\n\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n");
 
-  const singleChapterArgs = {
+  const { object } = await generateObject({
+    model: deepSeekReasonerModel,
     schema: SingleChapterPlanSchema,
-    mode: "json" as const,
+    mode: "json",
+    temperature: 1,
     system: `You are a senior structural editor turning one teaching message into a premium book chapter.
 
 SOURCE-LOCK — ABSOLUTE RULE:
@@ -305,16 +307,8 @@ TEACHING ARC: ${teachingArc}
 VOICE TONE: ${voiceDNATone}
 
 ${transcriptBlock}`,
-  };
-
-  // Try R1 first; fall back to V3 if R1 is unavailable on this API key
-  try {
-    const { object } = await generateObject({ model: deepSeekReasonerModel, temperature: 1, ...singleChapterArgs });
-    return object;
-  } catch {
-    const { object } = await generateObject({ model: deepSeekModel, temperature: 0.3, ...singleChapterArgs });
-    return object;
-  }
+  });
+  return object;
 }
 
 function fallbackArchitecture(input: z.infer<typeof ArchitectRequestSchema>) {
@@ -563,9 +557,10 @@ export async function POST(req: NextRequest) {
         };
       } else {
       {
-        const mainArchitectArgs = {
+        const result = await generateObject({
+        model: deepSeekReasonerModel,
         schema: MinimalArchitectureSchema,
-        mode: "json" as const,
+        mode: "json",
         system: `# ROLE
 You are an elite structural editor for a top-tier publishing house. Your job is to map raw, sanitized audio transcript segments into a clean chapter architecture for a published book series.
 
@@ -603,15 +598,8 @@ This content is a sermon series. The author's preaching sequence IS the book's s
 
       SEGMENTS:
       ${JSON.stringify(segmentsLite)}`,
-        };
-        // Try R1 first; fall back to V3 if R1 is unavailable on this API key
-        try {
-          const { object } = await generateObject({ model: deepSeekReasonerModel, temperature: 1, ...mainArchitectArgs });
-          minimal = object;
-        } catch {
-          const { object } = await generateObject({ model: deepSeekModel, temperature: 0.3, ...mainArchitectArgs });
-          minimal = object;
-        }
+        });
+        minimal = result.object;
       } // end LLM block
       } // end else
     } catch {
