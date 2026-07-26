@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { generateObject } from "ai";
 import { z } from "zod";
-import { deepSeekReasonerModel } from "@/lib/ai-providers";
+import { deepSeekReasonerModel, deepSeekModel } from "@/lib/ai-providers";
 import { ChapterPlanRequestSchema, ChapterPlanResponseSchema } from "@/lib/schemas/ebook";
 import { SOURCE_LOCK_RULES, READER_NORMALIZATION_RULES } from "@/lib/editorial-style-bible";
 
@@ -189,6 +189,7 @@ ${excerptPayload}`;
   // deepseek-reasoner can take 60-120s. Without periodic bytes, nginx/Cloudflare
   // close the connection with a 504/524 before the response arrives.
   // We send a space every 15s; JSON.parse (used by res.json()) ignores leading whitespace.
+  // If R1 is unavailable (plan restriction), we fall back to V3 Pro automatically.
   const encoder = new TextEncoder();
   const generatePromise = generateObject({
     model: deepSeekReasonerModel,
@@ -197,7 +198,14 @@ ${excerptPayload}`;
     temperature: 1, // reasoner requires temperature=1
     system,
     prompt,
-  });
+  }).catch(() => generateObject({
+    model: deepSeekModel,
+    schema: ChapterPlanLLMSchema,
+    mode: "json",
+    temperature: 0.3,
+    system,
+    prompt,
+  }));
 
   const stream = new ReadableStream({
     async start(controller) {
